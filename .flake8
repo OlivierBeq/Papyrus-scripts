@@ -1,0 +1,32 @@
+###############################################
+# Flake8 Configuration                        #
+# (.flake8)                                   #
+# Adapted from https://github.com/pybel/pybel #
+###############################################
+
+# This config can't go in setup.cfg because Python's ConfigParser
+# used by setup.pg will interpolate on all of Scott's beautiful % signs
+# that make the pretty colored output
+
+[flake8]
+ignore =
+    # Complains about URLs
+    S310
+exclude =
+    .tox,
+    .git,
+    __pycache__,
+    docs/source/conf.py,
+    build,
+    dist,
+    tests/fixtures/*,
+    *.pyc,
+    *.egg-info,
+    .cache,
+    .eggs
+max-line-length = 120
+# import-order-style = pycharm
+application-import-names =
+    papyrus_scripts
+    tests
+format = ${cyan}%(path)s${reset}:${yellow_bold}%(row)d${reset}:${green_bold}%(col)d${reset}: ${red_bold}%(code)s${reset} %(text)s
