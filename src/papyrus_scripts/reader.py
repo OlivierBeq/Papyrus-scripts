@@ -27,7 +27,7 @@ def read_papyrus(is3d: bool = False, chunksize: Optional[int] = None, source_pat
     filename = glob.glob(file_mask)
     if len(filename) == 0:
         raise ValueError('Could not find Papyrus dataset')
-    return pd.read_csv(filename, sep='\t', chunksize=chunksize, dtype=dtypes, low_memory=True)
+    return pd.read_csv(filename[0], sep='\t', chunksize=chunksize, dtype=dtypes, low_memory=True)
 
 
 def read_protein_set(source_path: str = './') -> pd.DataFrame:
