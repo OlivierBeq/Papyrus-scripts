@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import swifter
 from joblib import Parallel, delayed
-from pandas.io.parsers.readers import TextFileReader as PandasTextFileReader
+from pandas.io.parsers import TextFileReader as PandasTextFileReader
 from scipy.stats import median_absolute_deviation as MAD
 from tqdm.auto import tqdm
 
