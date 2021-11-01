@@ -1,4 +1,4 @@
-# papyrus-scripts
+# Papyrus-scripts
 
 Collection of scripts to interact with the Papyrus bioactivity dataset.
 
