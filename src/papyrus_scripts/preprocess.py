@@ -495,7 +495,7 @@ def keep_protein_class(data: pd.DataFrame, protein_data: pd.DataFrame,
     if generic_regex:
         indices = sorted(set(indices + regex_indices))
     # Obtain targets from filtered indices
-    targets = protein_data.loc[indices, 'TARGET_NAME']
+    targets = protein_data.loc[indices, 'target_id']
     # Map back to activity data
     return data[data['target_id'].isin(targets)]
 
@@ -582,7 +582,7 @@ def keep_organism(data: pd.DataFrame, protein_data: pd.DataFrame,
         query = '(' + ' or '.join([f'Organism == "{x}"' for x in organism]) + ')'
         indices = protein_data.query(query).index.tolist()
     # Obtain targets from filtered indices
-    targets = protein_data.loc[indices, 'TARGET_NAME']
+    targets = protein_data.loc[indices, 'target_id']
     # Map back to activity data
     return data[data['target_id'].isin(targets)]
 
