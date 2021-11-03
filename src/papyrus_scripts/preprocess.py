@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from itertools import chain
-from typing import List, Optional, Union, Iterator
+from typing import Any, List, Optional, Union, Iterator
 
 import numpy as np
 import pandas as pd
@@ -110,7 +110,7 @@ def process_groups(groups):
     return pd.concat([process_group(group) for group in groups])
 
 
-def keep_source(data: pd.DataFrame, source: Union[List[str], str] = 'all', njobs: int = 8,
+def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], source: Union[List[str], str] = 'all', njobs: int = 8,
                 verbose: bool = False) -> pd.DataFrame:
     """Keep only the data from the defined source(s).
     
@@ -214,7 +214,7 @@ def keep_source(data: pd.DataFrame, source: Union[List[str], str] = 'all', njobs
         return data
 
 
-def _chunked_keep_source(data: pd.DataFrame, source: Union[List[str], str], njobs) -> pd.DataFrame:
+def _chunked_keep_source(data: Union[PandasTextFileReader, Iterator], source: Union[List[str], str], njobs) -> pd.DataFrame:
     for chunk in data:
         yield keep_source(chunk, source, njobs)
 
@@ -238,7 +238,7 @@ def is_multiple_types(row, activity_types: List[str]):
     return np.any([';' in str(row[activity_type]) for activity_type in activity_types])
 
 
-def keep_type(data: pd.DataFrame, activity_types: Union[List[str], str] = 'ic50', njobs: int = 8,
+def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activity_types: Union[List[str], str] = 'ic50', njobs: int = 8,
               verbose: bool = False):
     """Keep only the data matching desired activity types
     
@@ -340,12 +340,12 @@ def keep_type(data: pd.DataFrame, activity_types: Union[List[str], str] = 'ic50'
         return data
 
 
-def _chunked_keep_type(data: pd.DataFrame, activity_types: Union[List[str], str], njobs: int):
+def _chunked_keep_type(data: Union[PandasTextFileReader, Iterator], activity_types: Union[List[str], str], njobs: int):
     for chunk in data:
         yield keep_type(chunk, activity_types, njobs)
 
 
-def keep_accession(data: pd.DataFrame, accession: Union[List[str], str] = 'all'):
+def keep_accession(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], accession: Union[List[str], str] = 'all'):
     """Keep only the data matching desired accession.
 
     :param data: the dataframe containing data to be filtered
@@ -396,7 +396,7 @@ def equalize_cell_size_in_column(col, fill_mode='internal', fill_value: object =
     return col
 
 
-def keep_protein_class(data: pd.DataFrame, protein_data: pd.DataFrame,
+def keep_protein_class(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], protein_data: pd.DataFrame,
                        classes: Optional[Union[dict, List[dict]]] = [{'l2': 'Kinase'}, {'l5': 'Adenosine receptor'}],
                        generic_regex: bool = False):
     """Keep only the data matching desired protein classifications.
@@ -500,7 +500,7 @@ def keep_protein_class(data: pd.DataFrame, protein_data: pd.DataFrame,
     return data[data['target_id'].isin(targets)]
 
 
-def _chunked_keep_protein_class(data: pd.DataFrame, protein_data: pd.DataFrame,
+def _chunked_keep_protein_class(data: Union[PandasTextFileReader, Iterator], protein_data: pd.DataFrame,
                                 classes: Optional[Union[dict, List[dict]]],
                                 generic_regex: bool):
     for chunk in data:
@@ -550,7 +550,7 @@ def _consume_deeper_chunks(generator: Union[PandasTextFileReader, Iterator]):
     return pd.concat(data, axis=0)
 
 
-def keep_organism(data: pd.DataFrame, protein_data: pd.DataFrame,
+def keep_organism(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], protein_data: pd.DataFrame,
                   organism: Optional[Union[str, List[str]]] = 'Human',
                   generic_regex: bool = False):
     """Keep only the data matching desired protein classifications.
@@ -587,9 +587,34 @@ def keep_organism(data: pd.DataFrame, protein_data: pd.DataFrame,
     return data[data['target_id'].isin(targets)]
 
 
-def _chunked_keep_organism(data: pd.DataFrame, protein_data: pd.DataFrame,
+def _chunked_keep_organism(data: Union[PandasTextFileReader, Iterator], protein_data: pd.DataFrame,
                            organism: Optional[Union[str, List[str]]],
                            generic_regex: bool):
     for chunk in data:
         filtered_chunk = keep_organism(chunk, protein_data, organism, generic_regex)
+        yield filtered_chunk
+
+
+def keep_match(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], column: str, values: Union[Any, List[Any]]):
+    """Keep only the data matching desired columns with desired values.
+
+    :param data: the dataframe containing data to be filtered
+    :param column: column to be filtered
+    :param values: values to be retained
+
+    :return: the data with desired column values
+    """
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_match(data, column, values)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    if not isinstance(values, list):
+        values = [values]
+    return data[data[column].isin(values)]
+
+
+def _chunked_keep_match(data: Union[PandasTextFileReader, Iterator], column: str, values: Union[Any, List[Any]]):
+    for chunk in data:
+        filtered_chunk = keep_match(chunk, column, values)
         yield filtered_chunk
