@@ -24,7 +24,9 @@ Install conda dependencies first:
 conda install rdkit FPSim2 openbabel -c conda-forge
 ```
 
-Then install Papyrus-scripts with pip
+Then install PyTorch <ahref="https://pytorch.org/get-started/locally/">locally</a>.
+
+Finally install Papyrus-scripts with pip
 ```bash
 pip install https://github.com/OlivierBeq/Papyrus-scripts/tarball/master
 ``` 
