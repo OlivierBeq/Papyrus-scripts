@@ -482,7 +482,7 @@ def qsar(data: pd.DataFrame,
     for i_target in range(n_targets - 1, -1, -1):
         tmp_data = data[data['target_id'] == targets[i_target]]
         if verbose:
-            pbar.set_description(f'Building QSAR for target: {targets[i_target]}\t#datapoints {tmp_data.shape[0]}',
+            pbar.set_description(f'Building QSAR for target: {targets[i_target]} #datapoints {tmp_data.shape[0]}',
                                  refresh=True)
         # Insufficient data points
         if tmp_data.shape[0] < num_points:
