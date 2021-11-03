@@ -371,9 +371,6 @@ def train_test_proportional_group_split(data: pd.DataFrame,
 
 def qsar(data: pd.DataFrame,
          endpoint: str = 'pchembl_value_Mean',
-         quality: str = 'high',
-         source: Union[List[str], str] = 'any',
-         activity_types: Union[List[str], str] = 'any',
          num_points: int = 30,
          delta_activity: float = 2,
          descriptors: str = 'mold2',
@@ -397,9 +394,6 @@ def qsar(data: pd.DataFrame,
 
     :param data: Papyrus activity data
     :param endpoint: value to be predicted or to derive classes from
-    :param quality: minimal quality to be kept
-    :param source: source(s) to be kept
-    :param activity_types: type of activity to be kept
     :param num_points: minimum number of points for the activity of a target to be modelled
     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
     :param descriptors: type of desriptors to be used for model training
@@ -435,12 +429,6 @@ def qsar(data: pd.DataFrame,
     if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("ignore", category=UserWarning)
     model_type = 'regressor' if isinstance(model, RegressorMixin) else 'classifier'
-    # Keep only desired quality
-    data = keep_quality(data, quality)
-    # Keep desired source (might be multiple)
-    data = keep_source(data, source)
-    # Keep desired activity type (might be multiple)
-    data = keep_type(data, activity_types)
     # Keep only required fields
     merge_on = 'connectivity' if 'connectivity' in data.columns else 'InChIKey'
     if model_type == 'regressor':
@@ -566,9 +554,6 @@ def qsar(data: pd.DataFrame,
 
 def pcm(data: pd.DataFrame,
         endpoint: str = 'pchembl_value_Mean',
-        quality: str = 'high',
-        source: Union[List[str], str] = 'any',
-        activity_types: Union[List[str], str] = 'any',
         num_points: int = 30,
         delta_activity: float = 2,
         mol_descriptors: str = 'mold2',
@@ -595,9 +580,6 @@ def pcm(data: pd.DataFrame,
 
     :param data: Papyrus activity data
     :param endpoint: value to be predicted or to derive classes from
-    :param quality: minimal quality to be kept
-    :param source: source(s) to be kept
-    :param activity_types: type of activity to be kept
     :param num_points: minimum number of points for the activity of a target to be modelled
     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
     :param mol_descriptors: type of desriptors to be used for model training
@@ -636,12 +618,6 @@ def pcm(data: pd.DataFrame,
     if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("ignore", category=UserWarning)
     model_type = 'regressor' if isinstance(model, RegressorMixin) else 'classifier'
-    # Keep only desired quality
-    data = keep_quality(data, quality)
-    # Keep desired source (might be multiple)
-    data = keep_source(data, source)
-    # Keep desired activity type (might be multiple)
-    data = keep_type(data, activity_types)
     # Keep only required fields
     merge_on = 'connectivity' if 'connectivity' in data.columns else 'InChIKey'
     if model_type == 'regressor':
@@ -673,7 +649,7 @@ def pcm(data: pd.DataFrame,
     data = data.merge(mol_descs, on=merge_on)
     data = data.drop(columns=[merge_on])
     # Get and merge protein descriptors
-    prot_descs = get_protein_descriptors(prot_descriptors, \
+    prot_descs = get_protein_descriptors(prot_descriptors,
                                          prot_sequences_path if isinstance(prot_descriptors, (Descriptor, Transform))
                                          else prot_descriptor_path,
                                          prot_descriptor_chunksize,

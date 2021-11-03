@@ -24,7 +24,7 @@ Install conda dependencies first:
 conda install rdkit FPSim2 openbabel -c conda-forge
 ```
 
-Then install PyTorch <ahref="https://pytorch.org/get-started/locally/">locally</a>.
+Then install PyTorch <a href="https://pytorch.org/get-started/locally/">locally</a>.
 
 Finally install Papyrus-scripts with pip
 ```bash
