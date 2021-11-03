@@ -4,6 +4,17 @@ Collection of scripts to interact with the Papyrus bioactivity dataset.
 
 ![alt text](figures/papyrus_workflow.png?raw=true)
 
+<br/>
+
+**Associated Preprint:**
+```
+Béquignon OJM, Bongers BJ, Jespers W, IJzerman AP, van de Water B, van Westen GJP.
+Papyrus - A large scale curated dataset aimed at bioactivity predictions.
+ChemRxiv. Cambridge: Cambridge Open Engage; 2021;
+This content is a preprint and has not been peer-reviewed.
+```
+
+
 ## Installation
 
 The Papyrus scripts require dependencies, a few of which can only be installed via conda to the best of our knowledge. 
@@ -45,10 +56,9 @@ Please note that, although the subsets and machine-learning models can easily be
 - Chunked simple filters
 - Substructure and similarity molecular searches
 - ability to use DNN models
-- ability o repeat model training over multiple seeds
+- ability to repeat model training over multiple seeds
 - y-scrambling
 
 ## Examples to come
 
-- Use of custom protein descriptors for proteochemometrics modelling
 - Use of custom grouping schemes for training/test set splitting and cross-validation.

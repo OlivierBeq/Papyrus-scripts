@@ -477,7 +477,7 @@ def qsar(data: pd.DataFrame,
     targets = list(data['target_id'].unique())
     n_targets = len(targets)
     if verbose:
-        pbar = tqdm(total=n_targets, ncols=90, smoothing=0.1)
+        pbar = tqdm(total=n_targets, smoothing=0.1)
     # Build QSAR model for targets reaching criteria
     for i_target in range(n_targets - 1, -1, -1):
         tmp_data = data[data['target_id'] == targets[i_target]]
@@ -743,18 +743,3 @@ def pcm(data: pd.DataFrame,
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
     return performance, model
-
-
-if __name__ == '__main__':
-    coltypes = {'Activity_ID': object, 'Quality': object, 'source': object, 'CID': object,
-                'SMILES': object, 'connectivity': object, 'InChIKey': object, 'InChI': object,
-                'InChI_AuxInfo': object, 'target_id': object, 'accession': object, 'Protein_Type': object,
-                'AID': object, 'type_IC50': object, 'type_EC50': object, 'type_KD': object,
-                'type_Ki': object, 'type_other': object, 'Activity_class': object, 'relation': object,
-                'pchembl_value': object, 'pchembl_value_Mean': np.float64, 'pchembl_value_StdDev': np.float64,
-                'pchembl_value_SEM': np.float64, 'pchembl_value_N': np.float64, 'pchembl_value_Median': np.float64,
-                'pchembl_value_MAD': np.float64}
-
-    data = pd.concat([chunk for chunk in tqdm(pd.read_csv("05.4_combined_set_without_stereochemistry.tsv.xz", sep='\t',
-                                                          chunksize=1000000, dtype=coltypes), total=60, ncols=80)],
-                     axis=0)
