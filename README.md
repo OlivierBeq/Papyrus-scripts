@@ -6,7 +6,7 @@ Collection of scripts to interact with the Papyrus bioactivity dataset.
 
 <br/>
 
-**Associated Preprint:**
+**Associated Preprint:** <a href="https://doi.org/10.33774/chemrxiv-2021-1rxhk">10.33774/chemrxiv-2021-1rxhk</a>
 ```
 Béquignon OJM, Bongers BJ, Jespers W, IJzerman AP, van de Water B, van Westen GJP.
 Papyrus - A large scale curated dataset aimed at bioactivity predictions.
