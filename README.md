@@ -34,12 +34,14 @@ Dependencies that pypi resolves will auto-magically be installed.
 
 ## Donwload the dataset
 
-The Papyrus data relating to bioactivities can be found at <a href="https://doi.org/10.4121/16896406">4TU</a>.
+The Papyrus data relating to bioactivities can be found at 4TU: <a href="https://doi.org/10.4121/16896406">10.4121/16896406</a>.
 <br/>
-If trying to replicate the results of the preprint, molecular structures and descriptors as well as  protein descriptors can be accessed <a href="https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing">here</a>.
+
+To spare disk usage one can download the 4TU data in XZ format on <a href="https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing">Google Drive</a> (if using PipelinePilot, stick to the 4TU gz files).<br/>
+Precomputed molecular and protein descriptors along with molecular structures (2D for default set and 3D for low quality set with stereochemistry) are also available from <a href="https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing">Google Drive</a>.
 
 As stated in the pre-print **we strongly encourage** the use of the dataset in which stereochemistry was not considered.
-This corresponds to files containing either the mention "2D" or "without_stereochemistry". 
+This corresponds to files containing the mention "2D" and/or "without_stereochemistry". 
 
 ## Easy handling of the dataset
 
@@ -53,9 +55,10 @@ The scripts used to extract subsets, generate models and obtain visualizations c
 
 Please note that, although the subsets and machine-learning models can easily be generated on a laptop, the TMAP visualizations required more than 150 GiB of RAM.
 
+Molecular structures and descriptors as well as  protein descriptors can be accessed on <a href="https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing">Google Drive</a>.
+
 ## Features to come
 
-- Chunked simple filters
 - Substructure and similarity molecular searches
 - ability to use DNN models
 - ability to repeat model training over multiple seeds
@@ -63,4 +66,5 @@ Please note that, although the subsets and machine-learning models can easily be
 
 ## Examples to come
 
-- Use of custom grouping schemes for training/test set splitting and cross-validation.
+- Use of custom grouping schemes for training/test set splitting and cross-validation
+- Use custom molecular and protein descriptors (either Python function or file on disk) 
