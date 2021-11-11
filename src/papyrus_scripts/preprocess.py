@@ -624,6 +624,31 @@ def _chunked_keep_match(data: Union[PandasTextFileReader, Iterator], column: str
         yield filtered_chunk
 
 
+def keep_contains(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
+    """Keep only the data matching desired columns containing desired values.
+
+    :param data: the dataframe containing data to be filtered
+    :param column: column to be filtered
+    :param value: value to be retained
+    :param case: whether value is case-sensitive
+    :param regex: whether to interpret value as a regular expression
+
+    :return: the data containing desired values
+    """
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_contains(data, column, value)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    return data[data[column].str.contains(value, case=case, regex=regex)]
+
+
+def _chunked_keep_contains(data: Union[PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
+    for chunk in data:
+        filtered_chunk = keep_contains(chunk, column, value, case, regex)
+        yield filtered_chunk
+
+
 def keep_similar(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str, fingerprint: Fingerprint = MorganFingerprint(), threshold: float = 0.7, cuda: bool = False):
     """Keep only data associated to molecules similar to the query.
 
