@@ -135,7 +135,7 @@ class FPSubSim2:
         with tb.open_file(self.h5_filename) as h5file:
             rdkit_version, self.version, is3D = h5file.root.config.read()[0]
         if rdkit.__version__ != rdkit_version:
-            warnings.warn(f'RDKit version {rdkit.__version} differs: library was generated with {rdkit_version}. '
+            warnings.warn(f'RDKit version {rdkit.__version__} differs: library was generated with {rdkit_version}. '
                           'Consider regenerating the FPSubSim2 library to avoid unexpected behaviour.')
         self.is3d = is3D == "3D"
 
