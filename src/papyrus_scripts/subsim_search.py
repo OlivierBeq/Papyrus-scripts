@@ -864,7 +864,10 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
 
     def similarity(self, query_string: str, threshold: float) -> pd.DataFrame:
         """Tanimoto similarity search."""
-        ids, similarities = list(zip(*FPSim2CudaEngine.similarity(self, query_string, threshold)))
+        data = list(zip(*FPSim2CudaEngine.similarity(self, query_string, threshold)))
+        if not len(data):
+            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey', f'Tanimoto > {threshold} ({self.storage._current_fp})'])
+        ids, similarities = data
         ids, similarities = list(ids), list(similarities)
         data = self._get_mapping(ids)
         data[f'Tanimoto > {threshold} ({self.storage._current_fp})'] = similarities
