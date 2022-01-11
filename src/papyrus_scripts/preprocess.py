@@ -293,8 +293,8 @@ def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activit
             del binary_data
             binary_included = (
                 binary_included.set_index('Activity_ID')  # Allows unnesting data without messing with Activity_ID
-                .swifter.progress_bar(verbose)  # Uses swifter without progress bar for apply
                 .astype(str)  # Required for following split
+                .swifter.progress_bar(verbose)  # Uses swifter without progress bar for apply
                 .apply(lambda x: x.str.split(';'))  # Split multiple values into lists
                 .swifter.progress_bar(verbose)
                 .apply(equalize_cell_size_in_row, axis=1)  # Set same length of lists in each row
@@ -318,8 +318,8 @@ def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activit
             excluded = data[[x for x in data.columns if x not in cols2split and not x.startswith('pchembl_value_')]]
             del data
             included = (included.set_index('Activity_ID')  # Alows unnesting data without messing with Activity_ID
-                        .swifter.progress_bar(verbose)  # Uses swifter without progress bar for apply
                         .astype(str)  # Required for following split
+                        .swifter.progress_bar(verbose)  # Uses swifter without progress bar for apply
                         .apply(lambda x: x.str.split(';'))  # Split multiple values into lists
                         .swifter.progress_bar(verbose)
                         .apply(equalize_cell_size_in_row, axis=1)  # Set same length of lists in each row
