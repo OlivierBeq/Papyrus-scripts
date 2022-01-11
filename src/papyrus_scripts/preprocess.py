@@ -294,6 +294,7 @@ def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activit
             binary_included = (
                 binary_included.set_index('Activity_ID')  # Allows unnesting data without messing with Activity_ID
                 .swifter.progress_bar(verbose)  # Uses swifter without progress bar for apply
+                .astype(str)  # Required for following split
                 .apply(lambda x: x.str.split(';'))  # Split multiple values into lists
                 .swifter.progress_bar(verbose)
                 .apply(equalize_cell_size_in_row, axis=1)  # Set same length of lists in each row
@@ -318,7 +319,8 @@ def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activit
             del data
             included = (included.set_index('Activity_ID')  # Alows unnesting data without messing with Activity_ID
                         .swifter.progress_bar(verbose)  # Uses swifter without progress bar for apply
-                        .apply(lambda x: x.str.split(';'))  # Split mutiple values into lists
+                        .astype(str)  # Required for following split
+                        .apply(lambda x: x.str.split(';'))  # Split multiple values into lists
                         .swifter.progress_bar(verbose)
                         .apply(equalize_cell_size_in_row, axis=1)  # Set same length of lists in each row
                         .swifter.progress_bar(verbose)
@@ -722,7 +724,7 @@ def keep_substructure(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
     filtered_data = data[data['InChIKey'].isin(substructure_mols['InChIKey'])]
     return filtered_data
 
-def _chunked_keep_substructure(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
+def _chunked_keep_substructure(data: Union[PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
     fpss2 = FPSubSim2()

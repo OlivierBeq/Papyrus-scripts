@@ -16,7 +16,7 @@ def read_papyrus(is3d: bool = False, chunksize: Optional[int] = None, source_pat
 
     :param is3d: whether to consider stereochemistry or not (default: False)
     :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the molecular descriptor datasets
+    :param source_path: folder containing the bioactivity dataset
     :return: the Papyrus activity dataset
     """
     # Load data types
