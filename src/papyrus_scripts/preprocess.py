@@ -678,7 +678,7 @@ def keep_similar(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], mole
         molecule_smiles = [molecule_smiles]
     # Obtain similar molecules
     similarity_engine = fpss2.get_similarity_lib(cuda=cuda)
-    similar_mols = pd.concat([similarity_engine.similarity(smiles, threshold=threshold) for smiles in molecule_smiles], axis=0)
+    similar_mols = pd.concat([similarity_engine.similarity(smiles, threshold=threshold) for smiles in tqdm(molecule_smiles)], axis=0)
     similar_mols = similar_mols.iloc[:, -2:]
     filtered_data = data[data['InChIKey'].isin(similar_mols['InChIKey'])].merge(similar_mols, on='InChIKey')
     return filtered_data
@@ -691,7 +691,7 @@ def _chunked_keep_similar(data: Union[PandasTextFileReader, Iterator], molecule_
         molecule_smiles = [molecule_smiles]
     similarity_engine = fpss2.get_similarity_lib(cuda=cuda)
     similar_mols = pd.concat(
-        [similarity_engine.similarity(smiles, threshold=threshold) for smiles in molecule_smiles], axis=0)
+        [similarity_engine.similarity(smiles, threshold=threshold) for smiles in tqdm(molecule_smiles)], axis=0)
     similar_mols = similar_mols.iloc[:, -2:]
     for chunk in data:
         filtered_chunk = chunk[chunk['InChIKey'].isin(similar_mols['InChIKey'])].merge(similar_mols, on='InChIKey')
@@ -720,7 +720,7 @@ def keep_substructure(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
         molecule_smiles = [molecule_smiles]
     # Obtain similar molecules
     substructure_engine = fpss2.get_substructure_lib()
-    substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in molecule_smiles], axis=0)
+    substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in tqdm(molecule_smiles)], axis=0)
     filtered_data = data[data['InChIKey'].isin(substructure_mols['InChIKey'])]
     return filtered_data
 
@@ -731,7 +731,7 @@ def _chunked_keep_substructure(data: Union[PandasTextFileReader, Iterator], mole
     fpss2.load(fpsubsim2_file)
     # Obtain similar molecules
     substructure_engine = fpss2.get_substructure_lib()
-    substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in molecule_smiles], axis=0)
+    substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in tqdm(molecule_smiles)], axis=0)
     for chunk in data:
         filtered_chunk = chunk[chunk['InChIKey'].isin(substructure_mols['InChIKey'])]
         yield filtered_chunk
