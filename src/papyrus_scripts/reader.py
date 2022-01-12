@@ -25,8 +25,10 @@ def read_papyrus(is3d: bool = False, chunksize: Optional[int] = None, source_pat
         dtypes = json.load(jsonfile, cls=TypeDecoder)['papyrus']
     file_mask = os.path.join(source_path, f'*.*_combined_set_with{"out" if not is3d else ""}_stereochemistry.tsv*')
     filename = glob.glob(file_mask)
+    # Handle WSL ZoneIdentifier files
+    filename = [fname for fname in filename if not fname.endswith(':ZoneIdentifier')]
     if len(filename) == 0:
-        raise ValueError('Could not find Papyrus dataset')
+        raise FileNotFoundError('Could not find Papyrus dataset')
     return pd.read_csv(filename[0], sep='\t', chunksize=chunksize, dtype=dtypes, low_memory=True)
 
 
@@ -39,6 +41,8 @@ def read_protein_set(source_path: str = './') -> pd.DataFrame:
     # Load data types
     file_mask = os.path.join(source_path, f'*.*_combined_set_protein_targets.tsv*')
     filename = glob.glob(file_mask)
+    # Handle WSL ZoneIdentifier files
+    filename = [fname for fname in filename if not fname.endswith(':ZoneIdentifier')]
     if len(filename) == 0:
-        raise ValueError('Could not find Papyrus dataset of protein targets')
+        raise FileNotFoundError('Could not find Papyrus dataset of protein targets')
     return pd.read_csv(filename[0], sep='\t', keep_default_na=False)
