@@ -446,14 +446,12 @@ def qsar(data: pd.DataFrame,
         preserved = data[~data['Activity_class'].isna()]
         preserved = preserved.drop(
             columns=[col for col in preserved if col not in [merge_on, 'target_id', 'Activity_class', 'Year']])
-        active = data[
-            data['Activity_class'].isna() & (data[endpoint] > activity_threshold) & ~data['relation'].str.contains(
-                '<')][features_to_ignore]
+        active = data[data['Activity_class'].isna() & (data[endpoint] > activity_threshold)]
+        active = active[~active['relation'].str.contains('<')][features_to_ignore]
         active.loc[:, 'Activity_class'] = 'A'
         # active.drop(columns=[endpoint], inplace=True)
-        inactive = data[
-            data['Activity_class'].isna() & (data[endpoint] <= activity_threshold) & ~data['relation'].str.contains(
-                '>')][features_to_ignore]
+        inactive = data[data['Activity_class'].isna() & (data[endpoint] <= activity_threshold)]
+        inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore]
         inactive.loc[:, 'Activity_class'] = 'N'
         # inactive.drop(columns=[endpoint], inplace=True)
         data = pd.concat([preserved, active, inactive])
@@ -649,14 +647,12 @@ def pcm(data: pd.DataFrame,
         preserved = data[~data['Activity_class'].isna()]
         preserved = preserved.drop(
             columns=[col for col in preserved if col not in [merge_on, 'target_id', 'Activity_class', 'Year']])
-        active = data[
-            data['Activity_class'].isna() & (data[endpoint] > activity_threshold) & ~data['relation'].str.contains(
-                '<')][features_to_ignore]
+        active = data[data['Activity_class'].isna() & (data[endpoint] > activity_threshold)]
+        active = active[~active['relation'].str.contains('<')][features_to_ignore]
         active.loc[:, 'Activity_class'] = 'A'
         # active.drop(columns=[endpoint], inplace=True)
-        inactive = data[
-            data['Activity_class'].isna() & (data[endpoint] <= activity_threshold) & ~data['relation'].str.contains(
-                '>')][features_to_ignore]
+        inactive = data[data['Activity_class'].isna() & (data[endpoint] <= activity_threshold)]
+        inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore]
         inactive.loc[:, 'Activity_class'] = 'N'
         # inactive.drop(columns=[endpoint], inplace=True)
         data = pd.concat([preserved, active, inactive])
@@ -823,14 +819,12 @@ def dnn(data: pd.DataFrame,
         preserved = data[~data['Activity_class'].isna()]
         preserved = preserved.drop(
             columns=[col for col in preserved if col not in [merge_on, 'target_id', 'Activity_class', 'Year']])
-        active = data[
-            data['Activity_class'].isna() & (data[endpoint] > activity_threshold) & ~data['relation'].str.contains(
-                '<')][features_to_ignore]
+        active = data[data['Activity_class'].isna() & (data[endpoint] > activity_threshold)]
+        active = active[~active['relation'].str.contains('<')][features_to_ignore]
         active.loc[:, 'Activity_class'] = 'A'
         # active.drop(columns=[endpoint], inplace=True)
-        inactive = data[
-            data['Activity_class'].isna() & (data[endpoint] <= activity_threshold) & ~data['relation'].str.contains(
-                '>')][features_to_ignore]
+        inactive = data[data['Activity_class'].isna() & (data[endpoint] <= activity_threshold)]
+        inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore]
         inactive.loc[:, 'Activity_class'] = 'N'
         # inactive.drop(columns=[endpoint], inplace=True)
         data = pd.concat([preserved, active, inactive])
