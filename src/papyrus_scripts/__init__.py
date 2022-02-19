@@ -1,3 +1,3 @@
 # -*- coding: utf-8 -*-
 
-"""Utility functions."""
+"""A collection of scripts to handle the Papyrus bioactivity dataset."""
