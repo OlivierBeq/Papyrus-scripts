@@ -2,9 +2,28 @@
 
 """IO functions."""
 
+import hashlib
 import importlib
 import inspect
 import json
+import shutil
+
+
+def sha256sum(filename, blocksize=None):
+    if blocksize is None:
+        blocksize = 65536
+    hash = hashlib.sha256()
+    with open(filename, "rb") as fh:
+        for block in iter(lambda: fh.read(blocksize), b""):
+            hash.update(block)
+    return hash.hexdigest()
+
+
+def assert_sha256sum(filename, sha256, blocksize=None):
+    if not (isinstance(sha256, str) and len(sha256) == 64):
+        raise ValueError("SHA256 must be 64 chars: {}".format(sha256))
+    sha256_actual = sha256sum(filename, blocksize)
+    return sha256_actual == sha256
 
 
 def write_jsonfile(data: object, json_outfile: str) -> None:
@@ -50,3 +69,17 @@ class TypeDecoder(json.JSONDecoder):
             return getattr(__builtins__, type_)
         loaded_module = importlib.import_module(module)
         return getattr(loaded_module, type_)
+
+
+
+def enough_disk_space(destination: str,
+                      required: int,
+                      margin: float = 0.10):
+    """Check disk has enough space.
+    
+    :param destination: folder to check
+    :param required: space required in bytes
+    :param margin: percent of free disk space once file is written
+    """
+    total, _, free = shutil.disk_usage(destination)
+    return free - required > margin * total
