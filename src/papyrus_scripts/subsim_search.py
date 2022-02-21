@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
+
+
 import glob
 import multiprocessing
 import os
@@ -5,20 +10,37 @@ import re
 import warnings
 from collections import defaultdict
 from io import BytesIO
-from typing import Optional, Tuple, Union
+from typing import TypeVar, Optional, Tuple, Union
 
 import rdkit
-import cupy
-import tables as tb
-from FPSim2.io.backends.pytables import create_schema, BATCH_WRITE_SIZE, calc_popcnt_bins_pytables
-from FPSim2.io.backends.base import BaseStorageBackend
-from FPSim2.base import BaseEngine
-from FPSim2.FPSim2 import FPSim2Engine
-from FPSim2.FPSim2Cuda import FPSim2CudaEngine
-from FPSim2.io.chem import load_molecule
-from rdkit.Chem.rdSubstructLibrary import SubstructLibrary, PatternHolder, CachedMolHolder
 import pandas as pd
 from tqdm import tqdm
+from rdkit.Chem.rdSubstructLibrary import SubstructLibrary, PatternHolder, CachedMolHolder
+
+try:
+    import cupy
+except ImportError as e:
+    cupy = e
+try:
+    import tables as tb
+except ImportError as e:
+    tables = e
+try:
+    import FPSim2
+    from FPSim2.io.backends.pytables import create_schema, BATCH_WRITE_SIZE, calc_popcnt_bins_pytables
+    from FPSim2.io.backends.base import BaseStorageBackend
+    from FPSim2.base import BaseEngine
+    from FPSim2.FPSim2 import FPSim2Engine
+    from FPSim2.FPSim2Cuda import FPSim2CudaEngine
+    from FPSim2.io.chem import load_molecule
+except ImportError as e:
+    FPSim2 = e
+    # Placeholders
+    BaseStorageBackend = int
+    BaseEngine = int
+    FPSim2Engine = int
+    FPSim2CudaEngine = int
+
 
 from .fingerprint import *
 from .utils.mol_reader import MolSupplier
@@ -26,6 +48,12 @@ from .utils.mol_reader import MolSupplier
 
 class FPSubSim2:
     def __init__(self):
+        if isinstance(tables, ImportError) and isinstance(FPSim2, ImportError):
+            raise ImportError('Some required dependencies are missing:\n\ttables, FPSim2')
+        elif isinstance(tables, ImportError):
+            raise ImportError('Some required dependencies are missing:\n\ttables')
+        elif isinstance(FPSim2, ImportError):
+            raise ImportError('Some required dependencies are missing:\n\tFPSim2')
         self.version = None
         self.is3d = None
         self.sd_file = None
@@ -829,6 +857,8 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
         :param fps_sort: Whether if the FPs should be sorted by popcnt after being loaded into memory or not.
         :param storage_backend: Storage backend to use (only pytables available at the moment).
         """
+        if isinstance(cupy, ImportError):
+            raise ImportError('Some required dependencies are missing:\n\tcupy')
         super(FPSubSim2CudaEngine, self).__init__(
             fp_filename=fp_filename,
             fp_signature=fp_signature,

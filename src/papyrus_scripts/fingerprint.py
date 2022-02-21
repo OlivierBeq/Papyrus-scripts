@@ -8,9 +8,15 @@ from rdkit import Chem
 from rdkit import DataStructs
 from rdkit.Chem import rdMolDescriptors
 from rdkit.Avalon import pyAvalonTools
-from openbabel import pybel
-
-from FPSim2.FPSim2lib.utils import BitStrToIntList, PyPopcount
+try:
+    from openbabel import pybel
+except ImportError as e:
+    pybel = e
+try:
+    import FPSim2
+    from FPSim2.FPSim2lib.utils import BitStrToIntList, PyPopcount
+except ImportError as e:
+    FPSim2 = e
 
 
 class Fingerprint(ABC):
@@ -60,6 +66,8 @@ class Fingerprint(ABC):
 class RDKitFingerprint(Fingerprint):
     def get(self, mol: Chem.Mol) -> List[int]:
         """Get the bistring fingerprint of the molecule and popcounts"""
+        if isinstance(FPSim2, ImportError):
+            raise ImportError('Some required dependencies are missing:\n\ttables, FPSim2')
         fp = BitStrToIntList(self.func(mol, **self.params).ToBitString())
         popcnt = PyPopcount(np.array(fp, dtype=np.uint64))
         return (*fp, popcnt)
@@ -158,6 +166,15 @@ class RDKPatternFingerprint(RDKitFingerprint):
 
 
 class OBFingerprint(Fingerprint):
+    def __init__(self, name: str, params: Dict, call_func: Callable):
+        if isinstance(pybel, ImportError) and isinstance(FPSim2, ImportError):
+            raise ImportError('Some required dependencies are missing:\n\topenbabel, FPSim2')
+        elif isinstance(pybel, ImportError):
+            raise ImportError('Some required dependencies are missing:\n\topenbabel')
+        elif isinstance(FPSim2, ImportError):
+            raise ImportError('Some required dependencies are missing:\n\tFPSim2')
+        super(OBFingerprint, self).__init__(name, params, call_func)
+
     def get(self, mol: Chem.Mol) -> List[int]:
         """Get the bistring fingerprint of the molecule and popcounts"""
         binvec = DataStructs.ExplicitBitVect(self.length)

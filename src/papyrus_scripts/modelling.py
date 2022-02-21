@@ -18,8 +18,6 @@ from scipy.stats import (pearsonr as pearsonR,
 from tqdm.auto import tqdm
 
 import xgboost
-from prodec.Descriptor import Descriptor
-from prodec.Transform import Transform
 from sklearn.base import RegressorMixin, ClassifierMixin, ClusterMixin, TransformerMixin
 from sklearn.model_selection import train_test_split, BaseCrossValidator, KFold, StratifiedKFold
 from sklearn.preprocessing import StandardScaler, LabelEncoder
@@ -36,6 +34,9 @@ from sklearn.metrics import (r2_score as R2,
                              mean_poisson_deviance as MPD,
                              mean_gamma_deviance as MGD,
                              )
+
+from prodec.Descriptor import Descriptor
+from prodec.Transform import Transform
 
 from .preprocess import keep_quality, keep_source, keep_type
 from .utils.IO import TypeDecoder
@@ -752,7 +753,7 @@ def dnn(data: pd.DataFrame,
         prot_descriptor_path: str = './',
         prot_descriptor_chunksize: Optional[int] = 50000,
         activity_threshold: float = 6.5,
-        model: BaseNN = SingleTaskNNClassifier('./'),
+        model: Optional[BaseNN] = None,
         folds: int = 5,
         stratify: bool = False,
         split_by: str = 'Year',
@@ -781,7 +782,7 @@ def dnn(data: pd.DataFrame,
     :param prot_descriptor_path: path to Papyrus descriptors
     :param prot_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded (None disables chunking)
     :param activity_threshold: threshold activity between acvtive and inactive compounds (ignored if using a regressor)
-    :param model: DNN model to
+    :param model: DNN model to be fitted (default: None = SingleTaskNNClassifier
     :param folds: number of cross-validation folds to be performed
     :param stratify: whether to stratify folds for cross validation, ignored if model is RegressorMixin
     :param split_by: how should folds be determined {'random', 'Year', 'cluster', 'custom'}
@@ -807,6 +808,8 @@ def dnn(data: pd.DataFrame,
     if not isinstance(model, (RegressorMixin, ClassifierMixin, SingleTaskNNClassifier, SingleTaskNNRegressor, MultiTaskNNClassifier, MultiTaskNNRegressor)):
         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
     warnings.filterwarnings("ignore", category=RuntimeWarning)
+    if model is None:
+        model = SingleTaskNNClassifier('./')
     model_type = 'regressor' if isinstance(model, (SingleTaskNNRegressor, MultiTaskNNRegressor)) else 'classifier'
     # Keep only required fields
     merge_on = 'connectivity' if 'connectivity' in data.columns else 'InChIKey'

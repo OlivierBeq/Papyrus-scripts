@@ -8,11 +8,19 @@ from typing import Iterator, List, Optional, Union
 import numpy as np
 import pandas as pd
 from pandas.io.parsers import TextFileReader as PandasTextFileReader
-import torch as T
-from torch import nn, optim
-from torch.nn import functional as F
-from torch.utils.data import DataLoader, TensorDataset, IterableDataset as PandasIterableDataset
 
+try:
+    import torch as T
+    from torch import nn, optim
+    from torch.nn import functional as F
+    from torch.utils.data import DataLoader, TensorDataset, IterableDataset as PandasIterableDataset
+except ImportError as e:
+    T = e
+    nn = e
+    # Placeholders
+    T.Tensor = int
+    nn.Module = str
+    PandasIterableDataset = int
 
 def cuda(var: nn.Module):
     """Move model parameters and buffers to GPU if a GPU is available.
@@ -55,6 +63,8 @@ class BaseNN(nn.Module):
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
         """
+        if isinstance(T, ImportError):
+            raise ImportError('Some required dependencies are missing:\n\tpytorch')
         if not os.path.isdir(out):
             os.mkdir(out)
         super().__init__()

@@ -18,6 +18,14 @@ from tqdm.auto import tqdm
 from .utils.IO import enough_disk_space, assert_sha256sum
 
 
+if isinstance(gdown, ImportError) and isinstance(pystow, ImportError):
+    raise ImportError('Some required dependencies are missing:\n\tpystow, gdown')
+elif isinstance(gdown, ImportError):
+    raise ImportError('Some required dependencies are missing:\n\gdown')
+elif isinstance(pystow, ImportError):
+    raise ImportError('\nSome required dependencies are missing:\n\tpystow')
+
+
 def download_papyrus(outdir: Optional[str] = None,
                      nostereo: bool = True,
                      stereo: bool = False,
@@ -33,15 +41,6 @@ def download_papyrus(outdir: Optional[str] = None,
     :param descriptors: should molecular and protein descriptors be downloaded
     :param progress: should progress be displayed
     """
-    if isinstance(gdown, ImportError) and isinstance(pystow, ImportError):
-        print('\nSome required dependencies are missing:\n\tpystow, gdown')
-        sys.exit()
-    elif isinstance(gdown, ImportError):
-        print('\nSome required dependencies are missing:\n\gdown')
-        sys.exit()
-    elif isinstance(pystow, ImportError):
-        print('\nSome required dependencies are missing:\n\tpystow')
-        sys.exit()
     files = {'2D_papyrus':
                 { 'name': "05.4_combined_set_without_stereochemistry.tsv.xz",
                   'id': "137zOUqUpFFwYGFFpiXEfsAxkGBqUoL8f",
