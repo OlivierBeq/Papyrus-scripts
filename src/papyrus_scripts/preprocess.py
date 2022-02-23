@@ -413,7 +413,7 @@ def keep_protein_class(data: Union[pd.DataFrame, PandasTextFileReader, Iterator]
                     - {'l2': 'Kinase'} matches all proteins with classification 'Enzyme->Kinase'
                     - {'l5': 'Adenosine receptor'} matches 'Membrane receptor->Family A G protein-coupled receptor->Small molecule receptor (family A GPCR)->Nucleotide-like receptor (family A GPCR)-> Adenosine receptor'
                     - All levels in the same dict are enforced, e.g. {'l1': ''Epigenetic regulator', 'l3': 'HDAC class IIb'} does not match records without the specified l1 AND l3
-                    - If given a list of dicts, results in a union of the dicts, e.g. {'l2': 'Kinase'}, {'l1': 'Membrane receptor'} matches records with classification either 'Enzyme->Kinase' or 'Membrane receptor'
+                    - If given a list of dicts, results in a union of the dicts, e.g. [{'l2': 'Kinase'}, {'l1': 'Membrane receptor'}] matches records with classification either 'Enzyme->Kinase' or 'Membrane receptor'
                     - Level-independent patterns can be specified with the 'l?' key, e.g. {'l?': 'SLC'} matches any classification level containing the 'SLC' keyword
                       Only one 'l?' per dict is supported.
                       Mixed usage of 'l?' and level-specific patterns (e.f. 'l1') is not supported
