@@ -142,9 +142,9 @@ def download_papyrus(outdir: Optional[str] = None,
         if not enough_disk_space(papyrus_root.base.as_posix(), dsize, disk_margin):
             raise IOError(f'not enough disk space for the required {dsize / 2 ** 30:.2f} GiB')
         # Determine path
-        if dname in ['2D_papyrus', '3D_papyrus', 'proteins']:
+        if ftype in ['2D_papyrus', '3D_papyrus', 'proteins']:
             fpath = papyrus_root.join(name=dname).as_posix()
-        elif dname in ['2D_structures', '3D_structures']:
+        elif ftype in ['2D_structures', '3D_structures']:
             fpath = papyrus_root.join('structures', name=dname).as_posix()
         else:
             fpath = papyrus_root.join('descriptors', name=dname).as_posix()
