@@ -31,7 +31,8 @@ def download_papyrus(outdir: Optional[str] = None,
                      stereo: bool = False,
                      structures: bool = False,
                      descriptors: Union[str, List[str]] = 'all',
-                     progress: bool = True):
+                     progress: bool = True,
+                     disk_margin: float = 0.10):
     """Download the Papyrus data.
     
     :param outdir: directory where Papyrus data is stored (default: pystow's directory)
@@ -40,6 +41,7 @@ def download_papyrus(outdir: Optional[str] = None,
     :param structures: should molecule structures be downloaded
     :param descriptors: should molecular and protein descriptors be downloaded
     :param progress: should progress be displayed
+    :param disk_margin: percent of free disk space to keep
     """
     files = {'2D_papyrus':
                 { 'name': "05.4_combined_set_without_stereochemistry.tsv.xz",
@@ -137,9 +139,15 @@ def download_papyrus(outdir: Optional[str] = None,
     for ftype in pbar:
         download = files[ftype]
         dname, did, dsize, dhash = download['name'], download['id'], download['size'], download['sha256']
-        if not enough_disk_space(papyrus_root.base.as_posix(), dsize):
+        if not enough_disk_space(papyrus_root.base.as_posix(), dsize, disk_margin):
             raise IOError(f'not enough disk space for the required {dsize / 2 ** 30:.2f} GiB')
-        fpath = papyrus_root.join(name=dname).as_posix()
+        # Determine path
+        if dname in ['2D_papyrus', '3D_papyrus', 'proteins']:
+            fpath = papyrus_root.join(name=dname).as_posix()
+        elif dname in ['2D_structures', '3D_structures']:
+            fpath = papyrus_root.join('structures', name=dname).as_posix()
+        else:
+            fpath = papyrus_root.join('descriptors', name=dname).as_posix()
         # Download file
         correct = False  # ensure file is not corrupted
         retries = 3
