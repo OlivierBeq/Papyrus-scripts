@@ -52,7 +52,7 @@ def Variable(tensor: Union[T.Tensor, np.ndarray, List]):
 
 
 class BaseNN(nn.Module):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
         """Base class for neural networks.
 
         Architecture is derived from https://doi.org/10.1186/s13321-017-0232-0
@@ -74,6 +74,7 @@ class BaseNN(nn.Module):
         self.epochs = epochs
         self.lr = lr
         self.early_stop = early_stop
+        self.dropout = dropout
 
     def set_validation(self, X: Union[Iterator, pd.DataFrame], y : Union[Iterator, pd.Series]):
         """Set the validation set to be used during fitting.
@@ -199,7 +200,7 @@ class BaseNN(nn.Module):
 
 
 class SingleTaskNNClassifier(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
         """Neural Network classifier to predict a unique endpoint.
 
         Architecture is derived from https://doi.org/10.1186/s13321-017-0232-0
@@ -210,8 +211,8 @@ class SingleTaskNNClassifier(BaseNN):
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
         """
-        super(SingleTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size)
-        self.dropout = nn.Dropout(0.25)
+        super(SingleTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size, dropout)
+        self.dropoutl = nn.Dropout(self.dropout)
         # Consider binary classification as default
         self.criterion = nn.BCELoss()
         self.activation = nn.Sigmoid()
@@ -246,7 +247,7 @@ class SingleTaskNNClassifier(BaseNN):
         for layer in self.fcl[:-1]:
             input = F.relu(layer(input))
             if istrain:
-                input = self.dropout(input)
+                input = self.dropoutl(input)
         return self.activation(self.fcl[-1](input))
 
     def predict_proba(self, X):
@@ -267,7 +268,7 @@ class SingleTaskNNClassifier(BaseNN):
 
 
 class SingleTaskNNRegressor(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
         """Neural Network regressor to predict a unique endpoint.
 
         Architecture is adapted from https://doi.org/10.1186/s13321-017-0232-0 for regression
@@ -278,8 +279,8 @@ class SingleTaskNNRegressor(BaseNN):
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
         """
-        super(SingleTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size)
-        self.dropout = nn.Dropout(0.25)
+        super(SingleTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size, dropout)
+        self.dropoutl = nn.Dropout(self.dropout)
         self.criterion = nn.MSELoss()
 
     def set_architecture(self, n_dim:int):
@@ -300,12 +301,12 @@ class SingleTaskNNRegressor(BaseNN):
         for layer in self.fcl[:-1]:
             input = F.relu(layer(input))
             if istrain:
-                input = self.dropout(input)
+                input = self.dropoutl(input)
         return self.fcl[-1](input)
 
 
 class MultiTaskNNClassifier(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
         """Neural Network classifier to predict multiple endpoints.
 
         Architecture is derived from https://doi.org/10.1186/s13321-017-0232-0
@@ -316,10 +317,10 @@ class MultiTaskNNClassifier(BaseNN):
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
         """
-        super(MultiTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size)
+        super(MultiTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size, dropout)
         self.criterion = nn.BCELoss()
         self.activation = nn.Sigmoid()
-        self.dropout = nn.Dropout(0.25)
+        self.dropoutl = nn.Dropout(self.dropout)
 
     def set_architecture(self, n_dim:int, n_task:int):
         """Set dimension of input and number of classes to be predicted.
@@ -342,7 +343,7 @@ class MultiTaskNNClassifier(BaseNN):
         for layer in self.fcl[:-1]:
             input = F.relu(layer(input))
             if istrain:
-                input = self.dropout(input)
+                input = self.dropoutl(input)
         return self.activation(self.fcl[-1](input))
 
     def predict_proba(self, X):
@@ -363,7 +364,7 @@ class MultiTaskNNClassifier(BaseNN):
 
 
 class MultiTaskNNRegressor(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
         """Neural Network regressor to predict multiple endpoints.
 
         Architecture is adapted from https://doi.org/10.1186/s13321-017-0232-0 for multi-task regression
@@ -374,8 +375,8 @@ class MultiTaskNNRegressor(BaseNN):
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
         """
-        super(MultiTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size)
-        self.dropout = nn.Dropout(0.25)
+        super(MultiTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size, dropout)
+        self.dropoutl = nn.Dropout(self.dropout)
         self.criterion = nn.MSELoss()
 
 
@@ -398,12 +399,10 @@ class MultiTaskNNRegressor(BaseNN):
         """
         y = F.relu(self.fc0(X))
         if istrain:
-            y = self.dropout(y)
+            y = self.dropoutl(y)
         y = F.relu(self.fc1(y))
         if istrain:
-            y = self.dropout(y)
-        # y = F.sigmoid(self.fc2(y))
-        # if istrain: y = self.dropout(y)
+            y = self.dropoutl(y)
         y = self.output(y)
         return y
 
