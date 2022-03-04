@@ -66,7 +66,7 @@ class BaseNN(nn.Module):
         if isinstance(T, ImportError):
             raise ImportError('Some required dependencies are missing:\n\tpytorch')
         if not os.path.isdir(out):
-            os.mkdir(out)
+            os.makedirs(out, exist_ok=True)
         super().__init__()
         self.fcl = nn.ModuleList()  # fully connected layers
         self.out = out
