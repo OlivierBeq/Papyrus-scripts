@@ -38,7 +38,6 @@ from sklearn.metrics import (r2_score as R2,
 from prodec.Descriptor import Descriptor
 from prodec.Transform import Transform
 
-from .preprocess import keep_quality, keep_source, keep_type
 from .utils.IO import TypeDecoder
 from .reader import read_protein_set
 from .neuralnet import (BaseNN,
@@ -480,9 +479,22 @@ def qsar(data: pd.DataFrame,
                                  refresh=True)
         # Insufficient data points
         if tmp_data.shape[0] < num_points:
-            del targets[i_target]
+            if model_type == 'regressor':
+                results.append(pd.DataFrame([[targets[i_target],
+                                              tmp_data.shape[0],
+                                              f'Number of points {tmp_data.shape[0]} < {num_points}']],
+                                            columns=['target', 'number', 'error']))
+            else:
+                data_classes = Counter(tmp_data[endpoint])
+                results.append(
+                    pd.DataFrame([[targets[i_target],
+                                   ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                   f'Number of points {tmp_data.shape[0]} < {num_points}']],
+                                 columns=['target', 'A:N', 'error']))
+            # del targets[i_target]
             if verbose:
                 pbar.update()
+            models.append(None)
             continue
         if model_type == 'regressor':
             min_activity = tmp_data[endpoint].min()
@@ -490,33 +502,108 @@ def qsar(data: pd.DataFrame,
             delta = max_activity - min_activity
             # Not enough activity amplitude
             if delta < delta_activity:
-                del targets[i_target]
+                results.append(pd.DataFrame([[targets[i_target],
+                                              tmp_data.shape[0],
+                                              f'Delta activity {delta} < {delta_activity}']],
+                                            columns=['target', 'number', 'error']))
+                # del targets[i_target]
                 if verbose:
                     pbar.update()
+                models.append(None)
+                continue
+        else:
+            data_classes = Counter(tmp_data[endpoint])
+            # Only one activity class
+            if len(data_classes) == 1:
+                results.append(
+                    pd.DataFrame([[targets[i_target],
+                                   ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                   'Only one activity class']],
+                                 columns=['target', 'A:N', 'error']))
+                # del targets[i_target]
+                if verbose:
+                    pbar.update()
+                models.append(None)
+                continue
+            # Not enough data in minority class for all folds
+            elif not all(x >= folds for x in data_classes.values()):
+                results.append(
+                    pd.DataFrame([[targets[i_target],
+                                   ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                   f'Not enough data in minority class for all {folds} folds']],
+                                 columns=['target', 'A:N', 'error']))
+                # del targets[i_target]
+                if verbose:
+                    pbar.update()
+                models.append(None)
                 continue
         # Set groups for fold enumerator and extract test set
         if split_by.lower() == 'year':
             groups = tmp_data['Year']
             test_set = tmp_data[tmp_data['Year'] >= split_year]
             if test_set.empty:
-                warnings.warn(f'no test data for temporal split at {split_year} for target {targets[i_target]}')
-                del targets[i_target]
+                if model_type == 'regressor':
+                    results.append(pd.DataFrame([[targets[i_target],
+                                                  tmp_data.shape[0],
+                                                  f'No test data for temporal split at {split_year}']],
+                                                columns=['target', 'number', 'error']))
+                else:
+                    data_classes = Counter(tmp_data[endpoint])
+                    results.append(
+                        pd.DataFrame([[targets[i_target],
+                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                       f'No test data for temporal split at {split_year}']],
+                                     columns=['target', 'A:N', 'error']))
+                # warnings.warn(f'no test data for temporal split at {split_year} for target {targets[i_target]}')
+                # del targets[i_target]
                 if verbose:
                     pbar.update()
+                models.append(None)
                 continue
             training_set = tmp_data[~tmp_data.index.isin(test_set.index)]
             if training_set.empty or training_set.shape[0] < folds:
-                warnings.warn(f'no training data for temporal split at {split_year} for target {targets[i_target]}')
-                del targets[i_target]
+                if model_type == 'regressor':
+                    results.append(pd.DataFrame([[targets[i_target],
+                                                  tmp_data.shape[0],
+                                                  f'Not enough training data for temporal split at {split_year}']],
+                                                columns=['target', 'number', 'error']))
+                else:
+                    data_classes = Counter(tmp_data[endpoint])
+                    results.append(
+                        pd.DataFrame([[targets[i_target],
+                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                       f'Not enough training data for temporal split at {split_year}']],
+                                     columns=['target', 'A:N', 'error']))
+                # warnings.warn(f'no training data for temporal split at {split_year} for target {targets[i_target]}')
+                # del targets[i_target]
                 if verbose:
                     pbar.update()
+                models.append(None)
                 continue
-            if training_set[endpoint].unique().size < 2 or test_set[endpoint].unique().size < 2:
-                warnings.warn(f'unique class for temporal split at {split_year} for target {targets[i_target]}')
-                del targets[i_target]
-                if verbose:
-                    pbar.update()
-                continue
+            if model_type == 'classifier':
+                train_data_classes = Counter(training_set[endpoint])
+                test_data_classes = Counter(test_set[endpoint])
+                if len(train_data_classes) < 2:
+                    results.append(pd.DataFrame([[targets[i_target],
+                                                  ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
+                                                  f'Only one activity class in traing set for temporal split at {split_year}']],
+                                                columns=['target', 'A:N', 'error']))
+                    # warnings.warn(f'unique class for temporal split at {split_year} for target {targets[i_target]}')
+                    # del targets[i_target]
+                    if verbose:
+                        pbar.update()
+                    continue
+                elif len(test_data_classes) < 2:
+                    results.append(pd.DataFrame([[targets[i_target],
+                                                  ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
+                                                  f'Only one activity class in traing set for temporal split at {split_year}']],
+                                                columns=['target', 'A:N', 'error']))
+                    # warnings.warn(f'unique class for temporal split at {split_year} for target {targets[i_target]}')
+                    # del targets[i_target]
+                    if verbose:
+                        pbar.update()
+                    models.append(None)
+                    continue
             training_groups = training_set['Year']
         elif split_by.lower() == 'random':
             training_groups = None
@@ -546,12 +633,25 @@ def qsar(data: pd.DataFrame,
         del X_train, y_train, X_test, y_test
         # Make sure enough data
         if model_type == 'classifier':
-            enough_data = np.all(np.array(list(Counter(training_set['Activity_class']).values())) > folds)
-            if not enough_data:
-                del targets[i_target]
+            train_data_classes = Counter(training_set['Activity_class'])
+            train_enough_data = np.all(np.array(list(train_data_classes.values())) > folds)
+            test_data_classes = Counter(test_set['Activity_class'])
+            test_enough_data = np.all(np.array(list(test_data_classes.values())) > folds)
+            if not train_enough_data:
+                results.append(pd.DataFrame([[targets[i_target],
+                                              ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
+                                              f'Not enough data in minority class of the training set for all {folds} folds']],
+                                            columns=['target', 'A:N', 'error']))
+                # del targets[i_target]
                 if verbose:
                     pbar.update()
+                models.append(None)
                 continue
+            elif not test_enough_data:
+                results.append(pd.DataFrame([[targets[i_target],
+                                              ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
+                                              f'Not enough data in minority class of the training set for all {folds} folds']],
+                                            columns=['target', 'A:N', 'error']))
         # Define folding scheme for cross validation
         if stratify and model_type == 'classifier':
             kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
@@ -560,7 +660,8 @@ def qsar(data: pd.DataFrame,
         performance, model = crossvalidate_model(training_set, model, kfold, training_groups)
         X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
         performance.loc['Test set'] = model_metrics(model, y_test, X_test)
-        results.append(performance)
+        performance.loc[:, 'target'] = targets[i_target]
+        results.append(performance.reset_index())
         models.append(model)
         if verbose:
             pbar.update()
@@ -568,8 +669,10 @@ def qsar(data: pd.DataFrame,
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
     if len(results) is False:
-        return pd.DataFrame(),models
-    return pd.concat(results, keys=targets, axis=0), models
+        return pd.DataFrame(), models
+    results = pd.concat(results, axis=0).set_index(['target', 'index'])
+    results.index.names = ['target', None]
+    return results, models
 
 
 def pcm(data: pd.DataFrame,
