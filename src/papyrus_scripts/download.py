@@ -1,29 +1,13 @@
 # -*- coding: utf-8 -*-
 
 import os
-import sys
 from typing import List, Optional, Union
 
-# Optional dependencies
-try:
-    import gdown
-except ImportError as e:
-    gdown = e
-try:
-    import pystow
-except ImportError as e:
-    pystow = e
+import gdown
+import pystow
 from tqdm.auto import tqdm
 
 from .utils.IO import enough_disk_space, assert_sha256sum
-
-
-if isinstance(gdown, ImportError) and isinstance(pystow, ImportError):
-    raise ImportError('Some required dependencies are missing:\n\tpystow, gdown')
-elif isinstance(gdown, ImportError):
-    raise ImportError('Some required dependencies are missing:\n\gdown')
-elif isinstance(pystow, ImportError):
-    raise ImportError('\nSome required dependencies are missing:\n\tpystow')
 
 
 def download_papyrus(outdir: Optional[str] = None,
