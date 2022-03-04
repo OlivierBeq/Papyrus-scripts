@@ -131,7 +131,7 @@ class BaseNN(nn.Module):
         if not (os.path.exists(self.out) and os.path.isdir(self.out)):
             os.mkdir(self.out)
         # Log file
-        log = open(os.path.join(self.out, 'training.log'), 'w')
+        log = open(os.path.join(self.out, 'training_log.txt'), 'w')
         for epoch in range(self.epochs):
             t0 = time.perf_counter()
             # Change learning rate according to epoch
