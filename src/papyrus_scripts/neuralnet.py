@@ -19,7 +19,7 @@ except ImportError as e:
     nn = e
     # Placeholders
     T.Tensor = int
-    nn.Module = str
+    nn.Module = list
     PandasIterableDataset = int
 
 def cuda(var: nn.Module):
