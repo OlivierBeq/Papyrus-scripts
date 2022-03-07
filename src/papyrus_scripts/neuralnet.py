@@ -2,6 +2,7 @@
 
 import os
 import time
+import random
 import itertools
 from typing import Iterator, List, Optional, Union
 
@@ -51,8 +52,24 @@ def Variable(tensor: Union[T.Tensor, np.ndarray, List]):
     return cuda(T.autograd.Variable(tensor))
 
 
+def set_seed(seed: Optional[int] = None) -> np.random.Generator:
+    """Set the internal seed of rnadom number generators for reproducibility."""
+    if seed is None:
+        seed = random.random()
+    T.manual_seed(seed)
+    T.cuda.manual_seed_all(seed)
+    T.cuda.manual_seed(seed)
+    rng = np.random.default_rng(seed)
+    random.seed(seed)
+    T.backends.cudnn.deterministic = True
+    T.backends.cudnn.benchmark = False
+    return rng
+
+
 class BaseNN(nn.Module):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
+                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+                 random_seed: Optional[int] = None):
         """Base class for neural networks.
 
         Architecture is derived from https://doi.org/10.1186/s13321-017-0232-0
@@ -62,6 +79,8 @@ class BaseNN(nn.Module):
         :param lr: learning rate
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
+        :param dropout: fraction of randomly disabled neurons at each epoch during training
+        :param random_seed: seed of random number generators
         """
         if isinstance(T, ImportError):
             raise ImportError('Some required dependencies are missing:\n\tpytorch')
@@ -75,6 +94,7 @@ class BaseNN(nn.Module):
         self.lr = lr
         self.early_stop = early_stop
         self.dropout = dropout
+        self.rng = set_seed(random_seed)
 
     def set_validation(self, X: Union[Iterator, pd.DataFrame], y : Union[Iterator, pd.Series]):
         """Set the validation set to be used during fitting.
@@ -200,7 +220,9 @@ class BaseNN(nn.Module):
 
 
 class SingleTaskNNClassifier(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
+                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+                 random_seed: Optional[int] = None):
         """Neural Network classifier to predict a unique endpoint.
 
         Architecture is derived from https://doi.org/10.1186/s13321-017-0232-0
@@ -210,8 +232,10 @@ class SingleTaskNNClassifier(BaseNN):
         :param lr: learning rate
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
+        :param dropout: fraction of randomly disabled neurons at each epoch during training
+        :param random_seed: seed of random number generators
         """
-        super(SingleTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size, dropout)
+        super(SingleTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
         self.dropoutl = nn.Dropout(self.dropout)
         # Consider binary classification as default
         self.criterion = nn.BCELoss()
@@ -268,7 +292,9 @@ class SingleTaskNNClassifier(BaseNN):
 
 
 class SingleTaskNNRegressor(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
+                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+                 random_seed: Optional[int] = None):
         """Neural Network regressor to predict a unique endpoint.
 
         Architecture is adapted from https://doi.org/10.1186/s13321-017-0232-0 for regression
@@ -278,8 +304,10 @@ class SingleTaskNNRegressor(BaseNN):
         :param lr: learning rate
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
+        :param dropout: fraction of randomly disabled neurons at each epoch during training
+        :param random_seed: seed of random number generators
         """
-        super(SingleTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size, dropout)
+        super(SingleTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
         self.dropoutl = nn.Dropout(self.dropout)
         self.criterion = nn.MSELoss()
 
@@ -306,7 +334,9 @@ class SingleTaskNNRegressor(BaseNN):
 
 
 class MultiTaskNNClassifier(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
+                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+                 random_seed: Optional[int] = None):
         """Neural Network classifier to predict multiple endpoints.
 
         Architecture is derived from https://doi.org/10.1186/s13321-017-0232-0
@@ -316,8 +346,10 @@ class MultiTaskNNClassifier(BaseNN):
         :param lr: learning rate
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
+        :param dropout: fraction of randomly disabled neurons at each epoch during training
+        :param random_seed: seed of random number generators
         """
-        super(MultiTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size, dropout)
+        super(MultiTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
         self.criterion = nn.BCELoss()
         self.activation = nn.Sigmoid()
         self.dropoutl = nn.Dropout(self.dropout)
@@ -364,7 +396,9 @@ class MultiTaskNNClassifier(BaseNN):
 
 
 class MultiTaskNNRegressor(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3, early_stop: int = 100, batch_size: int =1024, dropout=0.25):
+    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
+                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+                 random_seed: Optional[int] = None):
         """Neural Network regressor to predict multiple endpoints.
 
         Architecture is adapted from https://doi.org/10.1186/s13321-017-0232-0 for multi-task regression
@@ -374,8 +408,10 @@ class MultiTaskNNRegressor(BaseNN):
         :param lr: learning rate
         :param early_stop: stop after these many epochs without any decrease of loss
         :param batch_size: size of data batches
+        :param dropout: fraction of randomly disabled neurons at each epoch during training
+        :param random_seed: seed of random number generators
         """
-        super(MultiTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size, dropout)
+        super(MultiTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
         self.dropoutl = nn.Dropout(self.dropout)
         self.criterion = nn.MSELoss()
 
