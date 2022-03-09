@@ -52,10 +52,10 @@ def Variable(tensor: Union[T.Tensor, np.ndarray, List]):
     return cuda(T.autograd.Variable(tensor))
 
 
-def set_seed(seed: Optional[int] = None) -> np.random.Generator:
+def set_seed(seed: Optional[int] = None) -> Optional[np.random.Generator]:
     """Set the internal seed of rnadom number generators for reproducibility."""
     if seed is None:
-        seed = random.random()
+        return
     T.manual_seed(seed)
     T.cuda.manual_seed_all(seed)
     T.cuda.manual_seed(seed)
