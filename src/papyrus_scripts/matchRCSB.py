@@ -6,9 +6,11 @@ import shutil
 import sys
 import time
 import urllib
+import gzip
 
 import dask.dataframe as ddf
 import dask.multiprocessing
+from dask.delayed import delayed
 import pandas as pd
 import requests
 from dask.diagnostics import ProgressBar
@@ -16,30 +18,36 @@ from dask.distributed import Client
 from rdkit import Chem, RDConfig
 from rdkit.Chem import PandasTools
 
-from src.papyrus_scripts.utils import IO, UniprotMatch
-
+from .utils import IO, UniprotMatch
 
 class Create_Environment(object):
     """
         Creates the workdirectory environment.
     """
-    def __init__(self,wd, overwrite=False):
-        if wd == None:
+    def __init__(self,data):
+        if data['wd'] == None:
             return 
 
-        if not os.path.exists(wd):
-            os.mkdir(wd)
+        if not os.path.exists(data['wd']):
+            os.mkdir(data['wd'])
             
         else:
-            if overwrite == True:
-                shutil.rmtree(wd)
-                os.mkdir(wd)
+            if data['overwrite'] == True:
+                shutil.rmtree(data['wd'])
+                os.mkdir(data['wd'])
 
             else:
                 print("Directory already exists, set overwrite to True to continue")
                 print("Exiting now")
 
                 sys.exit()
+
+        # temporarily unpack .gz
+        fn_in = data['p_in'] + '05.4_combined_set_without_stereochemistry.tsv.gz'
+        fn_out = data['wd'] + '05.4_combined_set_without_stereochemistry.tsv'
+        with gzip.open(fn_in, 'rb') as f_in:
+            with open(fn_out, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
 
 class RCSB_data(object):
     def __init__(self):
@@ -53,13 +61,8 @@ class RCSB_data(object):
 class Papyrus(object):
     def __init__(self, environment):
         self.environment = environment
-        # This will later take # CPUs from settings class
-        #self.client = Client(n_workers=2)
-
         self.read_RCSB_json()
         self.read_papyrus_data()
-
-
 
     def read_RCSB_json(self):
         if self.environment['js_in'] != None:
@@ -72,50 +75,72 @@ class Papyrus(object):
         self.rcsb_data_list = []
         self.InChI2PDB()
         print("reading data from Papyrus sdf")
-        papyrus_tsv = self.environment['p_in']
+        papyrus_tsv = self.environment['wd'] + '05.4_combined_set_without_stereochemistry.tsv'
+
         self.ddf = ddf.read_csv(papyrus_tsv,  # read in parallel
                                 sep='\t', 
-                                blocksize=64000000,
+                                #blocksize=64000000,
                                 dtype={'Activity_class': 'object',
-                                       'pchembl_value_N': 'float64'}
+                                       'pchembl_value_N': 'float64',
+                                       'Year' : 'float64',
+                                       'type_EC50': 'object',
+                                       'type_KD' : 'object',
+                                       'type_Ki' : 'object' 
+                                       }
                                )
+
         with ProgressBar():
             df_rcsb = self.ddf.map_partitions(self.match2rcsb).compute()
             df_rcsb.dropna(subset=['RCSB_accesion_code'], inplace=True)
-        # to be put in function
+
+        # Now do the matching ==> this needs to be a list 
         pdbs = self.RCSB_data['pdb2cc'].keys()
-        pdbs = [i.split(' ', 1)[0] for i in pdbs]
+        pdbs = [pdb for line in pdbs for pdb in line.split()]
 
-        #pdb_df = UniprotMatch.UniprotMatch(pdbs,mapfrom='PDB_ID',mapto='ACC')
-        
+        pdb_df = UniprotMatch.uniprot_mappings(pdbs,map_from='PDB_ID',map_to='ACC')
+
         # tmp csv writing
-        #pdb_df.to_csv('tmp_RCSB.csv',sep='\t',index=False)
-
+        pdb_df.to_csv(self.environment['wd'] + 'tmp_RCSB.csv',sep='\t',index=False)
 
         # load it
-        pdb_df = pd.read_csv('tmp_RCSB.csv', sep = '\t')
-        pdb_dict = dict(zip(pdb_df.PDB_ID, pdb_df.ACC))
+        pdb_df = pd.read_csv(self.environment['wd'] + 'tmp_RCSB.csv', sep = '\t')
 
-        # How slow is it to actually loop?
-        to_pop = []
-        for index, row in df_rcsb.iterrows():
-            pdb_tmp = []
-            for pdb in row['RCSB_accesion_code'].split(';'):
-                if pdb in pdb_dict:
-                    if pdb_dict[pdb] == row['Activity_ID'].split('_')[2]:
-                        pdb_tmp.append(pdb)
-            
-            if len(pdb_tmp) > 0:
-                pdb_str = ';'.join(pdb_tmp)
-                #row['RCSB_accesion_code'] = pdb_str
-                df_rcsb.at[index,'RCSB_accesion_code']=pdb_str
+        # construct pdb:uniprot look up
+        pdb_dict = {}
+        for index, row in pdb_df.iterrows():
+            if not row['PDB_ID'] in pdb_dict:
+                pdb_dict[row['PDB_ID']] = [row['ACC']]
 
             else:
-                # delete the row
-                to_pop.append(index)
+                pdb_dict[row['PDB_ID']].append(row['ACC'])
 
-        df_rcsb.drop(to_pop, inplace = True)
-        df_rcsb.to_csv(self.environment['p_out'], sep='\t',index=False)
+        #to_pop = []
+
+        tmp = []
+        for index, row in df_rcsb.iterrows():
+            pdb_tmp = []
+
+            for pdb in row['RCSB_accesion_code'].split(';'):
+                if pdb in pdb_dict:
+                    if row['Activity_ID'].split('_')[2] in pdb_dict[pdb]:
+                        pdb_tmp.append(pdb)
+
+            # concatenate pdb list
+            if len(pdb_tmp) > 0:
+                pdb_str = ';'.join(pdb_tmp)
+
+            
+            else:
+                pdb_str = None
+
+            tmp.append(pdb_str)
+                
+        df_rcsb['RCSB_matched'] = tmp
+
+        df_rcsb.dropna(subset=['RCSB_matched'], inplace=True)
+        df_rcsb.drop(['RCSB_accesion_code'],axis=1, inplace=True)
+        df_rcsb.rename({'RCSB_matched':'RSCB_accesion_code'},inplace=True)
+        df_rcsb.to_csv(self.environment['wd'] + self.environment['p_out'], sep='\t',index=False)
 
     def InChI2PDB(self):
         tmp = {}
@@ -204,6 +229,16 @@ class RCSB(object):
             pdb = ';'.join(pdb)
             self.RCSB_data.data['cc2pdb'][line[0]] = pdb
 
+class Cleanup(object):
+    def __init__(self, data):
+        """ Cleanup working files
+            
+        """ 
+        self.environment = data
+
+        os.remove(self.environment['wd'] + 'tmp_RCSB.csv')
+        os.remove(self.environment['wd'] + '05.4_combined_set_without_stereochemistry.tsv')
+
 class Init(object):
     def __init__(self, data):
         """ Retrieves a dictionary of user input from matchRCSB.py:
@@ -217,6 +252,7 @@ class Init(object):
         """ 
         # Globals + command line stuff  
         self.environment = data
-        Create_Environment(self.environment['wd'])
+        Create_Environment(self.environment)
         RCSB(self.environment)
         Papyrus(self.environment)
+        Cleanup(self.environment)
