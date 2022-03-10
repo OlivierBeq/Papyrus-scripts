@@ -497,7 +497,10 @@ def keep_protein_class(data: Union[pd.DataFrame, PandasTextFileReader, Iterator]
              f"{' or ' if lvl_dependent and lvl_independent and not generic_regex else ''}"
              f"{('(' + query_idpd + ')') if lvl_independent and not generic_regex else ''}")
     ##  3) Execute filter
-    indices = split_classes.query(query).index.tolist()
+    if len(query):
+        indices = split_classes.query(query).index.tolist()
+    else:
+        indices = []
     if generic_regex:
         indices = sorted(set(indices + regex_indices))
     # Obtain targets from filtered indices
