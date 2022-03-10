@@ -506,7 +506,7 @@ def keep_protein_class(data: Union[pd.DataFrame, PandasTextFileReader, Iterator]
     # Obtain targets from filtered indices
     targets = protein_data.loc[indices, 'target_id']
     # Map back to activity data
-    return data[data['target_id'].isin(targets)]
+    return data[data['target_id'].isin(targets)].merge(protein_data.loc[indices, ('target_id', 'Classification')], on='target_id')
 
 
 def _chunked_keep_protein_class(data: Union[PandasTextFileReader, Iterator], protein_data: pd.DataFrame,
@@ -593,7 +593,7 @@ def keep_organism(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], pro
     # Obtain targets from filtered indices
     targets = protein_data.loc[indices, 'target_id']
     # Map back to activity data
-    return data[data['target_id'].isin(targets)]
+    return data[data['target_id'].isin(targets)].merge(protein_data.loc[indices, ('target_id', 'Organism')], on='target_id')
 
 
 def _chunked_keep_organism(data: Union[PandasTextFileReader, Iterator], protein_data: pd.DataFrame,
