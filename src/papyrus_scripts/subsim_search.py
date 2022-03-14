@@ -461,6 +461,8 @@ def sort_db_file(filename: str) -> None:
     """Sorts the FPs db file."""
     # rename not sorted filename
     tmp_filename = filename + "_tmp"
+    if os.path.isfile(tmp_filename):
+        os.remove(tmp_filename)
     os.rename(filename, tmp_filename)
     filters = tb.Filters(complib="blosc", complevel=1, shuffle=True, bitshuffle=True)
     stats = stats={
