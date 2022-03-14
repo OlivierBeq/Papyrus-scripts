@@ -24,7 +24,7 @@ except ImportError as e:
 try:
     import tables as tb
 except ImportError as e:
-    tables = e
+    tb = e
 try:
     import FPSim2
     from FPSim2.io.backends.pytables import create_schema, BATCH_WRITE_SIZE, calc_popcnt_bins_pytables
@@ -48,9 +48,9 @@ from .utils.mol_reader import MolSupplier
 
 class FPSubSim2:
     def __init__(self):
-        if isinstance(tables, ImportError) and isinstance(FPSim2, ImportError):
+        if isinstance(tb, ImportError) and isinstance(FPSim2, ImportError):
             raise ImportError('Some required dependencies are missing:\n\ttables, FPSim2')
-        elif isinstance(tables, ImportError):
+        elif isinstance(tb, ImportError):
             raise ImportError('Some required dependencies are missing:\n\ttables')
         elif isinstance(FPSim2, ImportError):
             raise ImportError('Some required dependencies are missing:\n\tFPSim2')
