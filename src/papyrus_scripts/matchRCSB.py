@@ -1,258 +1,148 @@
 # -*- coding: utf-8 -*-
 
-import json
 import os
-import shutil
-import sys
 import time
-import urllib
-import gzip
+from typing import Iterator, Generator, Optional, Union
 
-import dask.dataframe as ddf
-import dask.multiprocessing
-from dask.delayed import delayed
+import pystow
+from rdkit import Chem
+from rdkit import RDLogger
+from tqdm.auto import tqdm
 import pandas as pd
+from pandas.io.parsers import TextFileReader as PandasTextFileReader
 import requests
-from dask.diagnostics import ProgressBar
-from dask.distributed import Client
-from rdkit import Chem, RDConfig
-from rdkit.Chem import PandasTools
 
-from .utils import IO, UniprotMatch
+from papyrus_scripts.utils import IO, UniprotMatch
 
-class Create_Environment(object):
+
+def update_rcsb_data(root_folder: Optional[str] = None,
+                     overwrite: bool = False,
+                     verbose: bool = True
+                    ) -> pd.DataFrame:
+    """Update the local data of the RCSB.
+
+    :param root_folder: Directory where Papyrus bioactivity data is stored (default: pystow's home folder)
+    :param overwrite: Whether to overwrite the local file if already present
+                      (default: False if the local file was downloaded today.
+    :param verbose: Should logging information be printed.
+    :return: The mapping between PDB and UniProt identifiers
     """
-        Creates the workdirectory environment.
+    # Define output path
+    if root_folder is not None:
+        os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
+    root_folder = pystow.module('papyrus')
+    output_path = root_folder.join('rcsb', name='RCSB_data.tsv.xz')
+    # Check if file is too recent
+    if (os.path.isfile(output_path) and (time.time() - os.path.getmtime(output_path)) < 86400) and not overwrite:
+        if verbose:
+            print(f'RCSB data was obtained less than 24 hours ago: {output_path}\n'
+                  f'Set overwrite=True to force fetching again.')
+        return pd.read_csv(output_path, sep='\t')
+    # Obtain the mapping InChI to PDB ligand code
+    if verbose:
+        print(f'Obtaining RCSB compound mappings from InChI to PDB ID')
+    base_url = 'http://ligand-expo.rcsb.org/dictionaries/{}'
+    request = requests.get(base_url.format('Components-inchi.ich'))
+    if request.status_code != 200:
+        raise IOError(f'resource could not be accessed: {request.url}')
+    inchi_data = pd.DataFrame([line.split('\t')[:2] for line in request.text.splitlines()],
+                              columns=['InChI', 'PDBID'])
+    # Process InChI for 2D data
+    if verbose:
+        pbar = tqdm(enumerate(inchi_data.InChI), total=inchi_data.shape[0], desc='Converting InChIs')
+    else:
+        pbar = enumerate(inchi_data.InChI)
+    RDLogger.DisableLog('rdApp.*')
+    for i, inchi in pbar:
+        mol = Chem.MolFromInchi(inchi)
+        if mol is not None:
+            Chem.RemoveStereochemistry(mol)
+            inchi_data.loc[i, 'InChI_2D'] = Chem.MolToInchi(mol)
+    RDLogger.EnableLog('rdApp.*')
+    # Obtain the mapping of PDB ids ligand to proteins structures
+    if verbose:
+        print(f'Obtaining RCSB compound mappings from ligand PDB Id to protein PDB ID')
+    request = requests.get(base_url.format('cc-to-pdb.tdd'))
+    if request.status_code != 200:
+        raise IOError(f'resource could not be accessed: {request.url}')
+    pdbid_data = pd.DataFrame([line.split('\t')[:2] for line in request.text.splitlines()],
+                              columns=['PDBIDlig', 'PDBIDprot'])
+    # Merge both dataframe
+    if verbose:
+        print(f'Combining the data')
+    pdb_data = inchi_data.merge(pdbid_data, left_on='PDBID', right_on='PDBIDlig')
+    # Unmerge the data per protein PDB ID
+    pdb_data.PDBIDprot = pdb_data.PDBIDprot.str.split()
+    pdb_data = pdb_data.explode('PDBIDprot')
+    # Map PDBID prot to UniProt acessions
+    if verbose:
+        print(f'Obtaining mappings from protein PDB ID to UniProt accessions')
+    uniprot_mapping = UniprotMatch.uniprot_mappings(pdb_data.PDBIDprot.tolist(), map_from='PDB_ID', map_to='ACC')
+    # Join on the RCSB data
+    if verbose:
+        print(f'Combining the data')
+    pdb_data = pdb_data.merge(uniprot_mapping, left_on='PDBIDprot', right_on='PDB_ID')
+    # Rename columns
+    pdb_data = pdb_data.rename(columns={'InChI': 'InChI_3D',
+                                        'PDBIDlig': 'PDBID_ligand',
+                                        'PDBIDprot': 'PDBID_protein',
+                                        'ACC': 'UniProt_accession'})
+    # Drop duplicate information
+    pdb_data = pdb_data.drop(columns=['PDBID', 'PDB_ID'])
+    # Reorder columns
+    pdb_data = pdb_data[['InChI_3D', 'InChI_2D', 'PDBID_ligand', 'PDBID_protein', 'UniProt_accession']]
+    # Write to disk and return
+    if verbose:
+        print(f'Writing results to disk')
+    pdb_data.to_csv(output_path, sep='\t', index=False)
+    return pdb_data
+
+
+def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
+                root_folder: Optional[str] = None,
+                verbose: bool = True,
+                total: Optional[int] = None) -> Union[pd.DataFrame, Generator]:
     """
-    def __init__(self,data):
-        if data['wd'] == None:
-            return 
 
-        if not os.path.exists(data['wd']):
-            os.mkdir(data['wd'])
-            
+    :param data: Papyrus data to be mapped with PDB identifiers
+    :param root_folder: Directory where Papyrus bioactivity data is stored (default: pystow's home folder)
+    :param verbose: show progress if data is and Iterator or a PandasTextFileReader
+    :param total: Total number of chunks for progress display
+    :return: The subset of Papyrus data with matching RCSB PDB identifiers
+    """
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_get_matches(data, root_folder, verbose, total)
+    if isinstance(data, pd.DataFrame):
+        if 'connectivity' in data.columns:
+            identifier = 'InChI_2D'
+        elif 'InChIKey' in data.columns:
+            identifier = 'InChI_3D'
+        elif 'accession' in data.columns:
+            raise ValueError('data does not contain either connectivity or InChIKey data.')
         else:
-            if data['overwrite'] == True:
-                shutil.rmtree(data['wd'])
-                os.mkdir(data['wd'])
-
-            else:
-                print("Directory already exists, set overwrite to True to continue")
-                print("Exiting now")
-
-                sys.exit()
-
-        # temporarily unpack .gz
-        fn_in = data['p_in'] + '05.4_combined_set_without_stereochemistry.tsv.gz'
-        fn_out = data['wd'] + '05.4_combined_set_without_stereochemistry.tsv'
-        with gzip.open(fn_in, 'rb') as f_in:
-            with open(fn_out, 'wb') as f_out:
-                shutil.copyfileobj(f_in, f_out)
-
-class RCSB_data(object):
-    def __init__(self):
-        self.data = {
-                            'pdb2InChI' : {},
-                            'InChI2pdb' : {},
-                            'cc2pdb'    : {},
-                            'pdb2cc'    : {}
-                        }
-
-class Papyrus(object):
-    def __init__(self, environment):
-        self.environment = environment
-        self.read_RCSB_json()
-        self.read_papyrus_data()
-
-    def read_RCSB_json(self):
-        if self.environment['js_in'] != None:
-            self.RCSB_data = IO.read_jsonfile(self.environment['js_in'])                    
-
-        else:
-            self.RCSB_data = IO.read_jsonfile(self.environment['js_out']) 
-
-    def read_papyrus_data(self):
-        self.rcsb_data_list = []
-        self.InChI2PDB()
-        print("reading data from Papyrus sdf")
-        papyrus_tsv = self.environment['wd'] + '05.4_combined_set_without_stereochemistry.tsv'
-
-        self.ddf = ddf.read_csv(papyrus_tsv,  # read in parallel
-                                sep='\t', 
-                                #blocksize=64000000,
-                                dtype={'Activity_class': 'object',
-                                       'pchembl_value_N': 'float64',
-                                       'Year' : 'float64',
-                                       'type_EC50': 'object',
-                                       'type_KD' : 'object',
-                                       'type_Ki' : 'object' 
-                                       }
-                               )
-
-        with ProgressBar():
-            df_rcsb = self.ddf.map_partitions(self.match2rcsb).compute()
-            df_rcsb.dropna(subset=['RCSB_accesion_code'], inplace=True)
-
-        # Now do the matching ==> this needs to be a list 
-        pdbs = self.RCSB_data['pdb2cc'].keys()
-        pdbs = [pdb for line in pdbs for pdb in line.split()]
-
-        pdb_df = UniprotMatch.uniprot_mappings(pdbs,map_from='PDB_ID',map_to='ACC')
-
-        # tmp csv writing
-        pdb_df.to_csv(self.environment['wd'] + 'tmp_RCSB.csv',sep='\t',index=False)
-
-        # load it
-        pdb_df = pd.read_csv(self.environment['wd'] + 'tmp_RCSB.csv', sep = '\t')
-
-        # construct pdb:uniprot look up
-        pdb_dict = {}
-        for index, row in pdb_df.iterrows():
-            if not row['PDB_ID'] in pdb_dict:
-                pdb_dict[row['PDB_ID']] = [row['ACC']]
-
-            else:
-                pdb_dict[row['PDB_ID']].append(row['ACC'])
-
-        #to_pop = []
-
-        tmp = []
-        for index, row in df_rcsb.iterrows():
-            pdb_tmp = []
-
-            for pdb in row['RCSB_accesion_code'].split(';'):
-                if pdb in pdb_dict:
-                    if row['Activity_ID'].split('_')[2] in pdb_dict[pdb]:
-                        pdb_tmp.append(pdb)
-
-            # concatenate pdb list
-            if len(pdb_tmp) > 0:
-                pdb_str = ';'.join(pdb_tmp)
-
-            
-            else:
-                pdb_str = None
-
-            tmp.append(pdb_str)
-                
-        df_rcsb['RCSB_matched'] = tmp
-
-        df_rcsb.dropna(subset=['RCSB_matched'], inplace=True)
-        df_rcsb.drop(['RCSB_accesion_code'],axis=1, inplace=True)
-        df_rcsb.rename({'RCSB_matched':'RSCB_accesion_code'},inplace=True)
-        df_rcsb.to_csv(self.environment['wd'] + self.environment['p_out'], sep='\t',index=False)
-
-    def InChI2PDB(self):
-        tmp = {}
-        for InChI in self.RCSB_data['InChI2pdb']:
-            lig = self.RCSB_data['InChI2pdb'][InChI]
-            if lig in self.RCSB_data['cc2pdb']:
-                tmp[InChI] = self.RCSB_data['cc2pdb'][lig]
-
-        self.RCSB_data['InChI2PDB'] = tmp
-
-    def match2rcsb(self,df):
-        df_RCSB = df.loc[df['InChI'].isin(self.RCSB_data['InChI2pdb'].keys())]
-        df_RCSB['RCSB_accesion_code'] = df_RCSB['InChI'].map(self.RCSB_data['InChI2PDB'])
-
-        return(df_RCSB)
-
-class RCSB(object):
-    def __init__(self, data):
-        """ Object to interact with RCSB webserver
-            
-        """ 
-        self.environment = data
-        self.base_url = 'http://ligand-expo.rcsb.org/dictionaries/{}'
-        self.RCSB_data = RCSB_data()
-
-        if self.environment['js_in'] == None:
-            self.get_InChI()
-            self.get_PDBID()
-
-        else:
-            # Check if the json file provided actually is OK:
-            self.read_json()
-
-        self.write_json()
-
-    def read_json(self):
-        try:
-            jsonfile = self.environment['js_in']
-
-        except:
-            print("Couldn't read json file, please provide a valid file")
-            sys.exit()
-
-    def write_json(self):
-        # TO DO, add working directory
-        jsonfile = self.environment['js_out']
-        IO.write_jsonfile(self.RCSB_data.data, jsonfile) 
-
-    def run_query(self,query):
-        url = self.base_url.format(query)
-        response = urllib.request.urlopen(url).read()
-
-        # Responses are flat text
-        data = response.splitlines()
-
+            raise ValueError('data does not contain either connectivity, InChIKey or protein accession data.')
+        # Set pystow root folder
+        if root_folder is not None:
+            os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
+        root_folder = pystow.module('papyrus')
+        rcsb_data_path = root_folder.join('rcsb', name='RCSB_data.tsv.xz')
+        # Read the data mapping
+        rcsb_data = pd.read_csv(rcsb_data_path, sep='\t')
+        # Process InChI
+        data = data[data['InChI'].isin(rcsb_data[identifier])]
+        data = data.merge(rcsb_data, left_on=['InChI', 'accession'], right_on=[identifier, 'UniProt_accession'])
+        data = data.drop(columns=[identifier, 'UniProt_accession'])
         return data
+    else:
+        raise TypeError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
 
-    def get_InChI(self):
-        """
-            Get PDB ligand codes from InChI
-        
-        """
-        data = self.run_query('Components-inchi.ich')
 
-        for line in data:
-            line = line.decode('utf-8')
-            if not 'InChI' in line:
-                continue
-            line = line.split("\t")
-            self.RCSB_data.data['pdb2InChI'][line[1]] = line[0]
-            self.RCSB_data.data['InChI2pdb'][line[0]] = line[1]
-
-    def get_PDBID(self):
-        """
-            Needs a .json query for rcsb (https://search.rcsb.org/#search-api)
-        
-        """
-        data = self.run_query('cc-to-pdb.tdd')
-
-        for line in data:
-            line = line.decode('utf-8')
-            line = line.split("\t")
-            self.RCSB_data.data['pdb2cc'][line[1]] = line[0]
-            # Change delimiter
-            pdb = line[1].split()
-            pdb = ';'.join(pdb)
-            self.RCSB_data.data['cc2pdb'][line[0]] = pdb
-
-class Cleanup(object):
-    def __init__(self, data):
-        """ Cleanup working files
-            
-        """ 
-        self.environment = data
-
-        os.remove(self.environment['wd'] + 'tmp_RCSB.csv')
-        os.remove(self.environment['wd'] + '05.4_combined_set_without_stereochemistry.tsv')
-
-class Init(object):
-    def __init__(self, data):
-        """ Retrieves a dictionary of user input from matchRCSB.py:
-               {
-                 'wd'       : wd,
-                 'js_in'    : js_in,
-                 'js_out'   : js_out,
-                 'p_in'     : p_in,
-                 'p_out'    : p_out,
-               }
-        """ 
-        # Globals + command line stuff  
-        self.environment = data
-        Create_Environment(self.environment)
-        RCSB(self.environment)
-        Papyrus(self.environment)
-        Cleanup(self.environment)
+def _chunked_get_matches(chunks: Union[PandasTextFileReader, Iterator], root_folder: Optional[str], verbose: bool,
+                         total: int):
+    if verbose:
+        pbar = tqdm(chunks, total=total)
+    else:
+        pbar = chunks
+    for chunk in pbar:
+        processed_chunk = get_matches(chunk, root_folder)
+        yield processed_chunk
