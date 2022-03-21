@@ -20,15 +20,15 @@ def read_papyrus(is3d: bool = False, chunksize: Optional[int] = None, source_pat
     :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
     :return: the Papyrus activity dataset
     """
-    # Load data types
-    dtype_file = os.path.join(os.path.dirname(__file__), 'utils', 'data_types.json')
-    with open(dtype_file, 'r') as jsonfile:
-        dtypes = json.load(jsonfile, cls=TypeDecoder)['papyrus']
     # Determine default paths
     if source_path is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
     source_path = pystow.module('papyrus')
     source_path = source_path.base.as_posix()
+    # Load data types
+    dtype_file = source_path.join(name='data_types.json').as_posix()
+    with open(dtype_file, 'r') as jsonfile:
+        dtypes = json.load(jsonfile, cls=TypeDecoder)['papyrus']
     # Find the file
     file_mask = os.path.join(source_path, f'*.*_combined_set_with{"out" if not is3d else ""}_stereochemistry.tsv*')
     filename = glob.glob(file_mask)
