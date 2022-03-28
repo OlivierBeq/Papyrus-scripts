@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 
-import glob
+import time
 import multiprocessing
 import os
-import re
 import warnings
 from collections import defaultdict
 from io import BytesIO
-from typing import TypeVar, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 
+import pystow
 import rdkit
+from rdkit import Chem
 import pandas as pd
 from tqdm import tqdm
 from rdkit.Chem.rdSubstructLibrary import SubstructLibrary, PatternHolder, CachedMolHolder
@@ -32,7 +33,7 @@ try:
     from FPSim2.base import BaseEngine
     from FPSim2.FPSim2 import FPSim2Engine
     from FPSim2.FPSim2Cuda import FPSim2CudaEngine
-    from FPSim2.io.chem import load_molecule
+    from FPSim2.io.chem import load_molecule, process_data_version
 except ImportError as e:
     FPSim2 = e
     # Placeholders
@@ -44,6 +45,7 @@ except ImportError as e:
 
 from .fingerprint import *
 from .utils.mol_reader import MolSupplier
+from .utils.IO import locate_file, get_num_rows_in_file, process_data_version
 
 
 class FPSubSim2:
@@ -59,39 +61,58 @@ class FPSubSim2:
         self.sd_file = None
         self.h5_filename = None
 
+    def create_from_papyrus(self,
+                            is3d: bool = False,
+                            version: str = 'latest',
+                            outfile: Optional[str] = None,
+                            fingerprint: Optional[Union[Fingerprint, List[Fingerprint]]] = MorganFingerprint(),
+                            root_folder: Optional[str] = None,
+                            progress: bool = True,
+                            njobs: int = 1):
+        """Create an extended FPSim2 database from Papyrus data.
+
+        :param is3d: Toggle the use of non-standardised (3D) data (default: False)
+        :param version: version of the Papyrus dataset to be used
+        :param outfile: filename or filepath of output database
+        :param fingerprint: fingerprints to be calculated, if None uses all available
+        :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
+        :param progress: whether progress should be shown
+        :param njobs: number of concurrent processes (-1 for all available logical cores)
+        :return:
+        """
+        # Set version
+        self.version = process_data_version(version=version, root_folder=root_folder)
+        # Determine default paths
+        if root_folder is not None:
+            os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
+        source_path = pystow.join('papyrus', version, 'structures')
+        # Find the file
+        filenames = locate_file(source_path.as_posix(),
+                                f'*.*_combined_{3 if is3d else 2}D_set_with{"out" if not is3d else ""}_stereochemistry.sd*')
+        sd_file = filenames[0]
+        total = total = get_num_rows_in_file(filetype='structures', is3D=is3d, version=version, root_folder=root_folder)
+        self.create(sd_file=sd_file, outfile=outfile, fingerprint=fingerprint, progress=progress, njobs=njobs)
+
     def create(self,
-               papyrus_sd_file: str,
-               version: Optional[str] = None,
+               sd_file: str,
                outfile: Optional[str] = None,
                fingerprint: Union[Fingerprint, List[Fingerprint]] = MorganFingerprint(),
                progress: bool = True,
-               total: Optional[int]= None,
+               total: Optional[int] = None,
                njobs: int = 1):
         """Create an extended FPSim2 database to deal with multiple similarity
-        fingerprints and handle full substructure search (subgraph isomorphism).
+        fingerprints and handle full substructure search (subgraph isomorphism)
+        and load it when finished.
 
         :param papyrus_sd_file: papyrus sd file containing chemical structures
         :param version: version of the Papyrus dataset
         :param outfile: filename or filepath of output database
-        :param fingerprint: fingerprints to be calculated
+        :param fingerprint: fingerprints to be calculated, if None uses all available
         :param progress: whether progress should be shown
         :param total: number of molecules for progress display
         :param njobs: number of concurrent processes (-1 for all available logical cores)
         """
-        if not os.path.isfile(papyrus_sd_file):
-            raise ValueError('File does not exist')
-        self.sd_file = papyrus_sd_file
-        # Get properties of first molecule to deduce
-        # if stereochemistry is included
-        with MolSupplier(papyrus_sd_file) as supplier:
-            self.is3d = 'embedding' in [prop.lower() for prop in next(supplier)[1].GetPropNames()]
-        # Identify version from the filename if not supplied
-        if version is None:
-            self.version = re.match(r'^(\d+\.\d+\.?\d*)_combined', os.path.basename(papyrus_sd_file)).group(1)
-            if self.version is None:
-                raise ValueError("Cannot identify version automatically, indicate version number")
-        else:
-            self.version = version
+        self.sd_file = sd_file
         # Set outfile name if not supplied
         if outfile is None:
             self.h5_filename = f'Papyrus_{self.version}_FPSubSim2_{3 if self.is3d else 2}D.h5'
