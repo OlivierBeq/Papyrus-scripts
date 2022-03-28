@@ -143,15 +143,15 @@ class FPSubSim2:
             # group to hold substructure library
             subst_group = h5file.create_group(
                 h5file.root, "substructure_info", "Infos for substructure search")
-            # array containing processed binary of the substructure library
+            # Array containing processed binary of the substructure library
             subst_table = h5file.create_earray(
                 subst_group, 'substruct_lib', tb.UInt64Atom(), (0,), 'Substructure search library')
-            # table for mapping indices to identifiers
+            # Table for mapping indices to identifiers
             h5file.create_table(
                 h5file.root, 'mol_mappings',
                 np.dtype([("idnumber", "<i8"), ("connectivity", "S14"), ("InChIKey", "S27")]),
                 'Molecular mappings', expectedrows=1300000, filters=filters)
-            # set config table containing  rdkit version
+            # Set config table containing  rdkit version
             param_table = h5file.create_vlarray(
                 h5file.root, "config", atom=tb.ObjectAtom())
             param_table.append([rdkit.__version__, self.version, '3D' if self.is3d else '2D'])
@@ -165,7 +165,7 @@ class FPSubSim2:
                 fp_table.attrs.fp_id = repr(fp_type)
                 fp_table.attrs.length = fp_type.length
                 fp_table.attrs.fp_params = json.dumps(fp_type.params)
-        # h5file.close()
+        # Get the number of molecules to process
         if njobs in [0, 1]:
             self._single_process_create(fingerprint, progress, total)
         else:
@@ -206,9 +206,9 @@ class FPSubSim2:
             with MolSupplier(source=self.sd_file, total=total, show_progress=progress,
                              start_id=1) as supplier:
                 for mol_id, rdmol in supplier:
-                    # add molecule to substructure search lib
+                    # Add molecule to substructure search lib
                     lib.AddMol(rdmol)
-                    # get mapping information
+                    # Get mapping information
                     props = rdmol.GetPropsAsDict()
                     connectivity = props.get('connectivity', '')
                     inchikey = props.get('InChIKey', Chem.MolToInchiKey(rdmol))
@@ -390,11 +390,12 @@ def _reader_process(sd_file, n_workers, total, progress, input_queue, output_que
         count = 0
         for mol_id, rdmol in supplier:
             input_queue.put((mol_id, rdmol, rdmol.GetPropsAsDict()))
-            # count += 1
-            # if count > BATCH_WRITE_SIZE * n_workers * 1.5:
-            #     while input_queue.qsize() > BATCH_WRITE_SIZE:
-            #         time.sleep(0.5)
-            #     count = 0
+            # Allow the queue to get emptied periodically
+            count += 1
+            if count > BATCH_WRITE_SIZE * n_workers * 1.5:
+                while input_queue.qsize() > BATCH_WRITE_SIZE:
+                    time.sleep(0.5)
+                count = 0
     for _ in range(n_workers):
         input_queue.put('END')
 
@@ -465,7 +466,6 @@ def _worker_process(fp_types, input_queue, output_queue, n_workers):
         # put the molecule for the writer to handle substructure
         output_queue.put(('substructure', rdmol))
         # handle mappings
-        # props = rdmol.GetPropsAsDict()
         connectivity = props.get('connectivity', '')
         inchikey = props.get('InChIKey', '')
         if not inchikey and connectivity:
@@ -577,7 +577,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
             fps = fp_file.get_node(self._current_fp_path)[slice(*chunk_range)]
         return fps
 
-    def load_popcnt_bins(self, fps_sort) -> None:
+    def load_popcnt_bins(self, fps_sort: bool) -> None:
         if fps_sort:
             popcnt_bins = self.calc_popcnt_bins(self.fps)
         else:
@@ -783,7 +783,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
         data[f'Tanimoto > {threshold} ({self.storage._current_fp})'] = similarities
         # Decode byte columns
         for col, dtype in data.dtypes.items():
-            if dtype == np.object:
+            if dtype == object:
                 data[col] = data[col].apply(lambda x: x.decode('utf-8'))
         return data
 
@@ -805,7 +805,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
         data[f'Tanimoto > {threshold} ({self.storage._current_fp})'] = similarities
         # Decode byte columns
         for col, dtype in data.dtypes.items():
-            if dtype == np.object:
+            if dtype == object:
                 data[col] = data[col].apply(lambda x: x.decode('utf-8'))
         return data
 
@@ -828,7 +828,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
         data[f'Tanimoto > {threshold} ({self.storage._current_fp})'] = similarities
         # Decode byte columns
         for col, dtype in data.dtypes.items():
-            if dtype == np.object:
+            if dtype == object:
                 data[col] = data[col].apply(lambda x: x.decode('utf-8'))
         return data
 
@@ -852,7 +852,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
         data[f'Tanimoto > {threshold} ({self.storage._current_fp})'] = similarities
         # Decode byte columns
         for col, dtype in data.dtypes.items():
-            if dtype == np.object:
+            if dtype == object:
                 data[col] = data[col].apply(lambda x: x.decode('utf-8'))
         return data
 
@@ -962,7 +962,7 @@ class SubstructureLibrary(SubstructLibrary):
         data = pd.DataFrame.from_records(data, columns=colnames)
         # Decode byte columns
         for col, dtype in data.dtypes.items():
-            if dtype == np.object:
+            if dtype == object:
                 data[col] = data[col].apply(lambda x: x.decode('utf-8'))
         return data
 
