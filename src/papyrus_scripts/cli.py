@@ -18,7 +18,7 @@ def main():
 @click.option('-o', '--out_dir', 'output_directory', type=str, required=False,
               default=None, nargs=1, show_default=True, metavar='OUTDIR',
               help='Directory where Papyrus data will be stored\n(default: pystow\'s home folder).')
-@click.option('--version', '-V', 'version', type=str, required=False, default='latest', nargs=1,
+@click.option('--version', '-V', 'version', required=False, default=['latest'], multiple=True,
               metavar='XX.X', help='Version of the Papyrus data to be downloaded.')
 @click.option('-s', '--stereo', 'stereo', type=click.Choice(['without', 'with', 'both']), required=False,
               default='without', nargs=1, show_default=True,
@@ -42,6 +42,8 @@ def main():
                     'all (all descriptors for the selected stereochemistry), or '
                     'none (do not download any descriptor).'))
 def download(output_directory, version, stereo, structs, descs):
+    if isinstance(version, tuple):
+        version = list(version)
     download_papyrus(outdir=output_directory,
                      version=version,
                      nostereo=stereo in ['without', 'both'],
@@ -101,8 +103,9 @@ def pdbmatch(indir, output, version, is3D, overwrite, verbose):
 def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs):
     fpss = FPSubSim2()
     if len(fingerprint) == 0:
-        fpss.create_from_papyrus(is3d=is3D, version=version, outfile=output, fingerprint=None, root_folder=indir,
-                                 progress=verbose, njobs=njobs)
+        for version_ in version:
+            fpss.create_from_papyrus(is3d=is3D, version=version, outfile=output, fingerprint=None, root_folder=indir,
+                                     progress=verbose, njobs=njobs)
     else:
         # Obtain available fingerprint names and parameter names
         fp_correct_values = {}
@@ -134,5 +137,6 @@ def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs):
                     print(f'Parameters were wrongly formatted: {param_value}')
                     sys.exit()
             fingerprints.append(get_fp_from_name(fp_name, **fp_param))
-        fpss.create_from_papyrus(is3d=is3D, version=version, outfile=output, fingerprint=fingerprints, root_folder=indir,
-                                 progress=verbose, njobs=njobs)
+        for version_ in version:
+            fpss.create_from_papyrus(is3d=is3D, version=version, outfile=output, fingerprint=fingerprints, root_folder=indir,
+                                     progress=verbose, njobs=njobs)

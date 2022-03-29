@@ -85,13 +85,13 @@ class FPSubSim2:
         # Determine default paths
         if root_folder is not None:
             os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
-        source_path = pystow.join('papyrus', version, 'structures')
+        source_path = pystow.join('papyrus', self.version, 'structures')
         # Find the file
         filenames = locate_file(source_path.as_posix(),
                                 f'*.*_combined_{3 if is3d else 2}D_set_with{"out" if not is3d else ""}_stereochemistry.sd*')
         sd_file = filenames[0]
-        total = total = get_num_rows_in_file(filetype='structures', is3D=is3d, version=version, root_folder=root_folder)
-        self.create(sd_file=sd_file, outfile=outfile, fingerprint=fingerprint, progress=progress, njobs=njobs)
+        total = total = get_num_rows_in_file(filetype='structures', is3D=is3d, version=self.version, root_folder=root_folder)
+        self.create(sd_file=sd_file, outfile=outfile, fingerprint=fingerprint, total=total, progress=progress, njobs=njobs)
 
     def create(self,
                sd_file: str,
@@ -394,7 +394,7 @@ def _reader_process(sd_file, n_workers, total, progress, input_queue, output_que
             count += 1
             if count > BATCH_WRITE_SIZE * n_workers * 1.5:
                 while input_queue.qsize() > BATCH_WRITE_SIZE:
-                    time.sleep(0.5)
+                    time.sleep(10)
                 count = 0
     for _ in range(n_workers):
         input_queue.put('END')

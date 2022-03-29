@@ -120,7 +120,7 @@ def process_data_version(version: str, root_folder: str):
     # Handle exceptions
     available_versions = get_downloaded_versions(root_folder) + ['latest']
     if version not in available_versions:
-        raise ValueError(f'version can only be one of [{", ".join(["latest"] + available_versions)}]')
+        raise ValueError(f'version can only be one of [{", ".join(available_versions)}]')
     elif version == 'latest':
         version = get_latest_downloaded_version(root_folder)
     return version
