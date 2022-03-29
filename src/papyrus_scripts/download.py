@@ -270,6 +270,7 @@ def download_papyrus(outdir: Optional[str] = None,
         if os.path.isfile(json_file):
             data = read_jsonfile(json_file)
             data.append(_version)
+            data = sorted(set(data))
             write_jsonfile(data, json_file)
         else:
             write_jsonfile([_version], json_file)
