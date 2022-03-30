@@ -241,7 +241,7 @@ def download_papyrus(outdir: Optional[str] = None,
         if 'unirep' in descriptors or 'all' in descriptors:
             downloads.add('proteins_unirep')
         # Download files
-        pbar = tqdm(downloads) if progress else downloads
+        pbar = tqdm(downloads, desc=f'Donwloading version {_version} data') if progress else downloads
         for ftype in pbar:
             download = files[_version][ftype]
             dname, durl, dsize, dhash = download['name'], download['url'], download['size'], download['sha256']
