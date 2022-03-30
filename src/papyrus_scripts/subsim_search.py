@@ -315,7 +315,6 @@ class FPSubSim2:
             padding = h5file.root.substructure_info.substruct_lib.attrs.padding
             data = h5file.root.substructure_info.substruct_lib.read()
         with BytesIO(data.tobytes('C')[:-padding]) as stream:
-            #lib = SubstructLibrary()
             lib = SubstructureLibrary(self.h5_filename)
             lib.InitFromStream(stream)
         return lib
