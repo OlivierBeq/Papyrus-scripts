@@ -263,7 +263,7 @@ def download_papyrus(outdir: Optional[str] = None,
                 if not correct:
                     print(f'SHA256 not corresponding for {dname}')
                     os.remove(fpath)
-                    retries += 1
+                    retries -= 1
             if retries == 0:
                 print('Failed to download {dname} (3 attempts)')
         json_file = papyrus_root.join(name='versions.json').as_posix()
