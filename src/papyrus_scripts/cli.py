@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import inspect
+
 import click
 
 from .download import download_papyrus
@@ -83,28 +85,117 @@ def pdbmatch(indir, output, version, is3D, overwrite, verbose):
             chunk.to_csv(output, sep='\t', index=False, header=False, mode='a')
 
 
-@main.command(help='Create a FPSubSim2 library substructure/similarity searches.')
+class Mutex(click.Option):
+    def __init__(self, *args, **kwargs):
+        """Custom class allowing click.Options to be
+        required if other click.Options are not set.
+
+        Derived from: https://stackoverflow.com/a/61684480
+        """
+        self.not_required_if: list = kwargs.pop("not_required_if")
+
+        assert self.not_required_if, "'not_required_if' parameter required"
+        assert isinstance(self.not_required_if, list), "'not_required_if' mut be a list"
+        kwargs["help"] = (kwargs.get("help", "") + ' NOTE: This argument is mutually exclusive with ' + ", ".join(
+            self.not_required_if) + ".").strip()
+        super(Mutex, self).__init__(*args, **kwargs)
+
+    def handle_parse_result(self, ctx, opts, args):
+        """Override base method."""
+        current_opt: bool = self.consume_value(ctx, opts)[0]  # Obtain set value
+        for other_param in ctx.command.get_params(ctx):
+            if other_param is self:  # Ignore the current parameter
+                continue
+            # Other argument's name or declaration in self.not_required_if
+            if other_param.human_readable_name in self.not_required_if or any(
+                    opt.lstrip('-') in self.not_required_if for opt in other_param.opts) or any(
+                    opt.lstrip('-') in self.not_required_if for opt in other_param.secondary_opts):
+                # Get value assigned to the other option
+                other_opt: bool = other_param.consume_value(ctx, opts)[0]
+                if other_opt:
+                    if current_opt:
+                        raise click.UsageError(
+                            "Illegal usage: '" + str(self.name)
+                            + "' is mutually exclusive with "
+                            + str(other_param.human_readable_name) + "."
+                        )
+                    else:
+                        self.required = None  # Override requirement
+        return super(Mutex, self).handle_parse_result(ctx, opts, args)
+
+
+@main.command(help='Create a FPSubSim2 library for substructure/similarity searches.')
 @click.option('-i, --indir', 'indir', type=str, required=False, default=None, nargs=1,
               metavar='INDIR', show_default=True,
               help='Directory where Papyrus data will be stored\n(default: pystow\'s home folder).')
-@click.option('-o', '--output', 'output', type=str, required=True, default=None, nargs=1, metavar='OUTFILE',
-              help='Output FPSubSim2 file (default: create a file in the current directory).')
-@click.option('--version', '-V', 'version', type=str, required=False, default='latest', nargs=1,
+@click.option('-o', '--output', 'output', type=str, default=None, nargs=1, metavar='OUTFILE',
+              required=True, cls=Mutex, not_required_if=['fhelp'],
+              help='Output FPSubSim2 file. If "None" determine the most '
+                   'convenient name and write to the current directory.')
+@click.option('--version', '-V', 'version', type=str, required=False, default=['latest'], multiple=True,
               metavar='XX.X', help='Version of the Papyrus data to be mapped (default: latest).')
 @click.option('-3D', 'is3D', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Toggle matching the non-standardized 3D data.')
-@click.option('-F', '--fingerprint', 'fingerprint', type=str, required=False, default=None, multiple=True,
-              metavar='FPname;param1=value1;param2=value2;...',
-              help='Fingerprints with paprameters to be calculated for similarity searches.')
+@click.option('-F', '--fingerprint', 'fingerprint', type=str, required=False, default=['Morgan'], multiple=True,
+              metavar='FPname[;param1=value1[;param2=value2[;...]]]',
+              help='Fingerprints with paprameters to be calculated for similarity searches '
+                   '(default: Morgan fingerprint with 2048 bits and radius 2). '
+                   'If "None"--verbose, calculates all available fingerprints.')
 @click.option('--verbose', 'verbose', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Display progress.')
 @click.option('--njobs', 'njobs', type=int, required=False, default=1, nargs=1, show_default=True,
               help='Number of concurrent processes (default: 1).')
-def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs):
+@click.option('--fhelp', 'fingerprint_help', is_flag=True, default=False, required=False,
+              help='Show advanced help about fingerprints.')
+def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerprint_help):
+    # Switch to advanced fingerprint help
+    if fingerprint_help:
+        fp_name_list = []  # Names of avaliable fingerprints
+        fp_no_parameter_list = []  # Formatted names of fingerprints having no parameter
+        fp_parameter_list = []  # Formatted names and argument names & values of fingerprints other fingperints
+        for fp_type in Fingerprint.derived():
+            fp_name = fp_type().name  # Obtain fp name
+            # Obtain argument names and default values
+            fp_params = [(key, value._default) for key, value in inspect.signature(fp_type.__init__).parameters.items() if key != 'self']
+            # Format fp names and arguments
+            fp_name_list.append(f"    {fp_name}")
+            if len(fp_params):  # Fp has arguments
+                fp_parameter_list.append(f"      {fp_name}")
+                fp_parameter_list.extend(f"        {param_name} = {default_value}" for param_name, default_value in fp_params)
+            else:  # Fp has no argument
+                fp_no_parameter_list.append(f"      {fp_name}")
+        # Format the entire lists
+        fp_name_list = '\n'.join(fp_name_list)
+        fp_parameter_list = '\n'.join(fp_parameter_list)
+        fp_no_parameter_list = '\n'.join(fp_no_parameter_list)
+        print(f'''Advanced options for FPSubSim2 fingerprints
+
+Usage: papyrus fpsubsim2 [OPTIONS] [-F FINGERPRINT] [-F FINGERPRINT] ...
+
+Fingerprint:
+
+  Fingerprint signatures must have the following format:
+     FPname[;param1=value1[;param2=value2[;...]]]
+     
+  FPname:
+{fp_name_list}
+
+  Fingerprints without parameters:
+{fp_no_parameter_list}
+
+  Other fingerprints' parameter names and default values:
+{fp_parameter_list}''')
+        sys.exit()
+    # Set output to None if specified, default output file
+    # will be created in the current directory
+    if output.lower() == 'none':
+        output = None
     fpss = FPSubSim2()
-    if len(fingerprint) == 0:
+    # Set fingerprint to None if specified, default to
+    # calculating all available fingerprints
+    if 'none' in [fp.lower() for fp in fingerprint]:
         for version_ in version:
-            fpss.create_from_papyrus(is3d=is3D, version=version, outfile=output, fingerprint=None, root_folder=indir,
+            fpss.create_from_papyrus(is3d=is3D, version=version_, outfile=output, fingerprint=None, root_folder=indir,
                                      progress=verbose, njobs=njobs)
     else:
         # Obtain available fingerprint names and parameter names
@@ -138,5 +229,5 @@ def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs):
                     sys.exit()
             fingerprints.append(get_fp_from_name(fp_name, **fp_param))
         for version_ in version:
-            fpss.create_from_papyrus(is3d=is3D, version=version, outfile=output, fingerprint=fingerprints, root_folder=indir,
+            fpss.create_from_papyrus(is3d=is3D, version=version_, outfile=output, fingerprint=fingerprints, root_folder=indir,
                                      progress=verbose, njobs=njobs)
