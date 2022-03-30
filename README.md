@@ -21,21 +21,14 @@ The Papyrus scripts require dependencies, a few of which can only be installed v
 
 1. Install conda dependencies first:
 ```bash
-conda install rdkit FPSim2 openbabel -c conda-forge
+conda install rdkit FPSim2 openbabel "h5py<3.2" cupy pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch -c conda-forge
 ```
 
-2. Then install PyTorch <a href="https://pytorch.org/get-started/locally/">locally</a>.
-
-3. Then intall CuPy for CUDA-accelerated similarity searches with FPSim2
-```bash
-conda install cupy -c conda-forge
-```
-
-4. Finally install Papyrus-scripts with pip
+2. Then install Papyrus-scripts with pip
 ```bash
 pip install https://github.com/OlivierBeq/Papyrus-scripts/tarball/master
 ``` 
-Dependencies that pypi resolves will auto-magically be installed.
+Dependencies that PyPI resolves will auto-magically be installed.
 
 ## Donwload the dataset
 
