@@ -33,7 +33,7 @@ try:
     from FPSim2.base import BaseEngine
     from FPSim2.FPSim2 import FPSim2Engine
     from FPSim2.FPSim2Cuda import FPSim2CudaEngine
-    from FPSim2.io.chem import load_molecule, process_data_version
+    from FPSim2.io.chem import load_molecule
 except ImportError as e:
     FPSim2 = e
     # Placeholders
