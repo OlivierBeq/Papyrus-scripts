@@ -37,10 +37,10 @@ try:
 except ImportError as e:
     FPSim2 = e
     # Placeholders
-    BaseStorageBackend = int
-    BaseEngine = int
-    FPSim2Engine = int
-    FPSim2CudaEngine = int
+    BaseStorageBackend = str
+    BaseEngine = str
+    FPSim2Engine = str
+    FPSim2CudaEngine = str
 
 
 from .fingerprint import *
