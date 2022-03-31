@@ -56,6 +56,11 @@ class FPSubSim2:
             raise ImportError('Some required dependencies are missing:\n\ttables')
         elif isinstance(FPSim2, ImportError):
             raise ImportError('Some required dependencies are missing:\n\tFPSim2')
+        elif isinstance(BaseStorageBackend, str) or \
+                isinstance(BaseEngine, str) or \
+                isinstance(FPSim2Engine, str) or \
+                isinstance(FPSim2CudaEngine, str):
+            raise ImportError('Some FPSim2 components could not be loaded')
         self.version = None
         self.is3d = None
         self.sd_file = None
