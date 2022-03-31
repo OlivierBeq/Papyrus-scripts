@@ -170,7 +170,7 @@ class FPSubSim2:
             self._single_process_create(fingerprint, progress, total)
         else:
             self._parallel_create(njobs, fingerprint, progress, total)
-        self.load(outfile)
+        self.load(self.h5_filename)
 
     def load(self, fpsubsim_path: str):
         """Load an extended FPSim2 database to deal with multiple similarity
