@@ -205,28 +205,49 @@ def filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
 def model_metrics(model, y_true, x_test) -> dict:
     """Determine performance metrics of a model
 
-   :param model: model to check the performance of
-   :param y_true: true labels
-   :param x_test: testing set of features
-   :return: a dictionary of metrics
+    Beware R2 = 1 - (Residual sum of squares) / (Total sum of squares) != (Pearson r)²
+
+    R2_0, R2_0_prime, K and k_prime are derived from
+    Tropsha, A., & Golbraikh, A. (2010).
+    Predictive Quantitative Structure–Activity Relationships Modeling.
+    In J.-L. Faulon & A. Bender (Eds.),
+    Handbook of Chemoinformatics Algorithms.
+    Chapman and Hall/CRC.
+    https://www.taylorfrancis.com/books/9781420082999
+
+    :param model: model to check the performance of
+    :param y_true: true labels
+    :param x_test: testing set of features
+    :return: a dictionary of metrics
     """
     y_pred = model.predict(x_test)
     # Regression metrics
     if isinstance(model, (RegressorMixin, SingleTaskNNRegressor, MultiTaskNNRegressor)):
-        return {'number': y_true.size,
-                'R2': R2(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'MSE': MSE(y_true, y_pred, squared=True) if len(y_pred) >= 2 else 0,
-                'RMSE': MSE(y_true, y_pred, squared=False) if len(y_pred) >= 2 else 0,
-                'MSLE': MSLE(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'RMSLE': np.sqrt(MSLE(y_true, y_pred)) if len(y_pred) >= 2 else 0,
-                'MAE': MAE(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Explained Variance': eVar(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Max Error': maxE(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Mean Poisson Distrib': MPD(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Mean Gamma Distrib': MGD(y_true, y_pred) if len(y_pred) >= 2 else 0,
+        # Slope of predicted vs observed
+        k = sum(xi * yi for xi, yi in zip(y_true, y_pred)) / sum(xi ** 2 for xi in y_true)
+        # Slope of observed vs predicted
+        k_prime = sum(xi * yi for xi, yi in zip(y_true, y_pred)) / sum(yi ** 2 for yi in y_pred)
+        # Mean averages
+        y_true_mean = y_true.mean()
+        y_pred_mean = y_pred.mean()
+        return {'number' : y_true.size,
+                'R2' : R2(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'MSE' : MSE(y_true, y_pred, squared=True) if len(y_pred) >= 2 else 0,
+                'RMSE' : MSE(y_true, y_pred, squared=False) if len(y_pred) >= 2 else 0,
+                'MSLE' : MSLE(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'RMSLE' : np.sqrt(MSLE(y_true, y_pred)) if len(y_pred) >= 2 else 0,
+                'MAE' : MAE(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'Explained Variance' : eVar(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'Max Error' : maxE(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'Mean Poisson Distrib' : MPD(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'Mean Gamma Distrib' : MGD(y_true, y_pred) if len(y_pred) >= 2 else 0,
                 'Pearson r': pearsonR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
-                'Spearman r': spearmanR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
-                'Kendall tau': kendallTau(y_true, y_pred)[0] if len(y_pred) >= 2 else 0
+                'Spearman r' : spearmanR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
+                'Kendall tau': kendallTau(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
+                'R2_0 (pred. vs. obs.)' : 1 - (sum((xi - k_prime * yi) **2 for xi, yi in zip(y_true, y_pred)) / sum((xi - y_true_mean) ** 2 for xi in y_true)) if len(y_pred) >= 2 else 0,
+                'R\'2_0 (obs. vs. pred.)' : 1 - (sum((yi - k * xi) **2 for xi, yi in zip(y_true, y_pred)) / sum((yi - y_pred_mean) ** 2 for yi in y_pred)) if len(y_pred) >= 2 else 0,
+                'k slope (pred. vs obs.)' : k,
+                'k\' slope (obs. vs pred.)' : k_prime,
                 }
     # Classification
     elif isinstance(model, (ClassifierMixin, SingleTaskNNClassifier, MultiTaskNNClassifier)):
