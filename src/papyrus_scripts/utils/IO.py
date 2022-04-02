@@ -89,6 +89,15 @@ def enough_disk_space(destination: str,
     return free - required > margin * total
 
 
+def get_disk_space(destination: str):
+    """Obtain size of free disk space.
+
+    :param destination: folder to check
+    """
+    _, _, free = shutil.disk_usage(destination)
+    return free
+
+
 def get_downloaded_versions(root_folder: str) -> List[str]:
     """Identify versions of the downloaded Papyrus data
 

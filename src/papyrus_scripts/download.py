@@ -3,11 +3,11 @@
 import os
 from typing import List, Optional, Union
 
-import gdown
+import requests
 import pystow
 from tqdm.auto import tqdm
 
-from .utils.IO import enough_disk_space, assert_sha256sum, read_jsonfile, write_jsonfile
+from .utils.IO import get_disk_space, enough_disk_space, assert_sha256sum, read_jsonfile, write_jsonfile
 
 
 def download_papyrus(outdir: Optional[str] = None,
@@ -17,7 +17,7 @@ def download_papyrus(outdir: Optional[str] = None,
                      structures: bool = False,
                      descriptors: Union[str, List[str]] = 'all',
                      progress: bool = True,
-                     disk_margin: float = 0.10):
+                     disk_margin: float = 0.10) -> None:
     """Download the Papyrus data.
     
     :param outdir: directory where Papyrus data is stored (default: pystow's directory)
@@ -29,6 +29,8 @@ def download_papyrus(outdir: Optional[str] = None,
     :param progress: should progress be displayed
     :param disk_margin: percent of free disk space to keep
     """
+    CHUNKSIZE = 10 * 1048576  # 10 MB
+    RETRIES = 3
     files = {'05.4': {'readme':
                           {'name': 'README.txt',
                            'url': 'https://drive.google.com/uc?id=1J5NaEs8TLQ9mn9OnUQuX1dVpzeiPZDvo&confirm=t',
@@ -118,7 +120,7 @@ def download_papyrus(outdir: Optional[str] = None,
                       'data_size':
                           {'name': "data_size.json",
                            'url': "https://drive.google.com/uc?id=1z504RsrLxN3RJN4EfGXsHe50uAoEr2lK&confirm=t",
-                           'size': 302,
+                           'size': 299,
                            'sha256': "7208d28bcee4d1c87234a40126baf83548f87e3295a101e4a404221e1deb9df9"},
                       '2D_papyrus':
                           {'name': "05.5_combined_set_without_stereochemistry.tsv.xz",
@@ -240,13 +242,23 @@ def download_papyrus(outdir: Optional[str] = None,
                 downloads.add('3D_fingerprint')
         if 'unirep' in descriptors or 'all' in descriptors:
             downloads.add('proteins_unirep')
+        # Determine total download size
+        total = sum(files[_version][ftype]['size'] for ftype in downloads)
+        if progress:
+            print(f'Number of files to be donwloaded: {len(downloads)}\n'
+                  f'Total size: {tqdm.format_sizeof(total)}B\n')
+        # Verify enough disk space
+        if not enough_disk_space(papyrus_version_root.base.as_posix(), total, disk_margin):
+            print(f'Not enough disk space\n'
+                  f'Available: {get_disk_space(papyrus_version_root.base.as_posix())}\n'
+                  f'Required: {tqdm.format_sizeof(total)}B')
+            return
         # Download files
-        pbar = tqdm(downloads, desc=f'Donwloading version {_version} data') if progress else downloads
-        for ftype in pbar:
+        if progress:
+            pbar = tqdm(total=total, desc=f'Donwloading version {_version}', unit='B', unit_scale=True)
+        for ftype in downloads:
             download = files[_version][ftype]
             dname, durl, dsize, dhash = download['name'], download['url'], download['size'], download['sha256']
-            if not enough_disk_space(papyrus_version_root.base.as_posix(), dsize, disk_margin):
-                raise IOError(f'not enough disk space for the required {dsize / 2 ** 30:.2f} GiB')
             # Determine path
             if ftype in ['2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme']:
                 fpath = papyrus_version_root.join(name=dname).as_posix()
@@ -254,18 +266,42 @@ def download_papyrus(outdir: Optional[str] = None,
                 fpath = papyrus_version_root.join('structures', name=dname).as_posix()
             else:
                 fpath = papyrus_version_root.join('descriptors', name=dname).as_posix()
+            # File already exists
+            if os.path.isfile(fpath) and assert_sha256sum(fpath, dhash):
+                if progress:
+                    pbar.update(dsize)
+                continue # skip
             # Download file
             correct = False  # ensure file is not corrupted
-            retries = 3
-            while not correct and retries > 0:
-                gdown.cached_download(url=durl, path=fpath, quiet=True, resume=True)
+            retries = RETRIES
+            while not correct and retries > 0:  # Allow 3 failures
+                session = requests.session()
+                res = session.get(durl, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) "
+                                                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                                               "Chrome/39.0.2171.95 "
+                                                               "Safari/537.36"},
+                                  stream=True, verify=True)
+                with open(fpath, 'wb') as fh:
+                    for chunk in res.iter_content(chunk_size=CHUNKSIZE):
+                        fh.write(chunk)
+                        if progress:
+                            pbar.update(len(chunk))
                 correct = assert_sha256sum(fpath, dhash)
-                if not correct:
-                    print(f'SHA256 not corresponding for {dname}')
-                    os.remove(fpath)
+                if not correct and progress:
                     retries -= 1
+                    if retries > 0:
+                        message = f'SHA256 hash unexpected for {dname}. Remaining download attempts: {retries}'
+                    else:
+                        message = f'SHA256 hash unexpected for {dname}. All {RETRIES} attempts failed.'
+                    pbar.write(message)
+                    os.remove(fpath)
             if retries == 0:
-                print('Failed to download {dname} (3 attempts)')
+                if progress:
+                    pbar.close()
+                raise IOError(f'Donwload failed for {dname}')
+        if progress:
+            pbar.close()
+        # Save version number
         json_file = papyrus_root.join(name='versions.json').as_posix()
         if os.path.isfile(json_file):
             data = read_jsonfile(json_file)
