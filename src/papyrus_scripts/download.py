@@ -31,7 +31,12 @@ def download_papyrus(outdir: Optional[str] = None,
     """
     CHUNKSIZE = 10 * 1048576  # 10 MB
     RETRIES = 3
-    files = {'05.4': {'readme':
+    files = {'05.4': {'license':
+                          {'name': 'LICENSE.txt',
+                           'url': 'https://drive.google.com/uc?id=1J-7FJgb_ufPYQsv9uVUmwPZB1vvjUCtO&confirm=t',
+                           'size': 20138,
+                           'sha256': '3b2890eacd851373001c4a14623458e3adaf1b1967939aa9c38a318e28d61c00'},
+                      'readme':
                           {'name': 'README.txt',
                            'url': 'https://drive.google.com/uc?id=1J5NaEs8TLQ9mn9OnUQuX1dVpzeiPZDvo&confirm=t',
                            'size': 8743,
@@ -107,7 +112,12 @@ def download_papyrus(outdir: Optional[str] = None,
                            'size': 138392528,
                            'sha256': "19aa0562c3b695883c5aa8c05ad0934c4b9b851a26550345940d92ed17f36b93"}
                       },
-             '05.5': {'readme':
+             '05.5': {'license':
+                          {'name': 'LICENSE.txt',
+                           'url': 'https://drive.google.com/uc?id=1BxgAHXyskKoqeoVNigiqH2GTVJ5-B0GR&confirm=t',
+                           'size': 20138,
+                           'sha256': '3b2890eacd851373001c4a14623458e3adaf1b1967939aa9c38a318e28d61c00'},
+                      'readme':
                           {'name': 'README.txt',
                            'url': 'https://drive.google.com/uc?id=12ydPZ3G9Nd4UX9U_yS230sknUwQkptd3&confirm=t',
                            'size': 8962,
@@ -218,6 +228,7 @@ def download_papyrus(outdir: Optional[str] = None,
         downloads.add('data_types')
         downloads.add('data_size')
         downloads.add('readme')
+        downloads.add('license')
         if nostereo:
             downloads.add('2D_papyrus')
             downloads.add('proteins')
@@ -260,7 +271,7 @@ def download_papyrus(outdir: Optional[str] = None,
             download = files[_version][ftype]
             dname, durl, dsize, dhash = download['name'], download['url'], download['size'], download['sha256']
             # Determine path
-            if ftype in ['2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme']:
+            if ftype in ['2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme', 'license']:
                 fpath = papyrus_version_root.join(name=dname).as_posix()
             elif ftype in ['2D_structures', '3D_structures']:
                 fpath = papyrus_version_root.join('structures', name=dname).as_posix()
