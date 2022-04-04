@@ -32,11 +32,18 @@ Dependencies that PyPI resolves will auto-magically be installed.
 
 ## Donwload the dataset
 
-The Papyrus data relating to bioactivities can be found at 4TU: <a href="https://doi.org/10.4121/16896406">10.4121/16896406</a>.
-<br/>
+The Papyrus data can be found at different locations based on release and ChEMBL version (table below).
+**The use of the command line interface is strongly recommended to download the data.**
+ 
+| Papyrus version | ChEMBL version | 4TU | Google Drive |
+| :--: | :--: | :--: | :--: |
+| 05.4 | 29 |  [:heavy_check_mark:](https://doi.org/10.4121/16896406.v2) | [:heavy_check_mark:](https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing) | 
+| 05.5 | 30 | :x: | [:heavy_check_mark:](https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing) |
 
-To spare disk usage one can download the 4TU data in XZ format on <a href="https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing">Google Drive</a> (if using PipelinePilot, stick to the 4TU gz files).<br/>
-Precomputed molecular and protein descriptors along with molecular structures (2D for default set and 3D for low quality set with stereochemistry) are also available from <a href="https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing">Google Drive</a>.
+For Pipeline Pilot users, the 4TU data (gzip format) is advised.
+Otherwise, the Google drive  data (xz format) is recommended.
+
+Precomputed molecular and protein descriptors along with molecular structures (2D for default set and 3D for low quality set with stereochemistry) are also available from Google Drive.
 
 As stated in the pre-print **we strongly encourage** the use of the dataset in which stereochemistry was not considered.
 This corresponds to files containing the mention "2D" and/or "without_stereochemistry". 
@@ -57,11 +64,11 @@ Molecular structures and descriptors as well as  protein descriptors can be acce
 
 ## Features to come
 
-- Substructure and similarity molecular searches
-- ability to use DNN models
-- ability to repeat model training over multiple seeds
+- ~~Substructure and similarity molecular searches~~
+- ~~ability to use DNN models~~
+- ~~ability to repeat model training over multiple seeds~~
 - y-scrambling
-
+ 
 ## Examples to come
 
 - Use of custom grouping schemes for training/test set splitting and cross-validation
