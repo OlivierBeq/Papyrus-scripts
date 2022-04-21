@@ -38,7 +38,7 @@ The Papyrus data can be found at different locations based on release and ChEMBL
 | Papyrus version | ChEMBL version | 4TU | Google Drive |
 | :--: | :--: | :--: | :--: |
 | 05.4 | 29 |  [:heavy_check_mark:](https://doi.org/10.4121/16896406.v2) | [:heavy_check_mark:](https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing) | 
-| 05.5 | 30 | :x: | [:heavy_check_mark:](https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing) |
+| 05.5 | 30 | :x: | [:heavy_check_mark:](https://drive.google.com/drive/folders/1BrCx0lN1YVvjgXOOaJZHJ7DBrLqFAbWV?usp=sharing) |
 
 For Pipeline Pilot users, the 4TU data (gzip format) is advised.
 Otherwise, the Google drive  data (xz format) is recommended.
