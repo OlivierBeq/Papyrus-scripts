@@ -259,7 +259,7 @@ def download_papyrus(outdir: Optional[str] = None,
         total = sum(files[_version][ftype]['size'] for ftype in downloads)
         if progress:
             print(f'Number of files to be donwloaded: {len(downloads)}\n'
-                  f'Total size: {tqdm.format_sizeof(total)}B\n')
+                  f'Total size: {tqdm.format_sizeof(total)}B')
         # Verify enough disk space
         if not enough_disk_space(papyrus_version_root.base.as_posix(), total, disk_margin):
             print(f'Not enough disk space\n'
