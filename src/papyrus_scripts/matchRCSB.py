@@ -12,7 +12,7 @@ import pandas as pd
 from pandas.io.parsers import TextFileReader as PandasTextFileReader
 import requests
 
-from papyrus_scripts.utils import IO, UniprotMatch
+from .utils import UniprotMatch
 
 
 def update_rcsb_data(root_folder: Optional[str] = None,
