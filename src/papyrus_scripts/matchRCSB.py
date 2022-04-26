@@ -133,7 +133,7 @@ def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
         # Process InChI
         data = data[data['InChI'].isin(rcsb_data[identifier])]
         data = data.merge(rcsb_data, left_on=['InChI', 'accession'], right_on=[identifier, 'UniProt_accession'])
-        data = data.drop(columns=[identifier, 'UniProt_accession'])
+        data = data.drop(columns=['InChI_2D', 'InChI_3D', 'UniProt_accession'])
         return data
     else:
         raise TypeError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
