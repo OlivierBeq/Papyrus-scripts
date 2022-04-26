@@ -121,6 +121,8 @@ def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
             raise ValueError('data does not contain either connectivity or InChIKey data.')
         else:
             raise ValueError('data does not contain either connectivity, InChIKey or protein accession data.')
+        # Update the data if possible
+        _ = update_rcsb_data(root_folder, verbose=verbose)
         # Set pystow root folder
         if root_folder is not None:
             os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
