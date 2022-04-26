@@ -56,11 +56,7 @@ Once installed the Papyrus-scripts allow for the easy filtering of the data.<br/
 - More advanced examples will be added to the <a href="notebook_examples/advanced_querying.ipynb">advanced_querying.ipynb</a> notebook.
 ## Reproducing results of the pre-print
 
-The scripts used to extract subsets, generate models and obtain visualizations can be found under the folder 'preprint'.
-
-Please note that, although the subsets and machine-learning models can easily be generated on a laptop, the TMAP visualizations required more than 150 GiB of RAM.
-
-Molecular structures and descriptors as well as  protein descriptors can be accessed on <a href="https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing">Google Drive</a>.
+The scripts used to extract subsets, generate models and obtain visualizations can be found <a href="https://github.com/OlivierBeq/Papyrus-modelling">here</a>.
 
 ## Features to come
 
