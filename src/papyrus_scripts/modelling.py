@@ -509,8 +509,8 @@ def qsar(data: pd.DataFrame,
         # Drop columns not used for training
         training_set = training_set.drop(columns=['Year', 'target_id'])
         test_set = test_set.drop(columns=['Year', 'target_id'])
-        X_train, y_train = training_set.drop(columns=[endpoint]), training_set[[endpoint]]
-        X_test, y_test = test_set.drop(columns=[endpoint]), test_set[[endpoint]]
+        X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
+        X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
         # Scale data
         if scale:
             X_train.loc[X_train.index, X_train.columns] = scale_method.fit_transform(X_train)
@@ -518,8 +518,12 @@ def qsar(data: pd.DataFrame,
         # Encode labels
         if model_type == 'classifier':
             lblenc = LabelEncoder()
-            y_train.loc[:] = lblenc.fit_transform(y_train)
-            y_test.loc[:] = lblenc.transform(y_test)
+            y_train = pd.Series(data=lblenc.fit_transform(y_train),
+                                index=y_train.index, dtype=y_train.dtype,
+                                name=y_train.name)
+            y_test = pd.Series(data=lblenc.transform(y_test),
+                                index=y_test.index, dtype=y_test.dtype,
+                                name=y_test.name)
             y_train = y_train.astype(np.int32)
             y_test = y_test.astype(np.int32)
         # Reorganize data
@@ -720,15 +724,19 @@ def pcm(data: pd.DataFrame,
     test_set = test_set.drop(columns=['Year'])
     # Scale data
     scaler = StandardScaler()
-    X_train, y_train = training_set.drop(columns=[endpoint]), training_set[[endpoint]]
+    X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
     X_train.loc[X_train.index, X_train.columns] = scaler.fit_transform(X_train)
-    X_test, y_test = test_set.drop(columns=[endpoint]), test_set[[endpoint]]
+    X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
     X_test.loc[X_test.index, X_test.columns] = scaler.transform(X_test)
     # Encode labels
     if model_type == 'classifier':
         lblenc = LabelEncoder()
-        y_train.loc[:] = lblenc.fit_transform(y_train)
-        y_test.loc[:] = lblenc.transform(y_test)
+        y_train = pd.Series(data=lblenc.fit_transform(y_train),
+                            index=y_train.index, dtype=y_train.dtype,
+                            name=y_train.name)
+        y_test = pd.Series(data=lblenc.transform(y_test),
+                           index=y_test.index, dtype=y_test.dtype,
+                           name=y_test.name)
         y_train = y_train.astype(np.int32)
         y_test = y_test.astype(np.int32)
     # Reorganize data
