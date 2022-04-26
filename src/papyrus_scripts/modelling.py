@@ -1,10 +1,6 @@
 # -*- coding: utf-8 -*-
 
-import glob
-import json
-import os
 import warnings
-from functools import partial
 from itertools import chain, combinations
 from collections import Counter
 from typing import Iterable, Iterator, List, Optional, Tuple, Union
@@ -38,144 +34,13 @@ from sklearn.metrics import (r2_score as R2,
 from prodec.Descriptor import Descriptor
 from prodec.Transform import Transform
 
-from .utils.IO import TypeDecoder
-from .reader import read_protein_set
+from .reader import read_molecular_descriptors, read_protein_descriptors
 from .neuralnet import (BaseNN,
                         SingleTaskNNClassifier,
                         SingleTaskNNRegressor,
                         MultiTaskNNRegressor,
                         MultiTaskNNClassifier
                         )
-
-
-def get_molecular_descriptors(is3d: bool = False, desc_type: str = 'mold2', source_path: str = './',
-                              chunksize: Optional[int] = None):
-    """Get molecular descriptors
-
-   :param desc_type: type of descriptor {'mold2', 'mordred', 'cddd', 'fingerprint', 'all'}
-   :param is3d: whether to load descriptors of the dataset containing stereochemistry
-   :param source_path: folder containing the molecular descriptor datasets
-   :return: the dataframe of molecular descriptors
-    """
-    if desc_type not in ['mold2', 'mordred', 'cddd', 'fingerprint', 'all']:
-        raise ValueError("descriptor type not supported")
-    mold2_mask = os.path.join(source_path, f'*.*_combined_{3 if is3d else 2}D_moldescs_mold2.tsv*')
-    mordd_mask = os.path.join(source_path, f'*.*_combined_{3 if is3d else 2}D_moldescs_mordred{3 if is3d else 2}D.tsv*')
-    cddds_mask = os.path.join(source_path, f'*.*_combined_{3 if is3d else 2}D_moldescs_CDDDs.tsv*')
-    molfp_mask = os.path.join(source_path,
-                              f'*.*_combined_{3 if is3d else 2}D_moldescs_{"E3FP" if is3d else "ECFP6"}.tsv*')
-    mold2_files = glob.glob(mold2_mask)
-    mordd_files = glob.glob(mordd_mask)
-    cddds_files = glob.glob(cddds_mask)
-    molfp_files = glob.glob(molfp_mask)
-    if desc_type in ['mold2', 'all'] and len(mold2_files) == 0:
-        raise ValueError('Could not find Mold2 descriptor file')
-    elif desc_type in ['mordred', 'all'] and len(mordd_files) == 0:
-        raise ValueError('Could not find mordred descriptor file')
-    elif desc_type in ['cddd', 'all'] and len(cddds_files) == 0:
-        raise ValueError('Could not find CDDD file')
-    elif desc_type in ['fingerprint', 'all'] and len(molfp_files) == 0:
-        raise ValueError(f'Could not find {"E3FP" if is3d else "ECFP6"} file')
-    # Load data types
-    dtype_file = os.path.join(os.path.dirname(__file__), 'utils', 'data_types.json')
-    with open(dtype_file, 'r') as jsonfile:
-        dtypes = json.load(jsonfile, cls=TypeDecoder)
-    if desc_type == 'mold2':
-        return pd.read_csv(mold2_files[0], sep='\t', dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize)
-    elif desc_type == 'mordred':
-        return pd.read_csv(mordd_files[0], sep='\t', dtype=dtypes[f'mordred_{3 if is3d else 2}D'], low_memory=True,
-                           chunksize=chunksize)
-    elif desc_type == 'cddd':
-        return pd.read_csv(cddds_files[0], sep='\t', dtype=dtypes['CDDD'], low_memory=True, chunksize=chunksize)
-    elif desc_type == 'fingerprint':
-        return pd.read_csv(molfp_files[0], sep='\t', dtype=dtypes[f'{"E3FP" if is3d else "ECFP6"}'], low_memory=True,
-                           chunksize=chunksize)
-    elif desc_type == 'all':
-        mold2 = pd.read_csv(mold2_files[0], sep='\t', dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize)
-        mordd = pd.read_csv(mordd_files[0], sep='\t', dtype=dtypes[f'mordred_{3 if is3d else 2}D'], low_memory=True,
-                            chunksize=chunksize)
-        cddds = pd.read_csv(cddds_files[0], sep='\t', dtype=dtypes['CDDD'], low_memory=True, chunksize=chunksize)
-        molfp = pd.read_csv(molfp_files[0], sep='\t', dtype=dtypes[f'{"E3FP" if is3d else "ECFP6"}'], low_memory=True,
-                            chunksize=chunksize)
-        if chunksize is None:
-            mold2.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            mordd.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            molfp.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            cddds.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            data = pd.concat([mold2, mordd, cddds, molfp], axis=1)
-            del mold2, mordd, cddds, molfp
-            data.reset_index(inplace=True)
-            return data
-        return _join_molecular_descriptors(mold2, mordd, molfp, cddds)
-
-
-def get_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'unirep', source_path: str = './',
-                            chunksize: int = 50000, ids: Optional[List[str]] = None, verbose: bool = True):
-    """Get protein descriptors
-
-   :param desc_type: type of descriptor {'unirep'} or a prodec Descriptor or Transform
-   :param source_path: If desc_type is 'unirep', folder containing the protein descriptor datasets.
-                       If desc_type is 'custom', the file path to a dataframe containing target_id
-                       as its first column and custom descriptors in the following ones.
-                       If desc_type is a ProDEC Descriptor or Transform, folder containing Papyrus protein data.
-   :param chunksize: size of chunks to be iteratively loaded, ignored if desc_type is not 'unirep'
-   :param ids: identifiers of the sequences which descriptors should be loaded
-   :param verbose: whether to show progress
-   :return: the dataframe of protein descriptors
-    """
-    if desc_type not in ['unirep', 'custom'] and not isinstance(desc_type, (Descriptor, Transform)):
-        raise ValueError("descriptor type not supported")
-    if verbose:
-        pbar = partial(tqdm, desc='Loading protein descriptors')
-    else:
-        pbar = partial(iter)
-    if desc_type == 'unirep':
-        unirep_mask = os.path.join(source_path, f'*.*_combined_prot_embeddings_unirep.tsv*')
-        unirep_files = glob.glob(unirep_mask)
-        if len(unirep_files) == 0:
-            raise ValueError('Could not find unirep descriptor file')
-        # Load data types
-        dtype_file = os.path.join(os.path.dirname(__file__), 'utils', 'data_types.json')
-        with open(dtype_file, 'r') as jsonfile:
-            dtypes = json.load(jsonfile, cls=TypeDecoder)
-        if desc_type == 'unirep':
-            return pd.concat([chunk[chunk['target_id'].isin(ids)]
-                              if 'target_id' in chunk.columns
-                              else chunk[chunk['TARGET_NAME'].isin(ids)]
-                              for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
-                                                       low_memory=True, chunksize=chunksize))
-                              ]).rename(columns={'TARGET_NAME': 'target_id'})
-    elif desc_type == 'custom':
-        if not os.path.isfile(source_path):
-            raise ValueError('source_path must be a file if using a custom descriptor type')
-        return pd.concat([chunk[chunk['target_id'].isin(ids)]
-                          if 'target_id' in chunk.columns
-                          else chunk[chunk['TARGET_NAME'].isin(ids)]
-                          for chunk in pbar(pd.read_csv(source_path, sep='\t', low_memory=True, chunksize=chunksize))
-                          ]).rename(columns={'TARGET_NAME': 'target_id'})
-    else:
-        # Calculate protein descriptors
-        protein_data = read_protein_set(source_path)
-        protein_data = protein_data[protein_data['TARGET_NAME'].isin(ids)]
-        descriptors = desc_type.pandas_get(protein_data['Sequence'], protein_data['TARGET_NAME'], quiet=True)
-        descriptors.rename(columns={'ID': 'target_id'}, inplace=True)
-        return descriptors
-
-
-def _join_molecular_descriptors(*descriptors: Iterator, on: str = 'connectivity') -> Iterator:
-    """Concatenate multiple types of molecular descriptors on the same identifier.
-
-    :param descriptors: the different iterators of descriptors to be joined
-    :param on: identifier to join the descriptors on
-    """
-    try:
-        while True:
-            values = [next(descriptor).set_index(on) for descriptor in descriptors]
-            data = pd.concat(values, axis=1)
-            data.reset_index(inplace=True)
-            yield data
-    except StopIteration:
-        raise StopIteration
 
 
 def filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
@@ -399,8 +264,9 @@ def qsar(data: pd.DataFrame,
          endpoint: str = 'pchembl_value_Mean',
          num_points: int = 30,
          delta_activity: float = 2,
+         version: str = 'latest',
          descriptors: str = 'mold2',
-         descriptor_path: str = './',
+         descriptor_path: Optional[str] = None,
          descriptor_chunksize: Optional[int] = 50000,
          activity_threshold: float = 6.5,
          model: Union[RegressorMixin, ClassifierMixin] = xgboost.XGBRegressor(verbosity=0),
@@ -425,7 +291,7 @@ def qsar(data: pd.DataFrame,
     :param num_points: minimum number of points for the activity of a target to be modelled
     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
     :param descriptors: type of desriptors to be used for model training
-    :param descriptor_path: path to Papyrus descriptors
+    :param descriptor_path: path to Papyrus descriptors (default: pystow's default path)
     :param descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded (None disables chunking)
     :param activity_threshold: threshold activity between acvtive and inactive compounds (ignored if using a regressor)
     :param model: machine learning model to be used for QSAR modelling
@@ -480,8 +346,8 @@ def qsar(data: pd.DataFrame,
         endpoint = 'Activity_class'
         del preserved, active, inactive
     # Get  and merge molecular descriptors
-    descs = get_molecular_descriptors('connectivity' not in data.columns, descriptors, descriptor_path,
-                                      descriptor_chunksize)
+    descs = read_molecular_descriptors(descriptors, 'connectivity' not in data.columns,
+                                       version, descriptor_chunksize, descriptor_path)
     descs = filter_molecular_descriptors(descs, merge_on, data[merge_on].unique())
     data = data.merge(descs, on=merge_on)
     data = data.drop(columns=[merge_on])
@@ -700,12 +566,13 @@ def pcm(data: pd.DataFrame,
         endpoint: str = 'pchembl_value_Mean',
         num_points: int = 30,
         delta_activity: float = 2,
+        version: str = 'latest',
         mol_descriptors: str = 'mold2',
-        mol_descriptor_path: str = './',
+        mol_descriptor_path: Optional[str] = None,
         mol_descriptor_chunksize: Optional[int] = 50000,
         prot_sequences_path: str = './',
         prot_descriptors: Union[str, Descriptor, Transform] = 'unirep',
-        prot_descriptor_path: str = './',
+        prot_descriptor_path: Optional[str] = None,
         prot_descriptor_chunksize: Optional[int] = 50000,
         activity_threshold: float = 6.5,
         model: Union[RegressorMixin, ClassifierMixin] = xgboost.XGBRegressor(verbosity=0),
@@ -785,16 +652,15 @@ def pcm(data: pd.DataFrame,
         endpoint = 'Activity_class'
         del preserved, active, inactive
     # Get and merge molecular descriptors
-    mol_descs = get_molecular_descriptors('connectivity' not in data.columns, mol_descriptors, mol_descriptor_path,
-                                          mol_descriptor_chunksize)
+    mol_descs = read_molecular_descriptors(mol_descriptors, 'connectivity' not in data.columns,
+                                           version, mol_descriptor_chunksize, mol_descriptor_path)
     mol_descs = filter_molecular_descriptors(mol_descs, merge_on, data[merge_on].unique())
     data = data.merge(mol_descs, on=merge_on)
     data = data.drop(columns=[merge_on])
     # Get and merge protein descriptors
-    prot_descs = get_protein_descriptors(prot_descriptors,
+    prot_descs = read_protein_descriptors(prot_descriptors, version, prot_descriptor_chunksize,
                                          prot_sequences_path if isinstance(prot_descriptors, (Descriptor, Transform))
                                          else prot_descriptor_path,
-                                         prot_descriptor_chunksize,
                                          data['target_id'].unique())
     data = data.merge(prot_descs, on='target_id')
     data = data.drop(columns=['target_id'])
