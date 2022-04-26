@@ -215,6 +215,8 @@ def download_papyrus(outdir: Optional[str] = None,
     # Transform to list
     if not isinstance(version, list):
         version = [version]
+    if not isinstance(descriptors, list):
+        descriptors = [descriptors]
     # Remove duplicates of versions
     version = sorted(set(version), key=lambda s: [int(u) for u in s.split('.')])
     # Define root dir for downloads
