@@ -42,6 +42,8 @@ from .neuralnet import (BaseNN,
                         MultiTaskNNClassifier
                         )
 
+pd.set_option('mode.chained_assignment', None)
+
 
 def filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
                                  column_name: str,
