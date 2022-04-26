@@ -114,7 +114,7 @@ def process_groups(groups):
     return pd.concat([process_group(group) for group in groups])
 
 
-def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], source: Union[List[str], str] = 'all', njobs: int = 8,
+def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], source: Union[List[str], str] = 'all', njobs: int = 1,
                 verbose: bool = False) -> pd.DataFrame:
     """Keep only the data from the defined source(s).
     
@@ -242,7 +242,7 @@ def is_multiple_types(row, activity_types: List[str]):
     return np.any([';' in str(row[activity_type]) for activity_type in activity_types])
 
 
-def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activity_types: Union[List[str], str] = 'ic50', njobs: int = 8,
+def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activity_types: Union[List[str], str] = 'ic50', njobs: int = 1,
               verbose: bool = False):
     """Keep only the data matching desired activity types
     
