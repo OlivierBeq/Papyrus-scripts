@@ -281,8 +281,8 @@ def qsar(data: pd.DataFrame,
          scale_method: TransformerMixin = StandardScaler(),
          random_state: int = 1234,
          verbose: bool = True
-         ) -> Tuple[pd.DataFrame, List[Optional[Union[Tuple[TransformerMixin, Union[RegressorMixin, ClassifierMixin]]],
-                                                Union[TransformerMixin, ClassifierMixin]]]]:
+         ) -> Tuple[pd.DataFrame, List[Union[Optional[Tuple[TransformerMixin, Union[RegressorMixin, ClassifierMixin]]],
+                                             Optional[Union[TransformerMixin, ClassifierMixin]]]]]:
     """Create QSAR models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -546,6 +546,10 @@ def qsar(data: pd.DataFrame,
                                               ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
                                               f'Not enough data in minority class of the training set for all {folds} folds']],
                                             columns=['target', 'A:N', 'error']))
+                if verbose:
+                    pbar.update()
+                models.append(None)
+                continue
         # Define folding scheme for cross validation
         if stratify and model_type == 'classifier':
             kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
