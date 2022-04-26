@@ -275,14 +275,14 @@ def qsar(data: pd.DataFrame,
          split_by: str = 'Year',
          split_year: int = 2013,
          test_set_size: float = 0.30,
-         validation_set_size: float = 0.30,
          cluster_method: ClusterMixin = None,
          custom_groups: pd.DataFrame = None,
          scale: bool = False,
          scale_method: TransformerMixin = StandardScaler(),
          random_state: int = 1234,
          verbose: bool = True
-         ) -> Tuple[pd.DataFrame, List[Union[RegressorMixin, ClassifierMixin]]]:
+         ) -> Tuple[pd.DataFrame, List[Optional[Union[Tuple[TransformerMixin, Union[RegressorMixin, ClassifierMixin]]],
+                                                Union[TransformerMixin, ClassifierMixin]]]]:
     """Create QSAR models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -511,10 +511,18 @@ def qsar(data: pd.DataFrame,
         test_set = test_set.drop(columns=['Year', 'target_id'])
         X_train, y_train = training_set.drop(columns=[endpoint]), training_set[[endpoint]]
         X_test, y_test = test_set.drop(columns=[endpoint]), test_set[[endpoint]]
-        # Scale data and reorganize
+        # Scale data
         if scale:
             X_train.loc[X_train.index, X_train.columns] = scale_method.fit_transform(X_train)
             X_test.loc[X_test.index, X_test.columns] = scale_method.transform(X_test)
+        # Encode labels
+        if model_type == 'classifier':
+            lblenc = LabelEncoder()
+            y_train.loc[:] = lblenc.fit_transform(y_train)
+            y_test.loc[:] = lblenc.transform(y_test)
+            y_train = y_train.astype(np.int32)
+            y_test = y_test.astype(np.int32)
+        # Reorganize data
         training_set = pd.concat([y_train, X_train], axis=1)
         test_set = pd.concat([y_test, X_test], axis=1)
         del X_train, y_train, X_test, y_test
@@ -529,7 +537,6 @@ def qsar(data: pd.DataFrame,
                                               ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
                                               f'Not enough data in minority class of the training set for all {folds} folds']],
                                             columns=['target', 'A:N', 'error']))
-                # del targets[i_target]
                 if verbose:
                     pbar.update()
                 models.append(None)
@@ -549,7 +556,10 @@ def qsar(data: pd.DataFrame,
         performance.loc['Test set'] = model_metrics(model, y_test, X_test)
         performance.loc[:, 'target'] = targets[i_target]
         results.append(performance.reset_index())
-        models.append(model)
+        if model_type == 'classifier':
+            models.append((lblenc, model))
+        else:
+            models.append(model)
         if verbose:
             pbar.update()
     if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
@@ -585,7 +595,8 @@ def pcm(data: pd.DataFrame,
         custom_groups: pd.DataFrame = None,
         random_state: int = 1234,
         verbose: bool = True
-        ) -> Tuple[pd.DataFrame, Union[RegressorMixin, ClassifierMixin]]:
+        ) -> Tuple[pd.DataFrame, Union[Tuple[TransformerMixin, Union[RegressorMixin, ClassifierMixin]],
+                                       Union[RegressorMixin, ClassifierMixin]]]:
     """Create PCM models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -703,12 +714,20 @@ def pcm(data: pd.DataFrame,
     # Drop columns not used for training
     training_set = training_set.drop(columns=['Year'])
     test_set = test_set.drop(columns=['Year'])
-    # Scale data and reorganize
+    # Scale data
     scaler = StandardScaler()
     X_train, y_train = training_set.drop(columns=[endpoint]), training_set[[endpoint]]
     X_train.loc[X_train.index, X_train.columns] = scaler.fit_transform(X_train)
     X_test, y_test = test_set.drop(columns=[endpoint]), test_set[[endpoint]]
     X_test.loc[X_test.index, X_test.columns] = scaler.transform(X_test)
+    # Encode labels
+    if model_type == 'classifier':
+        lblenc = LabelEncoder()
+        y_train.loc[:] = lblenc.fit_transform(y_train)
+        y_test.loc[:] = lblenc.transform(y_test)
+        y_train = y_train.astype(np.int32)
+        y_test = y_test.astype(np.int32)
+    # Reorganize data
     training_set = pd.concat([y_train, X_train], axis=1)
     test_set = pd.concat([y_test, X_test], axis=1)
     del X_train, y_train, X_test, y_test
@@ -728,6 +747,8 @@ def pcm(data: pd.DataFrame,
     if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
+    if model_type == 'classifier':
+        return performance, (lblenc, model)
     return performance, model
 
 def dnn(data: pd.DataFrame,
