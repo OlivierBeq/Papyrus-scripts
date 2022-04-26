@@ -51,9 +51,9 @@ This corresponds to files containing the mention "2D" and/or "without_stereochem
 ## Easy handling of the dataset
 
 Once installed the Papyrus-scripts allow for the easy filtering of the data.<br/>
-Simple examples can be found in the <a href="">simple_examples.ipynb</a> notebook.<br/>
-More advanced examples be found in the <a href="">advanced_querying.ipynb</a> notebook.
-
+- Simple examples can be found in the <a href="notebook_examples/simple_examples.ipynb">simple_examples.ipynb</a> notebook. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/OlivierBeq/Papyrus-scripts/blob/master/notebook_examples/simple_examples.ipynb)
+- An example on matching data with the Protein Data Bank can be found in the <a href="notebook_examples/matchRCSB.ipynb">simple_examples.ipynb</a> notebook. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/OlivierBeq/Papyrus-scripts/blob/master/notebook_examples/matchRCSB.ipynb)
+- More advanced examples will be added to the <a href="notebook_examples/advanced_querying.ipynb">advanced_querying.ipynb</a> notebook.
 ## Reproducing results of the pre-print
 
 The scripts used to extract subsets, generate models and obtain visualizations can be found under the folder 'preprint'.
