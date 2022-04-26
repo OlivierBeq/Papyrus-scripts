@@ -305,7 +305,6 @@ def qsar(data: pd.DataFrame,
                       If 'cluster' or 'custom', the groups giving proportion closest to test_set_size will be used to defined the test set
     :param split_year: Year from which on the test set is extracted (ignored if split_by is not 'Year')
     :param test_set_size: proportion of the dataset to be used as test set
-    :param validation_set_size: proportion of the dataset to be used as validation set (ignored if model is not derived from BaseNN)
     :param cluster_method: clustering method to use to extract test set and cross-validation folds (ignored if split_by is not 'cluster')
     :param custom_groups: custom groups to use to extract test set and cross-validation fold (ignored if split_by is not 'custom').
                            Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
