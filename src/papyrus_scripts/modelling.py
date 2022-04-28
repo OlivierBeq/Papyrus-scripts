@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 
+from copy import deepcopy
 import warnings
 from itertools import chain, combinations
 from collections import Counter
-from typing import Iterable, Iterator, List, Optional, Tuple, Union
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -189,11 +190,11 @@ def model_metrics(model, y_true, x_test) -> dict:
 
 
 def crossvalidate_model(data: pd.DataFrame,
-                        model: Union[RegressorMixin, ClassifierMixin, BaseNN],
+                        model: Union[RegressorMixin, ClassifierMixin],
                         folds: BaseCrossValidator,
                         groups: List[int] = None,
                         verbose: bool = False
-                        ) -> Tuple[pd.DataFrame, Union[RegressorMixin, ClassifierMixin]]:
+                        ) -> Tuple[pd.DataFrame, Dict[str, Union[RegressorMixin, ClassifierMixin]]]:
     """Create a machine learning model predicting values in the first column
 
    :param data: data containing the dependent vairable (in the first column) and other features
@@ -207,11 +208,13 @@ def crossvalidate_model(data: pd.DataFrame,
     performance = []
     if verbose:
         pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1)
+    models = {}
     # Perform cross-validation
     for i, (train, test) in enumerate(folds.split(X, y, groups)):
         if verbose:
             pbar.set_description(f'Fitting model on fold {i + 1}', refresh=True)
         model.fit(X.iloc[train, :], y[train])
+        models[f'Fold {i + 1}'] = deepcopy(model)
         performance.append(model_metrics(model, y[test], X.iloc[test, :]))
         if verbose:
             pbar.update()
@@ -225,9 +228,10 @@ def crossvalidate_model(data: pd.DataFrame,
     if verbose:
         pbar.set_description('Fitting model on entire training set', refresh=True)
     model.fit(X, y)
+    models['Full model'] = deepcopy(model)
     if verbose:
         pbar.update()
-    return performance, model
+    return performance, models
 
 
 def train_test_proportional_group_split(data: pd.DataFrame,
@@ -283,8 +287,14 @@ def qsar(data: pd.DataFrame,
          scale_method: TransformerMixin = StandardScaler(),
          random_state: int = 1234,
          verbose: bool = True
-         ) -> Tuple[pd.DataFrame, List[Union[Optional[Tuple[TransformerMixin, Union[RegressorMixin, ClassifierMixin]]],
-                                             Optional[Union[TransformerMixin, ClassifierMixin]]]]]:
+         ) -> Tuple[pd.DataFrame,
+                    Dict[str,
+                         Optional[Union[TransformerMixin,
+                                        LabelEncoder,
+                                        BaseCrossValidator,
+                                        Dict[str,
+                                             Union[RegressorMixin,
+                                                   ClassifierMixin]]]]]]:
     """Create QSAR models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -314,7 +324,9 @@ def qsar(data: pd.DataFrame,
     :param verbose: log details to stdout
     :return: both:
                     - a dataframe of the cross-validation results where each line is a fold of QSAR modelling of an accession
-                    - a list of the models fitted on all folds for further use
+                    - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
+                      the data splitter for cross-validation,  and for each accession in the data:
+                      the fitted models on each cross-validation fold and the model fitted on the complete training set.
     """
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', 'custom'}")
@@ -337,11 +349,9 @@ def qsar(data: pd.DataFrame,
         active = data[data['Activity_class'].isna() & (data[endpoint] > activity_threshold)]
         active = active[~active['relation'].str.contains('<')][features_to_ignore]
         active.loc[:, 'Activity_class'] = 'A'
-        # active.drop(columns=[endpoint], inplace=True)
         inactive = data[data['Activity_class'].isna() & (data[endpoint] <= activity_threshold)]
         inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore]
         inactive.loc[:, 'Activity_class'] = 'N'
-        # inactive.drop(columns=[endpoint], inplace=True)
         data = pd.concat([preserved, active, inactive])
         # Change endpoint
         endpoint = 'Activity_class'
@@ -354,7 +364,7 @@ def qsar(data: pd.DataFrame,
     data = data.drop(columns=[merge_on])
     del descs
     # Table of results
-    results, models = [], []
+    results, models = [], {}
     targets = list(data['target_id'].unique())
     n_targets = len(targets)
     if verbose:
@@ -379,10 +389,9 @@ def qsar(data: pd.DataFrame,
                                    ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                    f'Number of points {tmp_data.shape[0]} < {num_points}']],
                                  columns=['target', 'A:N', 'error']))
-            # del targets[i_target]
             if verbose:
                 pbar.update()
-            models.append(None)
+            models[targets[i_target]] = None
             continue
         if model_type == 'regressor':
             min_activity = tmp_data[endpoint].min()
@@ -394,10 +403,9 @@ def qsar(data: pd.DataFrame,
                                               tmp_data.shape[0],
                                               f'Delta activity {delta} < {delta_activity}']],
                                             columns=['target', 'number', 'error']))
-                # del targets[i_target]
                 if verbose:
                     pbar.update()
-                models.append(None)
+                models[targets[i_target]] = None
                 continue
         else:
             data_classes = Counter(tmp_data[endpoint])
@@ -408,10 +416,9 @@ def qsar(data: pd.DataFrame,
                                    ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                    'Only one activity class']],
                                  columns=['target', 'A:N', 'error']))
-                # del targets[i_target]
                 if verbose:
                     pbar.update()
-                models.append(None)
+                models[targets[i_target]] = None
                 continue
             # Not enough data in minority class for all folds
             elif not all(x >= folds for x in data_classes.values()):
@@ -420,10 +427,9 @@ def qsar(data: pd.DataFrame,
                                    ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                    f'Not enough data in minority class for all {folds} folds']],
                                  columns=['target', 'A:N', 'error']))
-                # del targets[i_target]
                 if verbose:
                     pbar.update()
-                models.append(None)
+                models[targets[i_target]] = None
                 continue
         # Set groups for fold enumerator and extract test set
         if split_by.lower() == 'year':
@@ -442,11 +448,9 @@ def qsar(data: pd.DataFrame,
                                        ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                        f'No test data for temporal split at {split_year}']],
                                      columns=['target', 'A:N', 'error']))
-                # warnings.warn(f'no test data for temporal split at {split_year} for target {targets[i_target]}')
-                # del targets[i_target]
                 if verbose:
                     pbar.update()
-                models.append(None)
+                models[targets[i_target]] = None
                 continue
             training_set = tmp_data[~tmp_data.index.isin(test_set.index)]
             if training_set.empty or training_set.shape[0] < folds:
@@ -462,11 +466,9 @@ def qsar(data: pd.DataFrame,
                                        ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                        f'Not enough training data for temporal split at {split_year}']],
                                      columns=['target', 'A:N', 'error']))
-                # warnings.warn(f'no training data for temporal split at {split_year} for target {targets[i_target]}')
-                # del targets[i_target]
                 if verbose:
                     pbar.update()
-                models.append(None)
+                models[targets[i_target]] = None
                 continue
             if model_type == 'classifier':
                 train_data_classes = Counter(training_set[endpoint])
@@ -476,8 +478,6 @@ def qsar(data: pd.DataFrame,
                                                   ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
                                                   f'Only one activity class in traing set for temporal split at {split_year}']],
                                                 columns=['target', 'A:N', 'error']))
-                    # warnings.warn(f'unique class for temporal split at {split_year} for target {targets[i_target]}')
-                    # del targets[i_target]
                     if verbose:
                         pbar.update()
                     continue
@@ -486,11 +486,9 @@ def qsar(data: pd.DataFrame,
                                                   ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
                                                   f'Only one activity class in traing set for temporal split at {split_year}']],
                                                 columns=['target', 'A:N', 'error']))
-                    # warnings.warn(f'unique class for temporal split at {split_year} for target {targets[i_target]}')
-                    # del targets[i_target]
                     if verbose:
                         pbar.update()
-                    models.append(None)
+                    models[targets[i_target]] = None
                     continue
             training_groups = training_set['Year']
         elif split_by.lower() == 'random':
@@ -544,7 +542,7 @@ def qsar(data: pd.DataFrame,
                                             columns=['target', 'A:N', 'error']))
                 if verbose:
                     pbar.update()
-                models.append(None)
+                models[targets[i_target]] = None
                 continue
             elif not test_enough_data:
                 results.append(pd.DataFrame([[targets[i_target],
@@ -553,32 +551,41 @@ def qsar(data: pd.DataFrame,
                                             columns=['target', 'A:N', 'error']))
                 if verbose:
                     pbar.update()
-                models.append(None)
+                models[targets[i_target]] = None
                 continue
         # Define folding scheme for cross validation
         if stratify and model_type == 'classifier':
             kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
         else:
             kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
-        performance, model = crossvalidate_model(training_set, model, kfold, training_groups)
+        performance, cv_models = crossvalidate_model(training_set, model, kfold, training_groups)
+        full_model = cv_models['Full model']
         X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
-        performance.loc['Test set'] = model_metrics(model, y_test, X_test)
+        performance.loc['Test set'] = model_metrics(full_model, y_test, X_test)
         performance.loc[:, 'target'] = targets[i_target]
         results.append(performance.reset_index())
-        if model_type == 'classifier':
-            models.append((lblenc, model))
-        else:
-            models.append(model)
+        models[targets[i_target]] = cv_models
         if verbose:
             pbar.update()
     if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
+    # Formatting return values
+    return_val = {}
+    if scale:
+        return_val['scaler'] = deepcopy(scale_method)
+    if model_type == 'classifier':
+        return_val['label_encoder'] = deepcopy(lblenc)
+        if stratify:
+            return_val['data_splitter'] = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
+    else:
+        return_val['data_splitter'] = KFold(n_splits=folds, shuffle=True, random_state=random_state)
+    return_val = {**return_val, **models}
     if len(results) is False:
-        return pd.DataFrame(), models
+        return pd.DataFrame(), return_val
     results = pd.concat(results, axis=0).set_index(['target', 'index'])
     results.index.names = ['target', None]
-    return results, models
+    return results, return_val
 
 
 def pcm(data: pd.DataFrame,
@@ -606,8 +613,13 @@ def pcm(data: pd.DataFrame,
         scale_method: TransformerMixin = StandardScaler(),
         random_state: int = 1234,
         verbose: bool = True
-        ) -> Tuple[pd.DataFrame, Union[Tuple[TransformerMixin, Union[RegressorMixin, ClassifierMixin]],
-                                       Union[RegressorMixin, ClassifierMixin]]]:
+        ) -> Tuple[pd.DataFrame,
+                   Dict[str,
+                        Union[TransformerMixin,
+                              LabelEncoder,
+                              BaseCrossValidator,
+                              RegressorMixin,
+                              ClassifierMixin]]]:
     """Create PCM models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -641,7 +653,9 @@ def pcm(data: pd.DataFrame,
     :param verbose: log details to stdout
     :return: both:
                     - a dataframe of the cross-validation results where each line is a fold of PCM modelling
-                    - the model fitted on all folds for further use
+                    - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
+                      the data splitter for cross-validation, fitted models on each cross-validation fold,
+                      the model fitted on the complete training set.
     """
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', 'custom'}")
@@ -664,11 +678,9 @@ def pcm(data: pd.DataFrame,
         active = data[data['Activity_class'].isna() & (data[endpoint] > activity_threshold)]
         active = active[~active['relation'].str.contains('<')][features_to_ignore]
         active.loc[:, 'Activity_class'] = 'A'
-        # active.drop(columns=[endpoint], inplace=True)
         inactive = data[data['Activity_class'].isna() & (data[endpoint] <= activity_threshold)]
         inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore]
         inactive.loc[:, 'Activity_class'] = 'N'
-        # inactive.drop(columns=[endpoint], inplace=True)
         data = pd.concat([preserved, active, inactive])
         # Change endpoint
         endpoint = 'Activity_class'
@@ -726,10 +738,10 @@ def pcm(data: pd.DataFrame,
     training_set = training_set.drop(columns=['Year'])
     test_set = test_set.drop(columns=['Year'])
     # Scale data
+    X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
+    X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
     if scale:
-        X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
         X_train.loc[X_train.index, X_train.columns] = scale_method.fit_transform(X_train)
-        X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
         X_test.loc[X_test.index, X_test.columns] = scale_method.transform(X_test)
     # Encode labels
     if model_type == 'classifier':
@@ -756,15 +768,26 @@ def pcm(data: pd.DataFrame,
         kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
     else:
         kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
-    performance, model = crossvalidate_model(training_set, model, kfold, training_groups, verbose=True)
+    performance, cv_models = crossvalidate_model(training_set, model, kfold, training_groups, verbose=True)
+    full_model = cv_models['Full model']
     X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
-    performance.loc['Test set'] = model_metrics(model, y_test, X_test)
-    if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
+    performance.loc['Test set'] = model_metrics(full_model, y_test, X_test)
+    # Set warnings back to default
+    if isinstance(full_model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
+    # Formatting return values
+    return_val = {}
+    if scale:
+        return_val['scaler'] = deepcopy(scale_method)
     if model_type == 'classifier':
-        return performance, (lblenc, model)
-    return performance, model
+        return_val['label_encoder'] = deepcopy(lblenc)
+        if stratify:
+            return_val['data_splitter'] = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
+    else:
+        return_val['data_splitter'] = KFold(n_splits=folds, shuffle=True, random_state=random_state)
+    return_val = {**return_val, **cv_models}
+    return performance, return_val
 
 
 # def dnn(data: pd.DataFrame,
