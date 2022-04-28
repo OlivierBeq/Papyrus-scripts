@@ -602,6 +602,8 @@ def pcm(data: pd.DataFrame,
         test_set_size: float = 0.30,
         cluster_method: ClusterMixin = None,
         custom_groups: pd.DataFrame = None,
+        scale: bool = False,
+        scale_method: TransformerMixin = StandardScaler(),
         random_state: int = 1234,
         verbose: bool = True
         ) -> Tuple[pd.DataFrame, Union[Tuple[TransformerMixin, Union[RegressorMixin, ClassifierMixin]],
@@ -724,11 +726,11 @@ def pcm(data: pd.DataFrame,
     training_set = training_set.drop(columns=['Year'])
     test_set = test_set.drop(columns=['Year'])
     # Scale data
-    scaler = StandardScaler()
-    X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
-    X_train.loc[X_train.index, X_train.columns] = scaler.fit_transform(X_train)
-    X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
-    X_test.loc[X_test.index, X_test.columns] = scaler.transform(X_test)
+    if scale:
+        X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
+        X_train.loc[X_train.index, X_train.columns] = scale_method.fit_transform(X_train)
+        X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
+        X_test.loc[X_test.index, X_test.columns] = scale_method.transform(X_test)
     # Encode labels
     if model_type == 'classifier':
         lblenc = LabelEncoder()
