@@ -36,6 +36,7 @@ from prodec.Descriptor import Descriptor
 from prodec.Transform import Transform
 
 from .reader import read_molecular_descriptors, read_protein_descriptors
+from .preprocess import yscrambling
 from .neuralnet import (BaseNN,
                         SingleTaskNNClassifier,
                         SingleTaskNNRegressor,
@@ -285,6 +286,7 @@ def qsar(data: pd.DataFrame,
          custom_groups: pd.DataFrame = None,
          scale: bool = False,
          scale_method: TransformerMixin = StandardScaler(),
+         yscramble: bool = False,
          random_state: int = 1234,
          verbose: bool = True
          ) -> Tuple[pd.DataFrame,
@@ -320,6 +322,9 @@ def qsar(data: pd.DataFrame,
                            Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
                            (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
                            of each compound.
+    :param scale: should the features be scaled using the custom scaling_method
+    :param scale_method: scaling method to be applied to features (ignored if scale is False)
+    :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
     :param random_state: seed to use for train/test splitting and KFold shuffling
     :param verbose: log details to stdout
     :return: both:
@@ -529,6 +534,10 @@ def qsar(data: pd.DataFrame,
         training_set = pd.concat([y_train, X_train], axis=1)
         test_set = pd.concat([y_test, X_test], axis=1)
         del X_train, y_train, X_test, y_test
+        # Y-scrambling
+        if yscramble:
+            training_set = yscrambling(data=training_set, y_var=endpoint, random_state=random_state)
+            test_set = yscrambling(data=test_set, y_var=endpoint, random_state=random_state)
         # Make sure enough data
         if model_type == 'classifier':
             train_data_classes = Counter(training_set['Activity_class'])
@@ -611,6 +620,7 @@ def pcm(data: pd.DataFrame,
         custom_groups: pd.DataFrame = None,
         scale: bool = False,
         scale_method: TransformerMixin = StandardScaler(),
+        yscramble: bool = False,
         random_state: int = 1234,
         verbose: bool = True
         ) -> Tuple[pd.DataFrame,
@@ -649,6 +659,9 @@ def pcm(data: pd.DataFrame,
                            Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
                            (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
                            of each compound.
+    :param scale: should the features be scaled using the custom scaling_method
+    :param scale_method: scaling method to be applied to features (ignored if scale is False)
+    :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
     :param random_state: seed to use for train/test splitting and KFold shuffling
     :param verbose: log details to stdout
     :return: both:
@@ -758,6 +771,10 @@ def pcm(data: pd.DataFrame,
     training_set = pd.concat([y_train, X_train], axis=1)
     test_set = pd.concat([y_test, X_test], axis=1)
     del X_train, y_train, X_test, y_test
+    # Y-scrambling
+    if yscramble:
+        training_set = yscrambling(data=training_set, y_var=endpoint, random_state=random_state)
+        test_set = yscrambling(data=test_set, y_var=endpoint, random_state=random_state)
     # Make sure enough data
     if model_type == 'classifier':
         enough_data = np.all(np.array(list(Counter(training_set['Activity_class']).values())) > folds)

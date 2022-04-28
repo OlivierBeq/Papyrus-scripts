@@ -2,13 +2,14 @@
 
 import os
 from itertools import chain
-from typing import Any, List, Optional, Union, Iterator
+from typing import Any, List, Optional, Union, Iterator, Iterable
 
 import numpy as np
 import pandas as pd
 import swifter
 from joblib import Parallel, delayed
 from pandas.io.parsers import TextFileReader as PandasTextFileReader
+from sklearn.utils import shuffle
 from scipy.stats import median_absolute_deviation as MAD
 from tqdm.auto import tqdm
 
@@ -738,3 +739,20 @@ def _chunked_keep_substructure(data: Union[PandasTextFileReader, Iterator], mole
     for chunk in data:
         filtered_chunk = chunk[chunk['InChIKey'].isin(substructure_mols['InChIKey'])]
         yield filtered_chunk
+
+
+def yscrambling(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], y_var: Union[str, List[str]] = 'pchembl_value_Mean', random_state: int = 1234):
+    """Perform y-scrambling on the variable(s) to be predicted.
+
+    :param data: the data containing the variable(s) to be shuffled
+    :param y_var: the name(s) of columns which data should be randomized
+    :param random_state: random seed used for shuffling
+    :return: the input data with specified variable(s) scrambled
+    """
+    if not isinstance(y_var, (str, list)):
+        raise ValueError('y_var must be either a str or a list')
+    if not isinstance(y_var, list):
+        y_var = [y_var]
+    for var in y_var:
+        data[var] = shuffle(data[var], random_state=random_state)
+    return data
