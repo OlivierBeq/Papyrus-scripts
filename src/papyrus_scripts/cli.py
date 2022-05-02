@@ -75,7 +75,7 @@ def pdbmatch(indir, output, version, is3D, overwrite, verbose):
     data = read_papyrus(is3d=is3D, version=version, chunksize=CHUNKSIZE, source_path=indir)
     total = get_num_rows_in_file('bioactivities', is3D=is3D, version=version, root_folder=indir)
     matched_data = get_matches(data=data, root_folder=indir, verbose=verbose,
-                               total=int(round(total / CHUNKSIZE, 0)))
+                               total=int(round(total / CHUNKSIZE, 0)), update=False)
     for i, chunk in enumerate(matched_data):
         if i == 0:
             # Create the output file

@@ -61,7 +61,7 @@ def update_rcsb_data(root_folder: Optional[str] = None,
     RDLogger.EnableLog('rdApp.*')
     # Obtain the mapping of PDB ids ligand to proteins structures
     if verbose:
-        print(f'Obtaining RCSB compound mappings from ligand PDB Id to protein PDB ID')
+        print(f'Obtaining RCSB compound mappings from ligand PDB ID to protein PDB ID')
     request = requests.get(base_url.format('cc-to-pdb.tdd'))
     if request.status_code != 200:
         raise IOError(f'resource could not be accessed: {request.url}')
@@ -101,13 +101,15 @@ def update_rcsb_data(root_folder: Optional[str] = None,
 def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
                 root_folder: Optional[str] = None,
                 verbose: bool = True,
-                total: Optional[int] = None) -> Union[pd.DataFrame, Generator]:
+                total: Optional[int] = None,
+                update: bool = True) -> Union[pd.DataFrame, Generator]:
     """
 
     :param data: Papyrus data to be mapped with PDB identifiers
     :param root_folder: Directory where Papyrus bioactivity data is stored (default: pystow's home folder)
     :param verbose: show progress if data is and Iterator or a PandasTextFileReader
     :param total: Total number of chunks for progress display
+    :param update: should the local cache of PDB identifiers be updated
     :return: The subset of Papyrus data with matching RCSB PDB identifiers
     """
     if isinstance(data, (PandasTextFileReader, Iterator)):
@@ -122,7 +124,8 @@ def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
         else:
             raise ValueError('data does not contain either connectivity, InChIKey or protein accession data.')
         # Update the data if possible
-        _ = update_rcsb_data(root_folder, verbose=verbose)
+        if update:
+            _ = update_rcsb_data(root_folder, verbose=verbose)
         # Set pystow root folder
         if root_folder is not None:
             os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
@@ -134,6 +137,10 @@ def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
         data = data[data['InChI'].isin(rcsb_data[identifier])]
         data = data.merge(rcsb_data, left_on=['InChI', 'accession'], right_on=[identifier, 'UniProt_accession'])
         data = data.drop(columns=['InChI_2D', 'InChI_3D', 'UniProt_accession'])
+        data = data.groupby('Activity_ID').aggregate({column: ';'.join
+                                                      if column == 'PDBID_protein'
+                                                      else 'first'
+                                                      for column in data.columns})
         return data
     else:
         raise TypeError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
@@ -146,5 +153,5 @@ def _chunked_get_matches(chunks: Union[PandasTextFileReader, Iterator], root_fol
     else:
         pbar = chunks
     for chunk in pbar:
-        processed_chunk = get_matches(chunk, root_folder)
+        processed_chunk = get_matches(chunk, root_folder, update=False)
         yield processed_chunk
