@@ -30,7 +30,7 @@ pip install https://github.com/OlivierBeq/Papyrus-scripts/tarball/master
 ``` 
 Dependencies that PyPI resolves will auto-magically be installed.
 
-[:warning:] If pip gives the following error and resolves in import errors
+:warning: If pip gives the following error and resolves in import errors
 ```bash
 Defaulting to user installation because normal site-packages is not writeable
 ```
