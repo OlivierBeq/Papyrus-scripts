@@ -642,7 +642,7 @@ def keep_contains(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], col
     :return: the data containing desired values
     """
     if isinstance(data, (PandasTextFileReader, Iterator)):
-        return _chunked_keep_contains(data, column, value)
+        return _chunked_keep_contains(data, column, value, case, regex)
     # Raise error if not correct type
     elif not isinstance(data, pd.DataFrame):
         raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
