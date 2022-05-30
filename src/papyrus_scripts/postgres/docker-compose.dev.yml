@@ -1,0 +1,36 @@
+version: '3'
+
+services:
+  papyrusdb:
+    container_name: papyrusdb
+    image: informaticsmatters/rdkit-cartridge-debian:Release_2021_03_5
+    volumes:
+    - ./data/postgre/data:/var/lib/postgresql/data
+    - ./database/rdkit_extension.sql:/docker-entrypoint-initdb.d/1-schema.sql
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: papyrus
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+    - "5432:5432"
+  pappgadmin:
+    container_name: pappgadmin
+    image: dpage/pgadmin4
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: root
+    ports:
+      - "5050:80"
+  papyrus:
+    container_name: papyrus
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+     - ./:/code
+    ports:
+     - "8888:8888"
+    tty: true
+    shm_size: '6gb'
