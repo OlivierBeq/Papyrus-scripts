@@ -1,19 +1,20 @@
 version: '3'
 
 services:
-  papyrusdb:
-    container_name: papyrusdb
-    image: informaticsmatters/rdkit-cartridge-debian:Release_2021_03_5
-    volumes:
-    - ./data/postgre/data:/var/lib/postgresql/data
-    - ./database/rdkit_extension.sql:/docker-entrypoint-initdb.d/1-schema.sql
-    environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_DB: papyrus
-      PGDATA: /var/lib/postgresql/data/pgdata
-    ports:
-    - "5432:5432"
+  # connect to existing database to set up
+  # papyrusdb:
+  #   container_name: papyrusdb
+  #   image: informaticsmatters/rdkit-cartridge-debian:Release_2021_03_5
+  #   volumes:
+  #   - ./data/postgre/data:/var/lib/postgresql/data
+  #   - ./database/rdkit_extension.sql:/docker-entrypoint-initdb.d/1-schema.sql
+  #   environment:
+  #     POSTGRES_PASSWORD: postgres
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_DB: papyrus
+  #     PGDATA: /var/lib/postgresql/data/pgdata
+  #   ports:
+  #   - "5432:5432"
   pappgadmin:
     container_name: pappgadmin
     image: dpage/pgadmin4
@@ -27,10 +28,11 @@ services:
     container_name: papyrus
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile-prod
     volumes:
      - ./:/code
     ports:
      - "8888:8888"
     tty: true
-    shm_size: '6gb'
+    environment:
+      - SQLALCHEMY_URL=postgres://postgres@localhost:5432/papyrus

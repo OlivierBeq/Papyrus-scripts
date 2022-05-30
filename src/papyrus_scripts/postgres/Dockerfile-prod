@@ -18,6 +18,6 @@ ENV SQLALCHEMY_DATABASE_URL postgres://postgres@localhost:5432/papyrus
 SHELL ["/bin/bash", "--login", "-c"]
 RUN conda install rdkit=2021.03.5 FPSim2 openbabel psycopg2 jupyter python=3.8 -c conda-forge
 RUN pip install -e git+https://github.com/reskyner/razi.git#egg=razi
-RUN pip install requests python-multipart alembic modin[ray]
+RUN pip install requests python-multipart alembic
 
 # ENV PORT 8001
