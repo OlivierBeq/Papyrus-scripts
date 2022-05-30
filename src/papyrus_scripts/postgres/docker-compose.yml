@@ -35,4 +35,4 @@ services:
      - "8888:8888"
     tty: true
     environment:
-      - SQLALCHEMY_URL=postgres://postgres@localhost:5432/papyrus
+      - SQLALCHEMY_URL=postgres://postgres:postgres@localhost:5432/papyrus

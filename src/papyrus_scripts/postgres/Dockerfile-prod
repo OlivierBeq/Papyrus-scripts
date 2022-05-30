@@ -13,7 +13,7 @@ WORKDIR /code
 RUN conda create --name papyrus
 RUN echo "conda activate papyrus" >> ~/.bashrc
 
-ENV SQLALCHEMY_DATABASE_URL postgres://postgres@localhost:5432/papyrus
+ENV SQLALCHEMY_DATABASE_URL postgres://postgres:postgres@localhost:5432/papyrus
 
 SHELL ["/bin/bash", "--login", "-c"]
 RUN conda install rdkit=2021.03.5 FPSim2 openbabel psycopg2 jupyter python=3.8 -c conda-forge
