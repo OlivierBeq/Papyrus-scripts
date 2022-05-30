@@ -27,7 +27,7 @@ services:
     container_name: papyrus
     build:
       context: .
-      dockerfile: Dockerfile-dev
+      dockerfile: Dockerfile
     volumes:
      - ./:/code
     ports:

@@ -73,8 +73,8 @@ class Activity(Base):
     aid = Column(Text)
     doc_id = Column(Text)
     year = Column(Integer)
-    all_doc_ids = Column(Text)
-    all_years = Column(Text)
+    # all_doc_ids = Column(Text)
+    # all_years = Column(Text)
     type = Column(Integer, ForeignKey('activity_type.id'))
     # activity_class?
     relation = Column(Text)
