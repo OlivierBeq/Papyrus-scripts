@@ -46,7 +46,8 @@ def main():
 def download(output_directory, version, stereo, structs, descs):
     if isinstance(version, tuple):
         version = list(version)
-    print(descs)
+    if isinstance(descs, tuple):
+        descs = list(descs)
     download_papyrus(outdir=output_directory,
                      version=version,
                      nostereo=stereo in ['without', 'both'],
