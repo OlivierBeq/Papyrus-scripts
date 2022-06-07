@@ -198,7 +198,7 @@ def download_papyrus(outdir: Optional[str] = None,
     available_versions = list(files.keys())
     if isinstance(version, list):
         for _version in version:
-            if _version not in available_versions + ['latest', 'all']:
+            if _version not in available_versions + ['latest']:
                 raise ValueError(f'version can only be one of [{", ".join(["latest"] + available_versions)}]')
     # Identify version
     latest_version = sorted(available_versions, key=lambda s: [int(u) for u in s.split('.')])[-1]

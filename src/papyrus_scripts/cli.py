@@ -46,7 +46,6 @@ def main():
 def download(output_directory, version, stereo, structs, descs):
     if isinstance(version, tuple):
         version = list(version)
-    print(descs)
     download_papyrus(outdir=output_directory,
                      version=version,
                      nostereo=stereo in ['without', 'both'],
@@ -137,16 +136,15 @@ class Mutex(click.Option):
               metavar='XX.X', help='Version of the Papyrus data to be mapped (default: latest).')
 @click.option('-3D', 'is3D', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Toggle matching the non-standardized 3D data.')
+@click.option('-F', '--fingerprint', 'fingerprint', type=str, required=False, default=['Morgan'], multiple=True,
+              metavar='FPname[;param1=value1[;param2=value2[;...]]]',
+              help='Fingerprints with paprameters to be calculated for similarity searches '
+                   '(default: Morgan fingerprint with 2048 bits and radius 2). '
+                   'If "None"--verbose, calculates all available fingerprints.')
 @click.option('--verbose', 'verbose', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Display progress.')
 @click.option('--njobs', 'njobs', type=int, required=False, default=1, nargs=1, show_default=True,
               help='Number of concurrent processes (default: 1).')
-@click.option('-F', '--fingerprint', 'fingerprint', type=str, required=False, default=['Morgan'], multiple=True,
-              metavar='FPname[;param1=value1[;param2=value2[;...]]]',
-              help='Fingerprints with parameters to be calculated for similarity searches '
-                   '(default: Morgan fingerprint with 2048 bits and radius 2). '
-                   'If "None", calculates all available fingerprints. '
-                   'Must be the last argument given')
 @click.option('--fhelp', 'fingerprint_help', is_flag=True, default=False, required=False,
               help='Show advanced help about fingerprints.')
 def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerprint_help):
