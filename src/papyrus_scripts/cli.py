@@ -43,7 +43,7 @@ def main():
                     'final hidden states and final cell states), '
                     'all (all descriptors for the selected stereochemistry), or '
                     'none (do not download any descriptor).'))
-@click.option('-F', '--force', is_flag=True, required=False, default=False, nargs=1,
+@click.option('--force', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Force download if disk space is low'
                                       '(default: False for 10% disk space margin).')
 def download(output_directory, version, stereo, structs, descs, force):
@@ -57,7 +57,8 @@ def download(output_directory, version, stereo, structs, descs, force):
                      stereo=stereo in ['with', 'both'],
                      structures=structs,
                      descriptors=descs,
-                     progress=True)
+                     progress=True,
+                     disk_margin=0.0 if force else 0.1)
 
 
 @main.command(help='Identify matches of the RCSB PDB data in the Papyrus data.')
