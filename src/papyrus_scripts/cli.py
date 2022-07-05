@@ -43,7 +43,10 @@ def main():
                     'final hidden states and final cell states), '
                     'all (all descriptors for the selected stereochemistry), or '
                     'none (do not download any descriptor).'))
-def download(output_directory, version, stereo, structs, descs):
+@click.option('-F', '--force', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Force download if disk space is low'
+                                      '(default: False for 10% disk space margin).')
+def download(output_directory, version, stereo, structs, descs, force):
     if isinstance(version, tuple):
         version = list(version)
     if isinstance(descs, tuple):
