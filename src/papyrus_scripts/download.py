@@ -263,7 +263,7 @@ def download_papyrus(outdir: Optional[str] = None,
         # Verify enough disk space
         if not enough_disk_space(papyrus_version_root.base.as_posix(), total, disk_margin):
             print(f'Not enough disk space\n'
-                  f'Available: {get_disk_space(papyrus_version_root.base.as_posix())}\n'
+                  f'Available: {tqdm.format_sizeof(get_disk_space(papyrus_version_root.base.as_posix()))}B\n'
                   f'Required: {tqdm.format_sizeof(total)}B')
             return
         # Download files
