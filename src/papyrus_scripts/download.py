@@ -300,13 +300,14 @@ def download_papyrus(outdir: Optional[str] = None,
                         if progress:
                             pbar.update(len(chunk))
                 correct = assert_sha256sum(fpath, dhash)
-                if not correct and progress:
+                if not correct:
                     retries -= 1
-                    if retries > 0:
-                        message = f'SHA256 hash unexpected for {dname}. Remaining download attempts: {retries}'
-                    else:
-                        message = f'SHA256 hash unexpected for {dname}. All {RETRIES} attempts failed.'
-                    pbar.write(message)
+                    if progress:
+                        if retries > 0:
+                            message = f'SHA256 hash unexpected for {dname}. Remaining download attempts: {retries}'
+                        else:
+                            message = f'SHA256 hash unexpected for {dname}. All {RETRIES} attempts failed.'
+                        pbar.write(message)
                     os.remove(fpath)
             if retries == 0:
                 if progress:
