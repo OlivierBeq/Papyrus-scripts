@@ -31,7 +31,7 @@ def main():
               show_default=True, help='Should structures be downloaded (SD file).')
 @click.option('-d', '--descriptors', 'descs', type=click.Choice(['mold2', 'cddd', 'mordred', 'fingerprint',
                                                                    'unirep', 'all', 'none']),
-              required=False, default=['all'], nargs=1,
+              required=False, default=['none'], nargs=1,
               show_default=True, multiple=True,
               help=('Type of descriptors to be downloaded: mold2 (777 2D Mold2 descriptors), '
                     'cddd: (512 2D continuous data-driven descriptors), '
