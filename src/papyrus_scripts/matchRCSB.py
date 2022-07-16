@@ -49,7 +49,7 @@ def update_rcsb_data(root_folder: Optional[str] = None,
                               columns=['InChI', 'PDBID'])
     # Process InChI for 2D data
     if verbose:
-        pbar = tqdm(enumerate(inchi_data.InChI), total=inchi_data.shape[0], desc='Converting InChIs')
+        pbar = tqdm(enumerate(inchi_data.InChI), total=inchi_data.shape[0], desc='Converting InChIs', ncols=100)
     else:
         pbar = enumerate(inchi_data.InChI)
     RDLogger.DisableLog('rdApp.*')
@@ -149,7 +149,7 @@ def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
 def _chunked_get_matches(chunks: Union[PandasTextFileReader, Iterator], root_folder: Optional[str], verbose: bool,
                          total: int):
     if verbose:
-        pbar = tqdm(chunks, total=total)
+        pbar = tqdm(chunks, total=total, ncols=100)
     else:
         pbar = chunks
     for chunk in pbar:
