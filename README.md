@@ -32,7 +32,7 @@ Dependencies that PyPI resolves will auto-magically be installed.
 
 :warning: If pip gives the following error and resolves in import errors
 ```bash
-Defaulting to user installation because normal site-packages is not writeable
+Defaulting to user installation because normal site-packages is not writeable
 ```
 Then uninstall and reinstalling the library with the following commands:
 ```bash
