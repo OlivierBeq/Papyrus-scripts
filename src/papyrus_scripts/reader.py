@@ -158,7 +158,7 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
                        If desc_type is 'custom', the file path to a dataframe containing target_id
                        as its first column and custom descriptors in the following ones.
                        If desc_type is a ProDEC Descriptor or Transform, folder containing Papyrus protein data.
-   :param ids: identifiers of the sequences which descriptors should be loaded
+   :param ids: identifiers of the sequences which descriptors should be loaded (e.g. P30542_WT)
    :param verbose: whether to show progress
    :return: the dataframe of protein descriptors
     """
@@ -183,6 +183,18 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
         if len(unirep_files) == 0:
             raise ValueError('Could not find unirep descriptor file')
         if desc_type == 'unirep':
+            if chunksize is None and ids is None:
+                return pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
+            elif chunksize is None and ids is not None:
+                descriptors = pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
+                if 'target_id' in descriptors.columns:
+                    return descriptors[descriptors['target_id'].isin(ids)]
+                return descriptors[descriptors['TARGET_NAME'].isin(ids)].rename(columns={'TARGET_NAME': 'target_id'})
+            elif chunksize is not None and ids is None:
+                return pd.concat([chunk
+                                  for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
+                                                                low_memory=True, chunksize=chunksize))
+                                  ]).rename(columns={'TARGET_NAME': 'target_id'})
             return pd.concat([chunk[chunk['target_id'].isin(ids)]
                               if 'target_id' in chunk.columns
                               else chunk[chunk['TARGET_NAME'].isin(ids)]
@@ -192,6 +204,18 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
     elif desc_type == 'custom':
         if not os.path.isfile(source_path):
             raise ValueError('source_path must be a file if using a custom descriptor type')
+        if chunksize is None and ids is None:
+            return pd.read_csv(source_path, sep='\t', low_memory=True)
+        elif chunksize is None and ids is not None:
+            descriptors = pd.read_csv(source_path, sep='\t', low_memory=True)
+            if 'target_id' in descriptors.columns:
+                return descriptors[descriptors['target_id'].isin(ids)]
+            return descriptors[descriptors['TARGET_NAME'].isin(ids)].rename(columns={'TARGET_NAME': 'target_id'})
+        elif chunksize is not None and ids is None:
+            return pd.concat([chunk
+                              for chunk in pbar(pd.read_csv(source_path, sep='\t',
+                                                            low_memory=True, chunksize=chunksize))
+                              ]).rename(columns={'TARGET_NAME': 'target_id'})
         return pd.concat([chunk[chunk['target_id'].isin(ids)]
                           if 'target_id' in chunk.columns
                           else chunk[chunk['TARGET_NAME'].isin(ids)]
