@@ -8,6 +8,7 @@ import importlib
 import inspect
 import json
 import os
+import requests
 import shutil
 from typing import List, Optional
 
@@ -193,3 +194,23 @@ def get_num_rows_in_file(filetype: str, is3D: bool, descriptor_name: Optional[st
                 return sizes['E3FP'] if is3D else sizes['ECFP6']
             elif descriptor_name == 'mordred':
                 return sizes['mordred_3D'] if is3D else sizes['mordred_2D']
+
+def get_papyrus_links():
+    """Obtain the latest links to Papyrus data files from GitHub.
+
+    If the connection to the GitHub server is made, the
+    local version of the file is updated.
+    Otherwise, defaults ot the local version of the file.
+    """
+    url = "https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/db-links/links.json"
+    local_file = os.path.join(os.path.dirname(__file__), 'links.json')
+    session = requests.session()
+    try:
+        res = session.get(url, verify=True)
+        with open(local_file, 'w') as oh:
+                oh.write(res.text)
+    except ConnectionError as e:
+        pass
+    with open(local_file) as fh:
+        data = json.load(fh)
+    return data

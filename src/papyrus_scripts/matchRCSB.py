@@ -49,7 +49,7 @@ def update_rcsb_data(root_folder: Optional[str] = None,
                               columns=['InChI', 'PDBID'])
     # Process InChI for 2D data
     if verbose:
-        pbar = tqdm(enumerate(inchi_data.InChI), total=inchi_data.shape[0], desc='Converting InChIs')
+        pbar = tqdm(enumerate(inchi_data.InChI), total=inchi_data.shape[0], desc='Converting InChIs', ncols=100)
     else:
         pbar = enumerate(inchi_data.InChI)
     RDLogger.DisableLog('rdApp.*')
@@ -77,18 +77,18 @@ def update_rcsb_data(root_folder: Optional[str] = None,
     # Map PDBID prot to UniProt acessions
     if verbose:
         print(f'Obtaining mappings from protein PDB ID to UniProt accessions')
-    uniprot_mapping = UniprotMatch.uniprot_mappings(pdb_data.PDBIDprot.tolist(), map_from='PDB_ID', map_to='ACC')
+    uniprot_mapping = UniprotMatch.uniprot_mappings(pdb_data.PDBIDprot.tolist(), map_from='PDB', map_to='UniProtKB_AC-ID')
     # Join on the RCSB data
     if verbose:
         print(f'Combining the data')
-    pdb_data = pdb_data.merge(uniprot_mapping, left_on='PDBIDprot', right_on='PDB_ID')
+    pdb_data = pdb_data.merge(uniprot_mapping, left_on='PDBIDprot', right_on='PDB')
     # Rename columns
     pdb_data = pdb_data.rename(columns={'InChI': 'InChI_3D',
                                         'PDBIDlig': 'PDBID_ligand',
                                         'PDBIDprot': 'PDBID_protein',
-                                        'ACC': 'UniProt_accession'})
+                                        'UniProtKB_AC-ID': 'UniProt_accession'})
     # Drop duplicate information
-    pdb_data = pdb_data.drop(columns=['PDBID', 'PDB_ID'])
+    pdb_data = pdb_data.drop(columns=['PDBID', 'PDB'])
     # Reorder columns
     pdb_data = pdb_data[['InChI_3D', 'InChI_2D', 'PDBID_ligand', 'PDBID_protein', 'UniProt_accession']]
     # Write to disk and return
@@ -149,7 +149,7 @@ def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
 def _chunked_get_matches(chunks: Union[PandasTextFileReader, Iterator], root_folder: Optional[str], verbose: bool,
                          total: int):
     if verbose:
-        pbar = tqdm(chunks, total=total)
+        pbar = tqdm(chunks, total=total, ncols=100)
     else:
         pbar = chunks
     for chunk in pbar:

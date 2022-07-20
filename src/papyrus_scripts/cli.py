@@ -5,7 +5,7 @@ import inspect
 
 import click
 
-from .download import download_papyrus
+from .download import download_papyrus, remove_papyrus
 from .matchRCSB import get_matches, update_rcsb_data
 from .reader import read_papyrus
 from .utils.IO import get_num_rows_in_file
@@ -31,7 +31,7 @@ def main():
               show_default=True, help='Should structures be downloaded (SD file).')
 @click.option('-d', '--descriptors', 'descs', type=click.Choice(['mold2', 'cddd', 'mordred', 'fingerprint',
                                                                    'unirep', 'all', 'none']),
-              required=False, default=['all'], nargs=1,
+              required=False, default=['none'], nargs=1,
               show_default=True, multiple=True,
               help=('Type of descriptors to be downloaded: mold2 (777 2D Mold2 descriptors), '
                     'cddd: (512 2D continuous data-driven descriptors), '
@@ -43,16 +43,82 @@ def main():
                     'final hidden states and final cell states), '
                     'all (all descriptors for the selected stereochemistry), or '
                     'none (do not download any descriptor).'))
-def download(output_directory, version, stereo, structs, descs):
+@click.option('--force', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Force download if disk space is low'
+                                      '(default: False for 10% disk space margin).')
+def download(output_directory, version, stereo, structs, descs, force):
     if isinstance(version, tuple):
         version = list(version)
+    if isinstance(descs, tuple):
+        descs = list(descs)
     download_papyrus(outdir=output_directory,
                      version=version,
                      nostereo=stereo in ['without', 'both'],
                      stereo=stereo in ['with', 'both'],
                      structures=structs,
                      descriptors=descs,
-                     progress=True)
+                     progress=True,
+                     disk_margin=0.0 if force else 0.1)
+
+
+@main.command(help='Remove Papyrus data.')
+@click.option('-o', '--out_dir', 'output_directory', type=str, required=False,
+              default=None, nargs=1, show_default=True, metavar='OUTDIR',
+              help='Directory where Papyrus data will be removed\n(default: pystow\'s home folder).')
+@click.option('--version', '-V', 'version', required=False, default=['latest'], multiple=True,
+              metavar='XX.X', help='Version of the Papyrus data to be removed.')
+@click.option('-s', '--stereo', 'stereo', type=click.Choice(['without', 'with', 'both']), required=False,
+              default='without', nargs=1, show_default=True,
+              help=('Type of data to be removed: without (standardised data without stereochemistry), '
+                    'with (non-standardised data with stereochemistry), '
+                    'both (both standardised and non-standardised data)'))
+@click.option('-B', '--bioactivities', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should bioactivities be removed (SD file).')
+@click.option('-P', '--proteins', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should bioactivities be removed (SD file).')
+@click.option('-S', '--structures', 'structs', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should structures be removed (SD file).')
+@click.option('-d', '--descriptors', 'descs', type=click.Choice(['mold2', 'cddd', 'mordred', 'fingerprint',
+                                                                   'unirep', 'all', 'none']),
+              required=False, default=['none'], nargs=1,
+              show_default=True, multiple=True,
+              help=('Type of descriptors to be removed: mold2 (777 2D Mold2 descriptors), '
+                    'cddd: (512 2D continuous data-driven descriptors), '
+                    'mordred: (1613 2D or 1826 3D mordred descriptors) ,\n'
+                    'fingerprint (2048 bits 2D RDKit Morgan fingerprint with radius 3 '
+                    'or 2048 bits extended 3-dimensional fingerprints of level 5), '
+                    'unirep (6660 UniRep deep-learning protein sequence representations '
+                    'containing 64, 256 and 1900-bit average hidden states, '
+                    'final hidden states and final cell states), '
+                    'all (all descriptors for the selected stereochemistry), or '
+                    'none (do not download any descriptor).'))
+@click.option('-O', '--other_files', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should other files be removed (e.g. LICENSE, README).')
+@click.option('--remove_version', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should the given Papyrus version(s) be removed.')
+@click.option('--remove_root', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should all Papyrus data and versions be removed.')
+@click.option('--force', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Skip confirmation when removing the root directory.')
+def clean(output_directory, version, stereo, bioactivities, proteins,structs,
+          descs, other_files, remove_version, remove_root, force):
+    if isinstance(version, tuple):
+        version = list(version)
+    if isinstance(descs, tuple):
+        descs = list(descs)
+    remove_papyrus(outdir=output_directory,
+                   version=version,
+                   bioactivities=bioactivities,
+                   proteins=proteins,
+                   nostereo=stereo in ['without', 'both'],
+                   stereo=stereo in ['with', 'both'],
+                   structures=structs,
+                   descriptors=descs,
+                   other_files=other_files,
+                   version_root=remove_version,
+                   papyrus_root=remove_root,
+                   force=force,
+                   progress=True)
 
 
 @main.command(help='Identify matches of the RCSB PDB data in the Papyrus data.')
@@ -136,15 +202,16 @@ class Mutex(click.Option):
               metavar='XX.X', help='Version of the Papyrus data to be mapped (default: latest).')
 @click.option('-3D', 'is3D', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Toggle matching the non-standardized 3D data.')
-@click.option('-F', '--fingerprint', 'fingerprint', type=str, required=False, default=['Morgan'], multiple=True,
-              metavar='FPname[;param1=value1[;param2=value2[;...]]]',
-              help='Fingerprints with paprameters to be calculated for similarity searches '
-                   '(default: Morgan fingerprint with 2048 bits and radius 2). '
-                   'If "None"--verbose, calculates all available fingerprints.')
 @click.option('--verbose', 'verbose', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Display progress.')
 @click.option('--njobs', 'njobs', type=int, required=False, default=1, nargs=1, show_default=True,
               help='Number of concurrent processes (default: 1).')
+@click.option('-F', '--fingerprint', 'fingerprint', type=str, required=False, default=['Morgan'], multiple=True,
+              metavar='FPname[;param1=value1[;param2=value2[;...]]]',
+              help='Fingerprints with parameters to be calculated for similarity searches '
+                   '(default: Morgan fingerprint with 2048 bits and radius 2). '
+                   'If "None", calculates all available fingerprints. '
+                   'Must be the last argument given')
 @click.option('--fhelp', 'fingerprint_help', is_flag=True, default=False, required=False,
               help='Show advanced help about fingerprints.')
 def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerprint_help):

@@ -287,7 +287,7 @@ class MolSupplier:
         """Generator function that reads from a rdkit molecule supplier."""
         # handle showing progress
         if self._iter_progress:
-            pbar = tqdm(enumerate(self.supplier, self._iter_start), total=self._iter_total)
+            pbar = tqdm(enumerate(self.supplier, self._iter_start), total=self._iter_total, ncols=100)
         else:
             pbar = enumerate(self.supplier, self._iter_start)
         for mol_id, rdmol in pbar:

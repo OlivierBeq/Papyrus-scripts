@@ -254,7 +254,7 @@ class FPSubSim2:
             subst_table.attrs.padding = padding
             subst_table.append(lib_ints)
         # sort by popcounts
-        sort_db_file(self.h5_filename)
+        sort_db_file(self.h5_filename, verbose=progress)
 
     def _parallel_create(self, njobs=-1, fingerprint: Union[Fingerprint, List[Fingerprint]] = None,
                          progress: bool = True, total: Optional[int] = None):
@@ -297,7 +297,7 @@ class FPSubSim2:
         output_queue.close()
         output_queue.join_thread()
         # sort by popcounts
-        sort_db_file(self.h5_filename)
+        sort_db_file(self.h5_filename, verbose=progress)
 
     @property
     def available_fingerprints(self):
@@ -386,7 +386,7 @@ class FPSubSim2:
             h5file.create_earray(h5file.root.substructure_info, 'substruct_lib', tb.UInt64Atom(), (0,), 'Substructure search library')
             h5file.root.substructure_info.substruct_lib.attrs.padding = padding
             h5file.root.substructure_info.substruct_lib.append(lib_ints)
-        sort_db_file(self.h5_filename)
+        sort_db_file(self.h5_filename, verbose=progress)
 
 
 def _reader_process(sd_file, n_workers, total, progress, input_queue, output_queue):
@@ -453,8 +453,6 @@ def _writer_process(h5_filename, output_queue, table_paths, total, progress):
     # ensure index in mol_mappings
     with tb.open_file(h5_filename, mode="r+") as h5file:
         h5file.root.mol_mappings.cols.idnumber.reindex()
-    # sort similarity by popcounts
-    sort_db_file(h5_filename)
     return
 
 
@@ -482,15 +480,17 @@ def _worker_process(fp_types, input_queue, output_queue, n_workers):
             output_queue.put(('similarity', repr(fper), (mol_id, *fp)))
 
 
-def sort_db_file(filename: str) -> None:
+def sort_db_file(filename: str, verbose: bool=False) -> None:
     """Sorts the FPs db file."""
+    if verbose:
+        print('Optimizing FPSubSim2 file.')
     # rename not sorted filename
     tmp_filename = filename + "_tmp"
     if os.path.isfile(tmp_filename):
         os.remove(tmp_filename)
     os.rename(filename, tmp_filename)
     filters = tb.Filters(complib="blosc", complevel=1, shuffle=True, bitshuffle=True)
-    stats = stats={
+    stats = {
         "groups": 0,
         "leaves": 0,
         "links": 0,
@@ -503,11 +503,19 @@ def sort_db_file(filename: str) -> None:
         with tb.open_file(filename, mode="w") as sorted_fp_file:
             # group to hold similarity tables
             siminfo_group = sorted_fp_file.create_group(sorted_fp_file.root, "similarity_info", "Infos for similarity search")
-            for simfp_group in fp_file.walk_groups('/similarity_info/'):
+            simfp_groups = list(fp_file.walk_groups('/similarity_info/'))
+            i = 0
+            for simfp_group in simfp_groups:
                 if len(simfp_group._v_name):
                     dst_group = simfp_group._f_copy(siminfo_group, recursive=False, filters=filters, stats=stats)
-
-                    for fp_table in fp_file.iter_nodes(simfp_group, classname='Table'):
+                    # progress bar
+                    if verbose:
+                        pbar = tqdm(list(fp_file.iter_nodes(simfp_group, classname='Table')),
+                                    desc=f'Optimizing tables of group ({i}/{len(simfp_groups)})',
+                                    leave=False)
+                    else:
+                        pbar = fp_file.iter_nodes(simfp_group, classname='Table')
+                    for fp_table in pbar:
                         # create a sorted copy of the fps table
                         dst_fp_table = fp_table.copy(
                             dst_group,
@@ -531,6 +539,8 @@ def sort_db_file(filename: str) -> None:
                         for x in popcnt_bins:
                             popcounts.append(x)
             # add other tables
+            if verbose:
+                print('Optimizing remaining groups and arrays.')
             for node in fp_file.iter_nodes(fp_file.root):
                 if isinstance(node, tb.group.Group):
                     if isinstance(node, tb.group.RootGroup) or 'similarity_info' in str(node):
@@ -539,6 +549,8 @@ def sort_db_file(filename: str) -> None:
                 else:
                     _ = node.copy(sorted_fp_file.root, node._v_name, overwrite=True, stats=stats)
     # remove unsorted file
+    if verbose:
+        print('Cleaning up temporary files.')
     os.remove(tmp_filename)
 
 
@@ -651,7 +663,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
             if fps:
                 fps_table.append(fps)
         if sort:
-            sort_db_file(self.fp_filename)
+            sort_db_file(self.fp_filename, verbose=progress)
 
     def change_fp_for_append(self, fingerprint: Fingerprint):
         """Create an empty table and change the fingerprint to be used for appending."""
