@@ -222,7 +222,7 @@ class UniprotMatch:
         For a list of the available identifiers, check the
         `To database` list on https://www.uniprot.org/id-mapping
 
-        Author: David Figuereido Vidal
+        Author: David Araripe @DavidAraripe
         """
         job_id = self._submit_id_mapping(from_db=from_db, to_db=to_db, ids=ids)
         if self._check_id_mapping_results_ready(job_id, verbose):
