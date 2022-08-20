@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-
-import time
 import multiprocessing
 import os
+import time
 import warnings
 from collections import defaultdict
 from io import BytesIO
 from typing import Optional, Tuple, Union
 
+import pandas as pd
 import pystow
 import rdkit
-from rdkit import Chem
-import pandas as pd
-from tqdm import tqdm
 from rdkit.Chem.rdSubstructLibrary import SubstructLibrary, PatternHolder, CachedMolHolder
+from tqdm import tqdm
 
 try:
     import cupy
@@ -87,16 +85,21 @@ class FPSubSim2:
         """
         # Set version
         self.version = process_data_version(version=version, root_folder=root_folder)
+        # Set 3D
+        self.is3d = is3d
         # Determine default paths
         if root_folder is not None:
             os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
         source_path = pystow.join('papyrus', self.version, 'structures')
         # Find the file
         filenames = locate_file(source_path.as_posix(),
-                                f'*.*_combined_{3 if is3d else 2}D_set_with{"out" if not is3d else ""}_stereochemistry.sd*')
-        sd_file = filenames[0]
-        total = total = get_num_rows_in_file(filetype='structures', is3D=is3d, version=self.version, root_folder=root_folder)
-        self.create(sd_file=sd_file, outfile=outfile, fingerprint=fingerprint, total=total, progress=progress, njobs=njobs)
+                                f'*.*_combined_{3 if is3d else 2}D_set_'
+                                f'with{"out" if not is3d else ""}_stereochemistry.sd*')
+        self.sd_file = filenames[0]
+        total = get_num_rows_in_file(filetype='structures', is3D=is3d, version=self.version, root_folder=root_folder)
+        self.h5_filename = outfile
+        self.create(sd_file=self.sd_file, outfile=outfile, fingerprint=fingerprint,
+                    total=total, progress=progress, njobs=njobs)
 
     def create(self,
                sd_file: str,
@@ -109,10 +112,9 @@ class FPSubSim2:
         fingerprints and handle full substructure search (subgraph isomorphism)
         and load it when finished.
 
-        :param papyrus_sd_file: papyrus sd file containing chemical structures
-        :param version: version of the Papyrus dataset
+        :param sd_file: sd file containing chemical structures
         :param outfile: filename or filepath of output database
-        :param fingerprint: fingerprints to be calculated, if None uses all available
+        :param fingerprint: fingerprints to be calculated; if None, uses all available
         :param progress: whether progress should be shown
         :param total: number of molecules for progress display
         :param njobs: number of concurrent processes (-1 for all available logical cores)
@@ -149,7 +151,7 @@ class FPSubSim2:
             subst_group = h5file.create_group(
                 h5file.root, "substructure_info", "Infos for substructure search")
             # Array containing processed binary of the substructure library
-            subst_table = h5file.create_earray(
+            _ = h5file.create_earray(
                 subst_group, 'substruct_lib', tb.UInt64Atom(), (0,), 'Substructure search library')
             # Table for mapping indices to identifiers
             h5file.create_table(
@@ -274,15 +276,18 @@ class FPSubSim2:
             n_cpus = njobs - 1
         processes = []
         # Start reader
-        reader = multiprocessing.Process(target=_reader_process, args=(self.sd_file, n_cpus, total, False, input_queue, output_queue))
+        reader = multiprocessing.Process(target=_reader_process, args=(self.sd_file, n_cpus,
+                                                                       total, False,
+                                                                       input_queue))
         processes.append(reader)
         reader.start()
         # Start writer
-        writer = multiprocessing.Process(target=_writer_process, args=(self.h5_filename, output_queue, table_paths, total, progress))
+        writer = multiprocessing.Process(target=_writer_process, args=(self.h5_filename, output_queue,
+                                                                       table_paths, total, progress))
         writer.start()
         # Start workers
         for i in range(n_cpus):
-            job = multiprocessing.Process(target=_worker_process, args=(fp_types, input_queue, output_queue, n_cpus))
+            job = multiprocessing.Process(target=_worker_process, args=(fp_types, input_queue, output_queue))
             processes.append(job)
             processes[-1].start()
         # Joining workers
@@ -341,7 +346,10 @@ class FPSubSim2:
             return FPSubSim2CudaEngine(self.h5_filename, fp_signature)
         return FPSubSim2Engine(self.h5_filename, fp_signature)
 
-    def add_fingerprint(self, fingerprint: Fingerprint, papyrus_sd_file: str, progress: bool = True, total: Optional[int]= None):
+    def add_fingerprint(self, fingerprint: Fingerprint,
+                        papyrus_sd_file: str,
+                        progress: bool = True,
+                        total: Optional[int] = None):
         """Add a similarity fingerprint to the FPSubSim2 database.
 
         :param fingerprint: Fingerprint to be added
@@ -358,7 +366,7 @@ class FPSubSim2:
         backend.change_fp_for_append(fingerprint)
         backend.append_fps(MolSupplier(source=papyrus_sd_file), total=total, progress=progress)
 
-    def add_molecules(self, papyrus_sd_file: str, progress: bool = True, total: Optional[int]= None):
+    def add_molecules(self, papyrus_sd_file: str, progress: bool = True, total: Optional[int] = None):
         """Add molecules to the FPSubSim2 database.
 
         :param papyrus_sd_file: papyrus sd file containing new chemical structures
@@ -383,13 +391,14 @@ class FPSubSim2:
         with tb.open_file(self.h5_filename, mode="a") as h5file:
             # Remove previous lib
             h5file.remove_node(h5file.root.substructure_info.substruct_lib)
-            h5file.create_earray(h5file.root.substructure_info, 'substruct_lib', tb.UInt64Atom(), (0,), 'Substructure search library')
+            h5file.create_earray(h5file.root.substructure_info, 'substruct_lib',
+                                 tb.UInt64Atom(), (0,), 'Substructure search library')
             h5file.root.substructure_info.substruct_lib.attrs.padding = padding
             h5file.root.substructure_info.substruct_lib.append(lib_ints)
         sort_db_file(self.h5_filename, verbose=progress)
 
 
-def _reader_process(sd_file, n_workers, total, progress, input_queue, output_queue):
+def _reader_process(sd_file, n_workers, total, progress, input_queue):
     with MolSupplier(source=sd_file, total=total, show_progress=progress, start_id=1) as supplier:
         count = 0
         for mol_id, rdmol in supplier:
@@ -406,7 +415,7 @@ def _reader_process(sd_file, n_workers, total, progress, input_queue, output_que
 
 def _writer_process(h5_filename, output_queue, table_paths, total, progress):
     lib = SubstructLibrary(CachedMolHolder(), PatternHolder())
-    pbar = tqdm(total=total, smoothing = 0.0) if progress else {}
+    pbar = tqdm(total=total, smoothing=0.0) if progress else {}
     mappings_insert = []
     similarity_insert = defaultdict(list)
     with tb.open_file(h5_filename, mode="r+") as h5file:
@@ -456,7 +465,7 @@ def _writer_process(h5_filename, output_queue, table_paths, total, progress):
     return
 
 
-def _worker_process(fp_types, input_queue, output_queue, n_workers):
+def _worker_process(fp_types, input_queue, output_queue):
     while True:
         # while output_queue.qsize() > BATCH_WRITE_SIZE * n_workers / 2:
         #     time.sleep(0.5)
@@ -480,7 +489,7 @@ def _worker_process(fp_types, input_queue, output_queue, n_workers):
             output_queue.put(('similarity', repr(fper), (mol_id, *fp)))
 
 
-def sort_db_file(filename: str, verbose: bool=False) -> None:
+def sort_db_file(filename: str, verbose: bool = False) -> None:
     """Sorts the FPs db file."""
     if verbose:
         print('Optimizing FPSubSim2 file.')
@@ -502,7 +511,8 @@ def sort_db_file(filename: str, verbose: bool=False) -> None:
     with tb.open_file(tmp_filename, mode="r") as fp_file:
         with tb.open_file(filename, mode="w") as sorted_fp_file:
             # group to hold similarity tables
-            siminfo_group = sorted_fp_file.create_group(sorted_fp_file.root, "similarity_info", "Infos for similarity search")
+            siminfo_group = sorted_fp_file.create_group(sorted_fp_file.root, "similarity_info",
+                                                        "Infos for similarity search")
             simfp_groups = list(fp_file.walk_groups('/similarity_info/'))
             i = 0
             for simfp_group in simfp_groups:
@@ -535,7 +545,8 @@ def sort_db_file(filename: str, verbose: bool=False) -> None:
 
                         # update count ranges
                         popcnt_bins = calc_popcnt_bins_pytables(dst_fp_table, fp_table.attrs.length)
-                        popcounts = sorted_fp_file.create_vlarray(dst_group, 'popcounts', tb.ObjectAtom(), f'Popcounts of {dst_group._v_name}')
+                        popcounts = sorted_fp_file.create_vlarray(dst_group, 'popcounts', tb.ObjectAtom(),
+                                                                  f'Popcounts of {dst_group._v_name}')
                         for x in popcnt_bins:
                             popcounts.append(x)
             # add other tables
@@ -545,7 +556,9 @@ def sort_db_file(filename: str, verbose: bool=False) -> None:
                 if isinstance(node, tb.group.Group):
                     if isinstance(node, tb.group.RootGroup) or 'similarity_info' in str(node):
                         continue
-                    _ = node._f_copy(sorted_fp_file.root, node._v_name, overwrite=True, recursive=True, filters=filters, stats=stats)
+                    _ = node._f_copy(sorted_fp_file.root, node._v_name,
+                                     overwrite=True, recursive=True,
+                                     filters=filters, stats=stats)
                 else:
                     _ = node.copy(sorted_fp_file.root, node._v_name, overwrite=True, stats=stats)
     # remove unsorted file
@@ -564,8 +577,10 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
             for simfp_group in fp_file.walk_groups('/similarity_info/'):
                 if len(simfp_group._v_name):
                     fp_table = fp_file.get_node(simfp_group, 'fps', classname='Table')
-                    self._fp_table_mappings[fp_table.attrs.fp_id] = [f'/similarity_info/{simfp_group._v_name}/fps',
-                                                                     f'/similarity_info/{simfp_group._v_name}/popcounts']
+                    self._fp_table_mappings[fp_table.attrs.fp_id] = [f'/similarity_info/{simfp_group._v_name}'
+                                                                     '/fps',
+                                                                     f'/similarity_info/{simfp_group._v_name}'
+                                                                     '/popcounts']
         if fp_signature not in self._fp_table_mappings.keys():
             raise ValueError(f'fingerprint not available, must be one of {", ".join(self._fp_table_mappings.keys())}')
         self._current_fp = fp_signature
@@ -644,7 +659,8 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
                 ]
                 fps_table.remove_row(to_delete[0])
 
-    def append_fps(self, supplier: MolSupplier, progress: bool=True, total: Optional[int]=None, sort: bool = True) -> None:
+    def append_fps(self, supplier: MolSupplier, progress: bool = True,
+                   total: Optional[int] = None, sort: bool = True) -> None:
         """Appends FPs to the file for the fingerprint currently selected."""
         with tb.open_file(self.fp_filename, mode="a") as fp_file:
             fps_table = fp_file.get_node(self._current_fp_path)
@@ -679,14 +695,15 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
             # New table
             particle = create_schema(fingerprint.length)
             fp_table = fp_file.create_table(fp_group, 'fps', particle, 'Similarity FPs', expectedrows=1300000,
-                                           filters=filters)
+                                            filters=filters)
             # New attributes
             fp_table.attrs.fp_type = fingerprint.name
             fp_table.attrs.fp_id = self._current_fp
             fp_table.attrs.length = fingerprint.length
             fp_table.attrs.fp_params = json.dumps(fingerprint.params)
             # New Popcounts
-            popcounts = fp_file.create_vlarray(fp_group, 'popcounts', tb.ObjectAtom(), f'Popcounts of {fp_group._v_name}')
+            popcounts = fp_file.create_vlarray(fp_group, 'popcounts', tb.ObjectAtom(),
+                                               f'Popcounts of {fp_group._v_name}')
         self._current_fp_path = f'/similarity_info/{fp_group._v_name}/fps'
         self._current_popcounts_path = f'/similarity_info/{fp_group._v_name}/popcounts'
         self.fp_type, self.fp_params, self.rdkit_ver = self.read_parameters()
@@ -792,7 +809,8 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
         """
         data = list(zip(*FPSim2Engine.similarity(self, query_string, threshold, n_workers)))
         if not len(data):
-            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey', f'Tanimoto > {threshold} ({self.storage._current_fp})'])
+            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey',
+                                             f'Tanimoto > {threshold} ({self.storage._current_fp})'])
         ids, similarities = data
         ids, similarities = list(ids), list(similarities)
         data = self._get_mapping(ids)
@@ -803,7 +821,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
                 data[col] = data[col].apply(lambda x: x.decode('utf-8'))
         return data
 
-    def on_disk_similarity(self, query_string: str, threshold: float, n_workers: int=1, chunk_size: int=0):
+    def on_disk_similarity(self, query_string: str, threshold: float, n_workers: int = 1, chunk_size: int = 0):
         """Perform Tanimoto similarity search on disk.
 
         :param query_string:
@@ -814,7 +832,8 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
         """
         data = list(zip(*FPSim2Engine.on_disk_similarity(self, query_string, threshold, n_workers, chunk_size)))
         if not len(data):
-            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey', f'Tanimoto > {threshold} ({self.storage._current_fp})'])
+            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey',
+                                             f'Tanimoto > {threshold} ({self.storage._current_fp})'])
         ids, similarities = data
         ids, similarities = list(ids), list(similarities)
         data = self._get_mapping(ids)
@@ -837,7 +856,8 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
         """
         data = list(zip(*FPSim2Engine.tversky(self, query_string, threshold, a, b, n_workers)))
         if not len(data):
-            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey', f'Tversky > {threshold} ({self.storage._current_fp})'])
+            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey',
+                                             f'Tversky > {threshold} ({self.storage._current_fp})'])
         ids, similarities = data
         ids, similarities = list(ids), list(similarities)
         data = self._get_mapping(ids)
@@ -848,7 +868,9 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
                 data[col] = data[col].apply(lambda x: x.decode('utf-8'))
         return data
 
-    def on_disk_tversky(self, query_string: str, threshold: float, a: float, b: float, n_workers: int = 1, chunk_size: int = None):
+    def on_disk_tversky(self, query_string: str, threshold: float,
+                        a: float, b: float,
+                        n_workers: int = 1, chunk_size: int = None):
         """Perform Tversky similarity search on disk.
 
         :param query_string:
@@ -861,7 +883,8 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
         """
         data = list(zip(*FPSim2Engine.on_disk_tversky(self, query_string, threshold, a, b, n_workers, chunk_size)))
         if not len(data):
-            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey', f'Tversky > {threshold} ({self.storage._current_fp})'])
+            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey',
+                                             f'Tversky > {threshold} ({self.storage._current_fp})'])
         ids, similarities = data
         ids, similarities = list(ids), list(similarities)
         data = self._get_mapping(ids)
@@ -887,7 +910,7 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
         fp_filename: str,
         fp_signature: str,
         storage_backend: str = "pytables",
-        kernel: str='raw'
+        kernel: str = 'raw'
     ) -> None:
         """FPSubSim2 class to run fast CPU similarity searches.
 
@@ -935,7 +958,8 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
         """Tanimoto similarity search."""
         data = list(zip(*FPSim2CudaEngine.similarity(self, query_string, threshold)))
         if not len(data):
-            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey', f'Tanimoto > {threshold} ({self.storage._current_fp})'])
+            return pd.DataFrame([], columns=['idnumber', 'connectivity', 'InChIKey',
+                                             f'Tanimoto > {threshold} ({self.storage._current_fp})'])
         ids, similarities = data
         ids, similarities = list(ids), list(similarities)
         data = self._get_mapping(ids)
@@ -982,8 +1006,8 @@ class SubstructureLibrary(SubstructLibrary):
                 data[col] = data[col].apply(lambda x: x.decode('utf-8'))
         return data
 
-    def GetMatches(self, query: Union[str, Chem.Mol], recursionPossible: bool=True, useChirality: bool=True,
-                   useQueryQueryMatches: bool=False, numThreads: int=-1, maxResults: int=-1):
+    def GetMatches(self, query: Union[str, Chem.Mol], recursionPossible: bool = True, useChirality: bool = True,
+                   useQueryQueryMatches: bool = False, numThreads: int = -1, maxResults: int = -1):
         if isinstance(query, str):
             query = load_molecule(query)
         ids = list(super(SubstructureLibrary, self).GetMatches(query=query,

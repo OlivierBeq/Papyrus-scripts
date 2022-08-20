@@ -6,7 +6,6 @@ import re
 import json
 import time
 import zlib
-from io import StringIO
 from typing import List, Union
 from xml.etree import ElementTree
 from urllib.parse import urlparse, parse_qs, urlencode
