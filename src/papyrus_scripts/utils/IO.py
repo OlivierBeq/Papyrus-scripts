@@ -99,7 +99,7 @@ def get_disk_space(destination: str):
     return free
 
 
-def get_downloaded_versions(root_folder: str) -> List[str]:
+def get_downloaded_versions(root_folder: str = None) -> List[str]:
     """Identify versions of the downloaded Papyrus data
 
     :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
@@ -110,7 +110,7 @@ def get_downloaded_versions(root_folder: str) -> List[str]:
     return read_jsonfile(version_json)
 
 
-def get_latest_downloaded_version(root_folder: str) -> List[str]:
+def get_latest_downloaded_version(root_folder: str = None) -> List[str]:
     """Identify the latest version of the downloaded Papyrus data
 
     :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
@@ -121,7 +121,7 @@ def get_latest_downloaded_version(root_folder: str) -> List[str]:
     versions = read_jsonfile(version_json)
     return sorted(versions, key=lambda s: [int(u) for u in s.split('.')])[-1]
 
-def process_data_version(version: str, root_folder: str):
+def process_data_version(version: str, root_folder: str = None):
     """Confirm the version is available, downloaded and convert synonyms.
 
     :param version: version to be confirmed and/or converted.
