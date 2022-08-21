@@ -10,7 +10,7 @@ import swifter
 from joblib import Parallel, delayed
 from pandas.io.parsers import TextFileReader as PandasTextFileReader
 from sklearn.utils import shuffle
-from scipy.stats import median_absolute_deviation as MAD
+from scipy.stats import median_abs_deviation as MAD
 from tqdm.auto import tqdm
 
 from .fingerprint import Fingerprint, MorganFingerprint
