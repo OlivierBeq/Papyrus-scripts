@@ -17,6 +17,7 @@ def download_papyrus(outdir: Optional[str] = None,
                      stereo: bool = False,
                      structures: bool = False,
                      descriptors: Union[str, List[str]] = 'all',
+                     repo: str = 'zenodo',
                      progress: bool = True,
                      disk_margin: float = 0.10) -> None:
     """Download the Papyrus data.
@@ -27,15 +28,22 @@ def download_papyrus(outdir: Optional[str] = None,
     :param stereo: should 3D data be downloaded
     :param structures: should molecule structures be downloaded
     :param descriptors: should molecular and protein descriptors be downloaded
+    :param repo: where to download the files from {zenodo, googledrive}
     :param progress: should progress be displayed
     :param disk_margin: percent of free disk space to keep
     """
+
+    # Determine download parameters
     CHUNKSIZE = 10 * 1048576  # 10 MB
     RETRIES = 3
     # Obtain links to files
     files = get_papyrus_links()
     # Handle exceptions
-    available_versions = list(files.keys())
+    repos = list(files.keys())
+    # Select the repo to download from
+    if repo.lower() not in repos:
+        raise ValueError(f'repo can only be one of [{", ".join(repos)}]')
+    available_versions = list(files[repo].keys())
     if isinstance(version, list):
         for _version in version:
             if _version not in available_versions + ['latest', 'all']:
@@ -96,7 +104,7 @@ def download_papyrus(outdir: Optional[str] = None,
         if 'unirep' in descriptors or 'all' in descriptors:
             downloads.add('proteins_unirep')
         # Determine total download size
-        total = sum(files[_version][ftype]['size'] for ftype in downloads)
+        total = sum(files[repo][_version][ftype]['size'] for ftype in downloads)
         if progress:
             print(f'Number of files to be donwloaded: {len(downloads)}\n'
                   f'Total size: {tqdm.format_sizeof(total)}B')
@@ -110,7 +118,7 @@ def download_papyrus(outdir: Optional[str] = None,
         if progress:
             pbar = tqdm(total=total, desc=f'Donwloading version {_version}', unit='B', unit_scale=True)
         for ftype in downloads:
-            download = files[_version][ftype]
+            download = files[repo][_version][ftype]
             dname, durl, dsize, dhash = download['name'], download['url'], download['size'], download['sha256']
             # Determine path
             if ftype in ['2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme', 'license']:
@@ -198,7 +206,7 @@ def remove_papyrus(outdir: Optional[str] = None,
     # Obtain links to files
     files = get_papyrus_links()
     # Handle exceptions
-    available_versions = list(files.keys())
+    available_versions = list(files['zenodo'].keys())
     if isinstance(version, list):
         for _version in version:
             if _version not in available_versions + ['latest', 'all']:
@@ -288,7 +296,7 @@ def remove_papyrus(outdir: Optional[str] = None,
         total = 0
         for i in range(len(removal) - 1, -1, -1):
             ftype = removal[i]
-            data = files[_version][ftype]
+            data = files['zenodo'][_version][ftype]
             dname, dsize = data['name'], data['size']
             # Determine path
             if ftype in ['2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme', 'license']:
@@ -311,7 +319,7 @@ def remove_papyrus(outdir: Optional[str] = None,
         if progress:
             pbar = tqdm(total=total, desc=f'Removing files from version {_version}', unit='B', unit_scale=True)
         for ftype in removal:
-            data = files[_version][ftype]
+            data = files['zenodo'][_version][ftype]
             dname, dsize = data['name'], data['size']
             # Determine path
             if ftype in ['2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme', 'license']:
