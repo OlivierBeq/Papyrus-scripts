@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import os
 import inspect
 
 import click
+import pystow
 
 from .download import download_papyrus, remove_papyrus
 from .matchRCSB import get_matches, update_rcsb_data
 from .reader import read_papyrus
-from .utils.IO import get_num_rows_in_file
+from .utils.IO import get_num_rows_in_file, process_data_version, convert_gz_to_xz, convert_xz_to_gz
 from .subsim_search import FPSubSim2
 from .fingerprint import Fingerprint, get_fp_from_name
 
@@ -43,10 +45,14 @@ def main():
                     'final hidden states and final cell states), '
                     'all (all descriptors for the selected stereochemistry), or '
                     'none (do not download any descriptor).'))
+@click.option('-r', '--repo', 'repo', type=click.Choice(['zenodo', 'googledrive']),
+              required=False, default='zenodo', nargs=1,
+              show_default=True, multiple=False,
+              help=('Repository to download the data from..'))
 @click.option('--force', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Force download if disk space is low'
                                       '(default: False for 10% disk space margin).')
-def download(output_directory, version, stereo, structs, descs, force):
+def download(output_directory, version, stereo, structs, descs, force, repo):
     if isinstance(version, tuple):
         version = list(version)
     if isinstance(descs, tuple):
@@ -57,6 +63,7 @@ def download(output_directory, version, stereo, structs, descs, force):
                      stereo=stereo in ['with', 'both'],
                      structures=structs,
                      descriptors=descs,
+                     repo=repo,
                      progress=True,
                      disk_margin=0.0 if force else 0.1)
 
@@ -298,3 +305,56 @@ Fingerprint:
         for version_ in version:
             fpss.create_from_papyrus(is3d=is3D, version=version_, outfile=output, fingerprint=fingerprints, root_folder=indir,
                                      progress=verbose, njobs=njobs)
+
+
+@main.command(help='Transform the compression of Papyrus files from LZMA to Gzip and vice-versa.')
+@click.option('-i', '--indir', 'indir', type=str, required=False, default=None, nargs=1,
+              metavar='INDIR', show_default=True,
+              help='Directory where Papyrus data is stored\n(default: pystow\'s home folder).')
+@click.option('-v', '--version', 'version', type=str, required=False, default=['latest'], multiple=False,
+              metavar='XX.X', help='Version of the Papyrus data to be transformed (default: latest).')
+@click.option('-f', '--format', 'format', type=click.Choice(['xz', 'gzip']),
+              required=False, default=None, nargs=1, show_default=True, multiple=False,
+              help=('Compression type to transform the data to. Is inferred if not specified.'))
+@click.option('-l', '--level', 'level', type=click.IntRange(0, 9),
+              required=False, default=None, nargs=1, show_default=True, multiple=False,
+              help=('Compression level of output files.'))
+@click.option('-e', '--extreme', 'extreme', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should extreme compression be toggled on.')
+def convert(indir, version, format, level, extreme):
+    if isinstance(version, tuple):
+        version = list(version)
+    if indir is None:
+        indir = str(pystow.utils.get_base(''))
+    version = process_data_version(version, indir)
+    if format is None:
+        # Infer from the most abundant file type
+        formats = {'xz': [], 'gzip': []}
+        for root, _, files in os.walk(os.path.join(indir, 'papyrus', version)):
+            for name in files:
+                if name.lower().endswith('xz'):
+                    format['gzip'].append(os.path.join(root, name))
+                elif name.lower().endswith('gz'):
+                    format['xz'].append(os.path.join(root, name))
+        if len(format['gzip']) > len(format['xz']):
+            format = 'gzip'
+        elif len(format['xz']) != 0:
+            format = 'xz'
+        else:
+            raise ValueError('Equal number of LZMA and GZIP files, please indicate the output format.')
+    # Transform files of the specified format
+    for root, _, files in os.walk(os.path.join(indir, 'papyrus', version)):
+        for name in files:
+            if format == 'gzip' and name.endswith('xz'):
+                convert_xz_to_gz(os.path.join(root, name),
+                                 os.path.join(root, name).rstrip('xz') + 'gz',
+                                 compression_level=level,
+                                 progress=True)
+                os.remove(os.path.join(root, name))
+            elif format == 'xz' and name.endswith('gz'):
+                convert_gz_to_xz(os.path.join(root, name),
+                                 os.path.join(root, name).rstrip('gz') + 'xz',
+                                 compression_level=level,
+                                 extreme=extreme,
+                                 progress=True)
+                os.remove(os.path.join(root, name))

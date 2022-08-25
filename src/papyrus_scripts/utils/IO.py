@@ -10,9 +10,12 @@ import json
 import os
 import requests
 import shutil
+import lzma
+import gzip
 from typing import List, Optional
 
 import pystow
+from tqdm.auto import tqdm
 
 
 def sha256sum(filename, blocksize=None):
@@ -214,3 +217,72 @@ def get_papyrus_links():
     with open(local_file) as fh:
         data = json.load(fh)
     return data
+
+
+def convert_xz_to_gz(input_file: str, output_file: str,
+                     compression_level: int = 9,
+                     progress: bool = False) -> None:
+    """Convert a LZMA- compressed xz file to a GZIP-compressed file.
+
+    :param input_file: Path of the input file
+    :param ouput_file: Path of the output file
+    :param compression_level: Compression level of the output file (if None, defaults to 9)
+    :param progress: Show conversion progress.
+    """
+    if compression_level is None:
+        compression_level = 9
+    # Transform per chunk
+    chunksize = 10 * 1048576  # 10 MB
+    with lzma.open(input_file, 'rb') as fh, gzip.open(output_file, 'wb', compresslevel=compression_level) as oh:
+        if progress:
+            pbar = tqdm(desc='Determining size', unit='B', unit_scale=True)
+            size = fh.seek(0, 2)  # Determine original size
+            _ = fh.seek(0, 0)  # Go back to the beginning
+            pbar.set_description('Converting')
+            pbar.total = size
+            # pbar = tqdm(total=size, desc='Converting', unit='B', unit_scale=True)
+        while True:
+            chunk = fh.read(chunksize)
+            if not chunk:
+                if progress:
+                    pbar.close()
+                break
+            written = oh.write(chunk)
+            if progress:
+                pbar.update(written)
+
+
+def convert_gz_to_xz(input_file: str, output_file: str,
+                     compression_level: int = lzma.PRESET_DEFAULT,
+                     extreme: bool = False,
+                     progress: bool = False) -> None:
+    """Convert a GZIP- compressed file to a LZMA-compressed xz file.
+
+    :param input_file: Path of the input file
+    :param ouput_file: Path of the output file
+    :param compression_level: Compression level of the output file (if None, defaults to 6)
+    :param extreme: Should extreme compression be toggled on top of the compression level
+    :param progress: Show conversion progress.
+    """
+    if compression_level is None:
+        compression_level = lzma.PRESET_DEFAULT
+    preset = compression_level | lzma.PRESET_EXTREME if extreme else compression_level
+    # Transform per chunk
+    chunksize = 10 * 1048576  # 10 MB
+    with gzip.open(input_file, 'rb') as fh, lzma.open(output_file, 'wb', preset=preset) as oh:
+        if progress:
+            pbar = tqdm(desc='Determining size', unit='B', unit_scale=True)
+            size = fh.seek(0, 2)  # Determine original size
+            _ = fh.seek(0, 0)  # Go back to the beginning
+            pbar.set_description('Converting')
+            pbar.total = size
+            # pbar = tqdm(total=size, desc='Converting', unit='B', unit_scale=True)
+        while True:
+            chunk = fh.read(chunksize)
+            if not chunk:
+                if progress:
+                    pbar.close()
+                break
+            written = oh.write(chunk)
+            if progress:
+                pbar.update(written)
