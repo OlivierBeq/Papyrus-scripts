@@ -1,28 +1,35 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
 from typing import Optional
 
-import chembl_downloader
 import pystow
+import chembl_downloader
+import pandas as pd
 
+from .utils.pubchem import map_pubchem_assays
+from .utils.patents import map_patent_id
+
+
+BASE_DIR = os.path.dirname(__file__)
 
 def process_chembl_data(papyrus_version: str,
-                        root_folder: Optional[str] = None,
-                        chembl_version: Optional[int] = None) -> None:
+                        chembl_version: Optional[int] = None,
+                        prefix: Optional[str] = None) -> None:
     """Process data from ChEMBL to be integrated in Papyrus
 
     :param papyrus_version: The version of the Papyrus dataset being created.
-    :param root_folder: Directory where intermediary files and ChEMBL SQLite will be stored
-                        (default: pystow's home directory)
     :param chembl_version: Specific version of ChEMBL to be considered (default: latest)
+    :param prefix: Prefix directory, in pystow's data folder, where intermediary files
+                   and ChEMBL SQLite will be stored.
     """
     # Determine default paths
-    if root_folder is not None:
-        os.environ['PYSTOW_HOME'] = root_folder
-    papyruslib_root = pystow.module('papyrus-creation')
-    # Execute the first query
+    papyruslib_root = 'papyrus-creation'
+    chembl_root = 'chembl'
     # chembl-downloader handles the download of the SQLite db if need be
+
+    # Activities
     activity_query = """
     SELECT activities.activity_id,
            activities.molregno,
@@ -41,65 +48,67 @@ def process_chembl_data(papyrus_version: str,
            activities.src_id
     FROM activities
     """
-    activity_df = chembl_downloader.query(activity_query, version=chembl_version, prefix='chembl')
+    activity_df = chembl_downloader.query(activity_query, version=chembl_version,
+                                          prefix=[papyruslib_root, chembl_root])
     # Remove duplicates
-    papyruslib_root.join(name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_potential_duplicates.txt')
-    activity_df  = activity_df[activity_df.potential_duplicate != 1]
+    mask = activity_df.potential_duplicate == 1
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_potential_duplicates.txt',
+                   obj=activity_df[mask])
+    activity_df  = activity_df[~mask]
     # Remove invalid data
-    #     data_validity_comment = 'Outside typical range'
-    #     OR
-    #     data_validity_comment = 'Non standard unit for type'
-    #     OR
-    #     data_validity_comment = 'Potential missing data'
-    #     OR
-    #     data_validity_comment = 'Potential transcription error'
-    #     OR
-    #     data_validity_comment = 'Potential author error'
-    #     OR
-    #     data_validity_comment = 'Author confirmed error';
-    #     data_validity_comment != 'Author confirmed error';
-    # >> $(version)_raw_bioactivity_list_c$(chembl_version)_questionned_valid_activity.txt
+    mask = activity_df.data_validity_comment.isin(['Outside typical range', 'Non standard unit for type',
+                                                   'Potential missing data', 'Potential transcription error',
+                                                   'Potential author error', 'Author confirmed error'])
+    questionned = activity_df[mask]
+    submask = questionned.data_validity_comment != 'Author confirmed error' # Force removal of confirmed errors
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_questionned_valid_activity.txt',
+                   obj=questionned[submask])
+    activity_df = activity_df[~mask]
+    del questionned, submask
     # Keep measures with '=' sign
-    #     standard_relation = '='
-    # >> $(version)_raw_bioactivity_list_c$(chembl_version)_censored_activity.txt
+    mask = activity_df.standard_relation != '='
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_censored_activity.txt',
+                   obj=activity_df[mask])
+    activity_df = activity_df[~mask]
     # pChEMBL value is defined
-    #     strlength(pchembl_value) > 0;
-    # >> $(version)_raw_bioactivity_list_c$(chembl_version)_undefined_pchembl_values.txt
+    mask = activity_df.pchemb_value.isna()
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_undefined_pchembl_values.txt',
+                   obj=activity_df[mask])
+    activity_df = activity_df[~mask]
     # Is activity questioned?
-    #     activity_comment = 'inconclusive' OR
-    #     activity_comment = 'unspecified' OR
-    #     activity_comment = 'Indeterminate' OR
-    #     activity_comment = 'Ineffective' OR
-    #     activity_comment = 'Insoluble' OR
-    #     activity_comment = 'Insufficient' OR
-    #     activity_comment = 'Lack of solubility' OR
-    #     activity_comment = 'inconclusive' OR
-    #     activity_comment = 'Not Determined' OR
-    #     activity_comment = 'ND(Insoluble)' OR
-    #     activity_comment = 'tde' OR
-    #     activity_comment = 'insoluble' OR
-    #     activity_comment = 'not tested' OR
-    #     activity_comment = 'uncertain' OR
-    #     activity_comment = 'No compound available' OR
-    #     activity_comment = 'No compound detectable' OR
-    #     activity_comment = 'No data' OR
-    #     activity_comment = 'Non valid test' OR
-    #     activity_comment = 'Not assayed' OR
-    #     activity_comment = 'OUTCOME = Not detected' OR
-    #     activity_comment = 'Precipitate' OR
-    #     activity_comment = 'Precipitated' OR
-    #     activity_comment = 'Precipitates under the conditions of the study' OR
-    #     activity_comment = 'Precipitation' OR
-    #     activity_comment = 'Qualitative measurement' OR
-    #     activity_comment = 'Too insoluble' OR
-    #     activity_comment = 'Unable to be measured' OR
-    #     activity_comment = 'Unable to calculate' OR
-    #     activity_comment = 'Uncertain';
-    # >> $(version)_raw_bioactivity_list_c$(chembl_version)_inconclusive_activity.txt
+    mask = activity_df.activity_comment.isin(['inconclusive', 'unspecified', 'Indeterminate',
+                                              'Ineffective', 'Insoluble', 'Insufficient',
+                                              'Lack of solubility', 'Inconclusive',
+                                              'Not Determined', 'ND(Insoluble)', 'tde',
+                                              'insoluble', 'not tested', 'uncertain',
+                                              'No compound available', 'No compound detectable',
+                                              'No data', 'Non valid test', 'Not assayed',
+                                              'OUTCOME = Not detected', 'Precipitate',
+                                              'Precipitated', 'Precipitation',
+                                              'Precipitates under the conditions of the study',
+                                              'Qualitative measurement', 'Too insoluble',
+                                              'Unable to be measured', 'Unable to calculate',
+                                              'Uncertain'])
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_inconclusive_activity.txt',
+                   obj=activity_df[mask])
+    activity_df = activity_df[~mask]
     # PubChem origin src_id = 7
-    #   src_id = 7
-    # >> $(version)_raw_bioactivity_list_c$(chembl_version)_pubchem_bioassays.txt
-    # >> $(version)_raw_bioactivity_list_c$(chembl_version).txt
+    mask = activity_df.src_id == 7
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_pubchem_bioassays.txt',
+                   obj=activity_df[mask])
+    activity_df = activity_df[~mask]
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}.txt',
+                   obj=activity_df)
+    del activity_df
+
+    # Compounds
     compound_query = """
     SELECT molecule_hierarchy.molregno,
            molecule_dictionary.pref_name,
@@ -118,31 +127,64 @@ def process_chembl_data(papyrus_version: str,
          molecule_dictionary
     WHERE molecule_hierarchy.parent_molregno = molecule_dictionary.molregno
     """
+    compounds_df = chembl_downloader.query(compound_query, version=chembl_version,
+                                          prefix=[papyruslib_root, chembl_root])
     # Rename chembl_id to compound_chembl_id, ...
-    #   chembl_id >> compound_chembl_id
-    #   pref_name >> compound_pref_name
+    compounds_df.rename(columns={'chembl_id': 'compound_chembl_id',
+                                 'pref_name': 'compound_pref_name'},
+                        inplace=True)
     # Unique molregno
-    # >> $(version)_raw_molecule_list_c$(chembl_version).txt
+    compounds_df.drop_duplicates(subset='molregno', inplace=True)
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_molecule_list_c{chembl_version}.txt',
+                   obj=compounds_df)
+    del compounds_df
 
-    # Read ChEMBL & PubChem bioactivities
-    # Join molecules (above) on molregno
-    # Is molecule type annotated
-    #   molecule_type is defined
-    # Is small molecule?
-    #   molecule_type like "%small molecule%"
-    # >> $(version)_raw_bioactivities_only_small_molecules_c$(chembl_version).txt
-    # Read ChEMBL bioactivities
-    #     Potential duplicates
-    #     Questioned data validity
-    #     Censored data
-    #     Questioned activity
-    #     Undefined activity
-    # Join molecules (above) on molregno
-    # Is molecule type annotated
-    #   molecule_type is defined
-    # Is small molecule?
-    #   molecule_type like "%small molecule%"
-    # >> $(version)_low_quality_raw_bioactivities_only_small_molecules_c$(chembl_version).txt
+    # Merge ChEMBL & PubChem bioactivities onto molecules
+    activity_df = pd.concat([pystow.load_df(papyruslib_root, chembl_root,
+                                            name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}.txt',
+                                            read_csv_kwargs={'sep': '\t'}),
+                             pystow.load_df(papyruslib_root, chembl_root,
+                                            name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_pubchem_bioassays.txt',
+                                            read_csv_kwargs={'sep': '\t'})
+                             ])
+    compounds_df = pystow.load_df(papyruslib_root, chembl_root,
+                                  name=f'{papyrus_version}_raw_molecule_list_c{chembl_version}.txt',
+                                  read_csv_kwargs={'sep': '\t'})
+    activity_df = activity_df.merge(compounds_df, on='molregno')
+    # Keep small molecules
+    activity_df = activity_df[activity_df.molecule_type.str.contains('small molecule')]
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivities_only_small_molecules_c{chembl_version}.txt',
+                   obj=activity_df)
+    del activity_df
+
+    # Merge questionned bioactivities onto molecules
+    activity_df = pd.concat([pystow.load_df(papyruslib_root, chembl_root,
+                                            name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_potential_duplicates.txt',
+                                            read_csv_kwargs={'sep': '\t'}),
+                             pystow.load_df(papyruslib_root, chembl_root,
+                                            name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_questionned_valid_activity.txt',
+                                            read_csv_kwargs={'sep': '\t'}),
+                             pystow.load_df(papyruslib_root, chembl_root,
+                                            name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_censored_activity.txt',
+                                            read_csv_kwargs={'sep': '\t'}),
+                             pystow.load_df(papyruslib_root, chembl_root,
+                                            name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_undefined_pchembl_values.txt',
+                                            read_csv_kwargs={'sep': '\t'}),
+                             pystow.load_df(papyruslib_root, chembl_root,
+                                            name=f'{papyrus_version}_raw_bioactivity_list_c{chembl_version}_inconclusive_activity.txt',
+                                            read_csv_kwargs={'sep': '\t'})
+                             ])
+    activity_df = activity_df.merge(compounds_df, on='molregno')
+    # Keep small molecules
+    activity_df = activity_df[activity_df.molecule_type.str.contains('small molecule')]
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_low_quality_raw_bioactivities_only_small_molecules_c{chembl_version}.txt',
+                   obj=activity_df)
+    del activity_df, compounds_df
+
+    # Assays
     assay_query = """
     SELECT assays.assay_id,
            assays.description,
@@ -164,33 +206,89 @@ def process_chembl_data(papyrus_version: str,
          docs
     WHERE assays.doc_id = docs.doc_id
     """
+    assay_df = chembl_downloader.query(assay_query, version=chembl_version,
+                                       prefix=[papyruslib_root, chembl_root])
     # Separate AID, doc_id and year
-    #     if year is defined and pubmed_id is defined => AID := chembl_id; doc_id := "PMID:" . pubmed_id;
-    #     if year is defined and pubmed_id is not defined and doi is defined => AID := chembl_id; doc_id := "DOI:" . doi;
-    #     if year is defined and pubmed_id is not defined and doi is not defined and patent is defined => AID := chembl_id; doc_id := "PATENT:" . RSubst(patent_id, '[^a-zA-Z0-9]', '', 'g');
-    #     if year is defined and pubmed_id is not defined and doi is not defined and patent is not defined => AID := chembl_id; doc_id := chembl_id_1;
-    #     if year is not defined and chembl_id_1 = "CHEMBL1201862" => Obtain data from "https://pubchem.ncbi.nlm.nih.gov/rest/pug/assay/aid/" . src_assay_id . "/dates/XML?dates_type=deposition";
-    #                                                                 Parse XML into a table
-    #                                                                   xroot = ET.fromstring(AllData.iloc[0, 0])
-    #
-    #                                                                   rows = []
-    #                                                                   for info_node in xroot:
-    #                                                                       aid = info_node[0].text
-    #                                                                       year = info_node[1][0].text
-    #                                                                       rows.append({"src_assay_id": aid, "Year": year})
-    #
-    #                                                                   AllData = pd.DataFrame(rows)
-    #                                                                 Join on original data with src_assay_id
-    #                                                                 AID: = chembl_id; doc_id: = "PubChemAID:".src_assay_id;
-    #     elif year is not defined and chembl_id_1 = "CHEMBL1909046" => year := ""; AID := chembl_id; doc_id := "DrugMatrix:" . chembl_id_1;
-    #     elif year is not defined and patent is defined => Obtain patent from Google big query
-    #                                                       AID := chembl_id; doc_id := "PATENT:" . RSubst(patent_id, '[^a-zA-Z0-9]', '', 'g');
-    #     elif RMatch(title, '\(\d{4}\)\s+PMID:') = True => #values := RMatch(title, '\((\d{4})\)\s+PMID:\s*(\d+)'); doc_id := "PMID:" . #values[3]; year := #values[2]; AID := chembl_id;
-    #     else => AID := chembl_id; year := ""; doc_id := chembl_id_1;
-    # Unique occurence od assay_id
-    # >> $(version)_raw_assay_list_c$(chembl_version).txt
+    filter_1 = (~assay_df.year.isna() & ~assay_df.pubmed_id.isna())
+    filter_2 = (~assay_df.year.isna() & assay_df.pubmed_id.isna() & ~assay_df.doi.isna())
+    filter_3 = (~assay_df.year.isna() & assay_df.pubmed_id.isna() & assay_df.doi.isna() & ~assay_df.patent_id.isna())
+    filter_4 = (~assay_df.year.isna() & assay_df.pubmed_id.isna() & assay_df.doi.isna() & assay_df.patent_id.isna())
+    filter_5 = (assay_df.year.isna() & (assay_df.chembl_id_1 == "CHEMBL1201862"))  # PubChem Bioassay
+    filter_6 = (assay_df.year.isna() & (assay_df.chembl_id_1 == "CHEMBL1909046"))  # DrugMatrix
+    filter_7 = (assay_df.year.isna() & ~assay_df.chembl_id_1.isin(["CHEMBL1201862", "CHEMBL1909046"]) & ~assay_df.patent_id.isna())
+    filter_8 = (assay_df.year.isna() & ~assay_df.chembl_id_1.isin(["CHEMBL1201862", "CHEMBL1909046"]) & assay_df.patent_id.isna() & assay_df.title.str.contains(r'\(\d{4}\)\s+PMID:'))
+    filter_9 = (assay_df.year.isna() & ~assay_df.chembl_id_1.isin(["CHEMBL1201862", "CHEMBL1909046"]) & assay_df.patent_id.isna() & ~assay_df.title.str.contains(r'\(\d{4}\)\s+PMID:'))
 
+    assay_df_1 =assay_df[filter_1]
+    assay_df.drop(index=assay_df[~filter_1].index, inplace=True)
+    assay_df_1['AID'] = assay_df_1.chembl_id
+    assay_df_1.assign(doc_id=['PMID:' + x for x in assay_df_1.pubmed_id])
 
+    assay_df_2 = assay_df[filter_2]
+    assay_df.drop(index=assay_df[~filter_2].index, inplace=True)
+    assay_df_2['AID'] = assay_df_2.chembl_id
+    assay_df_2.assign(doc_id=['DOI:' + x for x in assay_df_2.doi])
+
+    assay_df_3 = assay_df[filter_3]
+    assay_df.drop(index=assay_df[~filter_3].index, inplace=True)
+    assay_df_3['AID'] = assay_df_3.chembl_id
+    assay_df_3.assign(doc_id=['PATENT:' + re.sub('[^a-zA-Z0-9]', '', x)  for x in assay_df_3.patent_id])
+
+    assay_df_4 = assay_df[filter_4]
+    assay_df.drop(index=assay_df[~filter_4].index, inplace=True)
+    assay_df_4['AID'] = assay_df_4.chembl_id
+    assay_df_4['doc_id'] = assay_df_4.chembl_id_1
+
+    assay_df_5 = assay_df[filter_5]
+    assay_df.drop(index=assay_df[~filter_5].index, inplace=True)
+    assay_df_5 = map_pubchem_assays(assay_df_5, 'src_assay_id')
+    assay_df_5['AID'] = assay_df_5.chembl_id
+    assay_df_5.assign(doc_id=['PubChemAID:' + x for x in assay_df_5.src_assay_id])
+
+    assay_df_6 = assay_df[filter_6]
+    assay_df.drop(index=assay_df[~filter_6].index, inplace=True)
+    assay_df_6['year'] = ""
+    assay_df_6['AID'] = assay_df_6.chembl_id
+    assay_df_6.assign(doc_id=['DrugMatrix:' + x for x in assay_df_6.chembl_id_1])
+
+    assay_df_7 = assay_df[filter_7]
+    assay_df.drop(index=assay_df[~filter_7].index, inplace=True)
+    assay_df_7 = map_patent_id(assay_df_7,
+                               pd.read_csv(os.path.join(BASE_DIR, 'data', 'bigquery_patents.tsv'), sep='\t'),
+                               pd.read_csv(os.path.join(BASE_DIR, 'data', 'uspto_patents.tsv'), sep='\t'),
+                               'src_assay_id')
+    assay_df_7['AID'] = assay_df_7.chembl_id
+    assay_df_7.assign(doc_id=['PATENT:' + re.sub('[^a-zA-Z0-9]', '', x) for x in assay_df_7.patent_id])
+
+    assay_df_8 = assay_df[filter_8]
+    assay_df.drop(index=assay_df[~filter_8].index, inplace=True)
+    assay_df_8 = map_patent_id(assay_df_8,
+                               pd.read_csv(os.path.join(BASE_DIR, 'data', 'bigquery_patents.tsv'), sep='\t'),
+                               pd.read_csv(os.path.join(BASE_DIR, 'data', 'uspto_patents.tsv'), sep='\t'),
+                               'src_assay_id')
+    assay_df_8['AID'] = assay_df_8.chembl_id
+    assay_df_8.assign(year=[re.sub(r'\((\d{4})\)\s+PMID:\s*\d+', r'\1', x) for x in assay_df_8.title])
+    assay_df_8.assign(doc_id=['PMID:' + re.sub(r'\(\d{4}\)\s+PMID:\s*(\d+)', r'\1', x) for x in assay_df_8.title])
+
+    assay_df_9 = assay_df[filter_9]
+    assay_df.drop(index=assay_df[~filter_9].index, inplace=True)
+    assay_df_9['AID'] = assay_df_9.chembl_id
+    assay_df_9['year'] = ""
+    assay_df_9['doc_id'] = assay_df_9.chembl_id_1
+
+    data = pd.concat([assay_df_1, assay_df_2, assay_df_3, assay_df_4,
+                      assay_df_5, assay_df_6, assay_df_7, assay_df_8,
+                      assay_df_9])
+    data = data[['assay_id', 'description', 'assay_type', 'assay_test_type', 'relationship_type', 'tid', 'confidence_score', 'chembl_id', 'src_assay_id', 'AID', 'doc_id', 'year', 'variant_id']]
+    data.rename(columns={'chembl_id': 'assay_chembl_id', 'year': 'Year'}, inplace=True)
+    data.drop_duplicates('assay_id', inplace=True)
+
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_assay_list_c{chembl_version}.txt',
+                   obj=data)
+
+    if not assay_df.empty:
+        raise RuntimeError(f'Some assays were not considered by the filters:\n{assay_df}')
 
     # Read $(version)_raw_bioactivities_only_small_molecules_c$(chembl_version).txt
     # Remove doc_id
