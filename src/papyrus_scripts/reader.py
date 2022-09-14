@@ -172,7 +172,7 @@ def _filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
                                   ids: Optional[List[str]], id_name: str):
     if isinstance(data, pd.DataFrame):
         if ids is None:
-            return data
+            return _iterate_filter_descriptors(data, None, None)
         return data[data[id_name].isin(ids)]
     else:
         return _iterate_filter_descriptors(data, ids, id_name)
@@ -181,8 +181,9 @@ def _filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
 def _iterate_filter_descriptors(data: Iterator, ids: Optional[List[str]], id_name: str):
     for chunk in data:
         if ids is None:
-            return chunk
-        return chunk[chunk[id_name].isin(ids)]
+            yield chunk
+        else:
+            yield chunk[chunk[id_name].isin(ids)]
 
 
 def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'unirep',
