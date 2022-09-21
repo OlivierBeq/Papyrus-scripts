@@ -22,7 +22,9 @@ def get_unirep_descriptors(protein_data: pd.DataFrame,
     unirep_sizes = [64, 256, 1900]
     data = []
     if progress:
-        pbar = tqdm(protein_data.iterrows(), total=protein_data.shape[0])
+        pbar = tqdm(protein_data.iterrows(),
+                    total=protein_data.shape[0],
+                    desc='Obtaining UniRep embeddings')
     else:
         pbar = protein_data.iterrows()
     # Iterate over sequences
