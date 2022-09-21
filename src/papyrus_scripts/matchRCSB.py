@@ -77,7 +77,9 @@ def update_rcsb_data(root_folder: Optional[str] = None,
     # Map PDBID prot to UniProt acessions
     if verbose:
         print(f'Obtaining mappings from protein PDB ID to UniProt accessions')
-    uniprot_mapping = UniprotMatch.uniprot_mappings(pdb_data.PDBIDprot.tolist(), map_from='PDB', map_to='UniProtKB_AC-ID')
+    uniprot_mapping = UniprotMatch.uniprot_mappings(pdb_data.PDBIDprot.tolist(),
+                                                    map_from='PDB',
+                                                    map_to='UniProtKB_AC-ID')  # Forces the use of SIFTS
     # Join on the RCSB data
     if verbose:
         print(f'Combining the data')

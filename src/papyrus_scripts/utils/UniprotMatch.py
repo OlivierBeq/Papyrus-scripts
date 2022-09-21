@@ -18,6 +18,7 @@ from requests.adapters import HTTPAdapter, Retry
 def uniprot_mappings(query: Union[str, List[str]],
                      map_from: str = 'ID',
                      map_to: str = 'PDB_ID',
+                     taxon: str = None
                      ) -> pd.DataFrame:
     """Map identifiers using the UniProt identifier mapping tool.
 
@@ -25,25 +26,35 @@ def uniprot_mappings(query: Union[str, List[str]],
     :param map_from: type of input identifiers (default: accession)
     :param map_to: type of desired output identifiers
                    (default: PDB identifiers)
+    :param taxon: taxon to be mapped to if 'map_from' is 'Gene_Name'
+
+    If mapping from {'PDB', 'PDB_ID'} to {'UniProtKB_AC-ID', 'ACC'}
+    and query is None, then returns all SIFTS mappings.
 
     See: https://www.uniprot.org/help/api_idmapping
     """
+    if isinstance(query, str):
+        query = [query]
     # If mapping PDB to UniProt, use SIFTS flat files
     if map_from in ['PDB', 'PDB_ID'] and map_to in ['UniProtKB_AC-ID', 'ACC']:
         # Obtain mappings from SIFTS
         data = pd.read_csv('ftp://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/tsv/uniprot_pdb.tsv.gz',
                            sep='\t', skiprows=[0]
-                 ).rename(columns={'SP_PRIMARY': map_to,
-                                             'PDB': map_from})
+                 ).rename(columns={'SP_PRIMARY': map_to, 'PDB': map_from})
+        # Reorganize columns
+        data = data[[map_from, map_to]]
         # Split by PDB
         data[map_from] = data[map_from].str.split(';')
         # Unmerge rows according to PDB
         data = data.explode(column=map_from).reset_index(drop=True)
+        if query is not None:
+            query = [x.lower() for x in query]
+            data = data[data[map_from].str.lower().isin(query)]
         return data
     else:
         # Use UniProt API
         matching = UniprotMatch()
-        matches = matching.uniprot_id_mapping(query, map_from, map_to, verbose=False)
+        matches = matching.uniprot_id_mapping(query, map_from, map_to, taxon, verbose=False)
         df = pd.DataFrame.from_dict(matches, orient='index')
         df = df.reset_index().rename(columns={'index': map_from, 0: map_to})
         return df
@@ -68,11 +79,19 @@ class UniprotMatch:
         self._session.mount("https://", HTTPAdapter(max_retries=self._retries))
 
 
-    def _submit_id_mapping(self, from_db, to_db, ids):
-        request = requests.post(
-            f"{self._api_url}/idmapping/run",
-            data={"from": from_db, "to": to_db, "ids": ",".join(ids)},
-        )
+    def _submit_id_mapping(self, from_db, to_db, ids, taxon=None):
+        if from_db == 'Gene_Name' and taxon is None:
+            raise ValueError('Taxon must be provided when mapping from gene names.')
+        if taxon is None:
+            request = requests.post(
+                f"{self._api_url}/idmapping/run",
+                data={"from": from_db, "to": to_db, "ids": ",".join(ids)},
+            )
+        else:
+            request = requests.post(
+                f"{self._api_url}/idmapping/run",
+                data={"from": from_db, "to": to_db, "ids": ",".join(ids), "taxId": taxon}
+            )
         request.raise_for_status()
         return request.json()["jobId"]
 
@@ -207,23 +226,23 @@ class UniprotMatch:
 
     def uniprot_id_mapping(self,
             ids: list, from_db: str = "UniProtKB_AC-ID", to_db: str = None,
-            verbose: bool = True
+            taxon: str = None, verbose: bool = True
     ) -> dict:
         """
-        Function to map Uniprot identifiers into other databases.
-        Returns dictionary with query ids as keys and the respective
-        mapped identifications.
-        Params:
-        ids -> list of uniprot accession IDs to be mapped.
-               (can be changed for querying other identifiers).
-        from_db -> identifier type of the `ids`.
-        to_db -> identifier type to be obtained.
-        For a list of the available identifiers, check the
+        Map Uniprot identifiers into other databases.
+
+		For a list of the available identifiers, check the
         `To database` list on https://www.uniprot.org/id-mapping
 
-        Author: David Araripe @DavidAraripe
+        :param ids: IDs to be mapped from
+        :param from_db: Type of identifier supplied through 'ids'
+        :param to_db: Type of identifier to be obtained
+        :param taxon: Taxon ID of the species if 'from_db' is 'Gene_Name'
+        :return: A dictionary with query ids as keys and the respective mapped results
+
+        Adapted from David Araripe's (@DavidAraripe) original code
         """
-        job_id = self._submit_id_mapping(from_db=from_db, to_db=to_db, ids=ids)
+        job_id = self._submit_id_mapping(from_db=from_db, to_db=to_db, ids=ids, taxon=taxon)
         if self._check_id_mapping_results_ready(job_id, verbose):
             link = self._get_id_mapping_results_link(job_id)
             r = self._get_id_mapping_results_search(link)
@@ -232,5 +251,8 @@ class UniprotMatch:
             query_to_newIDs = dict()
             for id in r_df["from"].unique():
                 subset_df = r_df[r_df["from"] == id]
-                query_to_newIDs[id] = " ".join(list(subset_df["to"].unique()))
+                if isinstance(subset_df["to"].tolist()[0], str):
+                    query_to_newIDs[id] = " ".join(list(subset_df["to"].unique()))
+                elif isinstance(subset_df["to"].tolist()[0], dict):
+                    query_to_newIDs[id] = " ".join(set(subset_df["to"].apply(lambda row: row['primaryAccession'])))
             return query_to_newIDs
