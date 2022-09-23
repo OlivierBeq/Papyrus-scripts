@@ -93,8 +93,8 @@ class FPSubSim2:
         source_path = pystow.join('papyrus', self.version, 'structures')
         # Find the file
         filenames = locate_file(source_path.as_posix(),
-                                f'*.*_combined_{3 if is3d else 2}D_set_'
-                                f'with{"out" if not is3d else ""}_stereochemistry.sd*')
+                                rf'\d+\.\d+_combined_{3 if is3d else 2}D_set_'
+                                rf'with{"out" if not is3d else ""}_stereochemistry\.sd.*')
         self.sd_file = filenames[0]
         total = get_num_rows_in_file(filetype='structures', is3D=is3d, version=self.version, root_folder=root_folder)
         self.h5_filename = outfile

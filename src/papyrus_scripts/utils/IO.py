@@ -8,6 +8,8 @@ import importlib
 import inspect
 import json
 import os
+import re
+
 import requests
 import shutil
 import lzma
@@ -41,7 +43,7 @@ def write_jsonfile(data: object, json_outfile: str) -> None:
         json.dump(data, outfile, indent=4)
 
 
-def read_jsonfile(json_infile: str) -> object:
+def read_jsonfile(json_infile: str) -> dict:
     """Read in a json file and return the json object."""
     with open(json_infile) as infile:
         data = json.load(infile)
@@ -139,36 +141,37 @@ def process_data_version(version: str, root_folder: str = None):
     return version
 
 
-def locate_file(dirpath: str, glob_pattern: str):
+def locate_file(dirpath: str, regex_pattern: str):
     """Find file(s) matching the given pattern in the given directory
 
     :param dirpath: Path to the directory to obtain the file from
-    :param glob_pattern: Pattern passed to glob.glob to locate the file(s)
+    :param regex_pattern: Pattern used to locate the file(s)
     :return: a list of files matching the pattern and in the given directory
     """
     # Handle exceptions
     if not os.path.isdir(dirpath):
         raise NotADirectoryError(f'Directory does not exist: {dirpath}')
     # Find the file
-    file_mask = os.path.join(dirpath, glob_pattern)
-    filenames = glob.glob(file_mask)
+    filenames = [os.path.join(dirpath, fname) for fname in os.listdir(dirpath) if re.search(regex_pattern, fname)]
     # Handle WSL ZoneIdentifier files
     filenames = [fname for fname in filenames if not fname.endswith(':ZoneIdentifier')]
     if len(filenames) == 0:
-        raise FileNotFoundError(f'Could not locate a file in in {dirpath} matching {file_mask}')
+        raise FileNotFoundError(f'Could not locate a file in in {dirpath} matching {regex_pattern}')
     return filenames
 
 
 def get_num_rows_in_file(filetype: str, is3D: bool, descriptor_name: Optional[str] = None, version: str = 'latest',
-                         root_folder: Optional[str] = None) -> int:
+                         plusplus: bool = True, root_folder: Optional[str] = None) -> int:
         """Get the number of rows a Papyrus file has.
 
 
-        :param filetype: Type of file, one of {'bioactivity', 'structure', 'descriptor'}
+        :param filetype: Type of file, one of {'bioactivities', 'structures', 'descriptors'}
         :param is3D: Whether to consider the standardised (2D) or non-standardised (3D) data
         :param descriptor_name: Name of the descriptor, one of {'cddd', 'mold2', 'mordred', 'fingerprint'},
-                                only considered if type='descriptor'.
+                                only considered if type='descriptors'.
         :param version: Version of Papyrus to be considered
+        :param plusplus: If bioactivities come from the Papyrus++ very high quality curated set,
+                         only considered if type='bioactivitities'.
         :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
         :return: The number of lines in the corresponding file
         """
@@ -185,6 +188,8 @@ def get_num_rows_in_file(filetype: str, is3D: bool, descriptor_name: Optional[st
         # Obtain file sizes (number of lines)
         sizes = read_jsonfile(json_file)
         if filetype == 'bioactivities':
+            if plusplus:
+                return sizes['papyrus++']
             return sizes['papyrus_3D'] if is3D else sizes['papyrus_2D']
         elif filetype == 'structures':
             return sizes['structures_3D'] if is3D else sizes['structures_2D']
@@ -222,7 +227,7 @@ def get_papyrus_links():
 def convert_xz_to_gz(input_file: str, output_file: str,
                      compression_level: int = 9,
                      progress: bool = False) -> None:
-    """Convert a LZMA- compressed xz file to a GZIP-compressed file.
+    """Convert a LZMA-compressed xz file to a GZIP-compressed file.
 
     :param input_file: Path of the input file
     :param ouput_file: Path of the output file

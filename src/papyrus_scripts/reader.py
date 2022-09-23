@@ -13,12 +13,13 @@ from prodec import Descriptor, Transform
 from .utils.IO import locate_file, process_data_version, TypeDecoder
 
 
-def read_papyrus(is3d: bool = False, version: str = 'latest', chunksize: Optional[int] = None, source_path: Optional[str] = None) -> Union[
+def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = True, chunksize: Optional[int] = None, source_path: Optional[str] = None) -> Union[
     Iterator[pd.DataFrame], pd.DataFrame]:
     """Read the Papyrus dataset.
 
     :param is3d: whether to consider stereochemistry or not (default: False)
     :param version: version of the dataset to be read
+    :param plusplus: read the Papyrus++ curated subset of very high quality
     :param chunksize: number of lines per chunk. To read without chunks, set to None
     :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
     :return: the Papyrus activity dataset
@@ -34,7 +35,8 @@ def read_papyrus(is3d: bool = False, version: str = 'latest', chunksize: Optiona
         dtypes = json.load(jsonfile, cls=TypeDecoder)['papyrus']
     # Find the file
     filenames = locate_file(source_path.base.as_posix(),
-                            f'*.*_combined_set_with{"out" if not is3d else ""}_stereochemistry.tsv*')
+                            r'\d+\.\d+' + (r'\+\+' if plusplus else '') + '_combined_set_'
+                            f'with{"out" if not is3d else ""}' + r'_stereochemistry\.tsv.*')
     return pd.read_csv(filenames[0], sep='\t', chunksize=chunksize, dtype=dtypes, low_memory=True)
 
 
@@ -51,7 +53,7 @@ def read_protein_set(source_path: Optional[str] = None, version: str = 'latest')
         os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
     source_path = pystow.module('papyrus', version)
     # Find the file
-    filenames = locate_file(source_path.base.as_posix(), f'*.*_combined_set_protein_targets.tsv*')
+    filenames = locate_file(source_path.base.as_posix(), r'\d+\.\d+_combined_set_protein_targets\.tsv.*')
     return pd.read_csv(filenames[0], sep='\t', keep_default_na=False)
 
 
@@ -85,19 +87,19 @@ def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
     # Find the files
     if desc_type in ['mold2', 'all']:
         mold2_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  f'*.*_combined_{3 if is3d else 2}D_moldescs_mold2.tsv*')
+                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_mold2\.tsv.*')
     elif desc_type in ['mordred', 'all']:
         mordd_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  f'*.*_combined_{3 if is3d else 2}D_moldescs_mordred{3 if is3d else 2}D.tsv*')
+                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_mordred{3 if is3d else 2}D\.tsv.*')
     elif desc_type in ['cddd', 'all']:
         cddds_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  f'*.*_combined_{3 if is3d else 2}D_moldescs_CDDDs.tsv*')
+                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_CDDDs.tsv.*')
     elif desc_type in ['fingerprint', 'all']:
         molfp_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  f'*.*_combined_{3 if is3d else 2}D_moldescs_{"E3FP" if is3d else "ECFP6"}.tsv*')
+                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_{"E3FP" if is3d else "ECFP6"}\.tsv.*')
     elif desc_type in ['moe', 'all']:
         moe_files = locate_file(source_path.join('descriptors').as_posix(),
-                                f'*.*_combined_{3 if is3d else 2}D_moldescs_MOE.tsv*')
+                                rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_MOE\.tsv.*')
     if desc_type == 'mold2':
         return _filter_molecular_descriptors(pd.read_csv(mold2_files[0], sep='\t',
                                                          dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize),
@@ -220,7 +222,7 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
     else:
         pbar = partial(iter)
     if desc_type == 'unirep':
-        unirep_files = locate_file(source_path.join('descriptors').as_posix(), f'*.*_combined_prot_embeddings_unirep.tsv*')
+        unirep_files = locate_file(source_path.join('descriptors').as_posix(), r'\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*')
         if len(unirep_files) == 0:
             raise ValueError('Could not find unirep descriptor file')
         if desc_type == 'unirep':

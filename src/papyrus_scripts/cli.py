@@ -23,16 +23,19 @@ def main():
               default=None, nargs=1, show_default=True, metavar='OUTDIR',
               help='Directory where Papyrus data will be stored\n(default: pystow\'s home folder).')
 @click.option('--version', '-V', 'version', required=False, default=['latest'], multiple=True,
-              metavar='XX.X', help='Version of the Papyrus data to be downloaded.')
+              metavar='XX.X', help='Version of the Papyrus data to be downloaded (can also be "all").')
+@click.option('--more', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should other data than Papyrus++ be downloaded '
+                                      '(considered only when --stereo is "without" or "both").')
 @click.option('-s', '--stereo', 'stereo', type=click.Choice(['without', 'with', 'both']), required=False,
               default='without', nargs=1, show_default=True,
               help=('Type of data to be downloaded: without (standardised data without stereochemistry), '
                     'with (non-standardised data with stereochemistry), '
-                    'both (both standardised and non-standardised data)'))
+                    'both (both standardised and non-standardised data).'))
 @click.option('-S', '--structures', 'structs', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Should structures be downloaded (SD file).')
 @click.option('-d', '--descriptors', 'descs', type=click.Choice(['mold2', 'cddd', 'mordred', 'fingerprint',
-                                                                   'unirep', 'all', 'none']),
+                                                                 'unirep', 'all', 'none']),
               required=False, default=['none'], nargs=1,
               show_default=True, multiple=True,
               help=('Type of descriptors to be downloaded: mold2 (777 2D Mold2 descriptors), '
@@ -52,7 +55,7 @@ def main():
 @click.option('--force', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Force download if disk space is low'
                                       '(default: False for 10% disk space margin).')
-def download(output_directory, version, stereo, structs, descs, force, repo):
+def download(output_directory, version, more, stereo, structs, descs, force, repo):
     if isinstance(version, tuple):
         version = list(version)
     if isinstance(descs, tuple):
@@ -61,6 +64,7 @@ def download(output_directory, version, stereo, structs, descs, force, repo):
                      version=version,
                      nostereo=stereo in ['without', 'both'],
                      stereo=stereo in ['with', 'both'],
+                     only_pp=not more,
                      structures=structs,
                      descriptors=descs,
                      repo=repo,

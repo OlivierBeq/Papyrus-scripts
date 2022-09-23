@@ -15,6 +15,7 @@ def download_papyrus(outdir: Optional[str] = None,
                      version: Union[str, List[str]] = 'latest',
                      nostereo: bool = True,
                      stereo: bool = False,
+                     only_pp: bool =True,
                      structures: bool = False,
                      descriptors: Union[str, List[str]] = 'all',
                      repo: str = 'zenodo',
@@ -25,6 +26,7 @@ def download_papyrus(outdir: Optional[str] = None,
     :param outdir: directory where Papyrus data is stored (default: pystow's directory)
     :param version: version of the dataset to be downloaded
     :param nostereo: should 2D data be downloaded
+    :param only_pp: download only the curated Papyrus++ subset
     :param stereo: should 3D data be downloaded
     :param structures: should molecule structures be downloaded
     :param descriptors: should molecular and protein descriptors be downloaded
@@ -80,7 +82,9 @@ def download_papyrus(outdir: Optional[str] = None,
         downloads.add('readme')
         downloads.add('license')
         if nostereo:
-            downloads.add('2D_papyrus')
+            downloads.add('papyrus++')
+            if not only_pp:
+                downloads.add('2D_papyrus')
             downloads.add('proteins')
             if structures:
                 downloads.add('2D_structures')
@@ -121,7 +125,7 @@ def download_papyrus(outdir: Optional[str] = None,
             download = files[repo][_version][ftype]
             dname, durl, dsize, dhash = download['name'], download['url'], download['size'], download['sha256']
             # Determine path
-            if ftype in ['2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme', 'license']:
+            if ftype in ['papyrus++', '2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme', 'license']:
                 fpath = papyrus_version_root.join(name=dname).as_posix()
             elif ftype in ['2D_structures', '3D_structures']:
                 fpath = papyrus_version_root.join('structures', name=dname).as_posix()

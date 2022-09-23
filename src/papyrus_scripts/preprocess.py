@@ -151,6 +151,11 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
         # Columns with optional multiple values
         cols2split = ['source', 'CID', 'AID', 'type_IC50', 'type_EC50', 'type_KD', 'type_Ki', 'type_other', 'relation',
                       'pchembl_value']
+        # Allow processing of Papyrus++
+        papyruspp = 'Activity_class' not in data.columns
+        if papyruspp:
+            data['Activity_class'] = np.NaN
+            data['type_other'] = np.NaN
         # Keep trace of order of columns
         ordered_columns = data.columns.tolist()
         # Keep binary data associated to source
@@ -216,6 +221,8 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
         # Add back binary data (might be empty)
         data = pd.concat([preserved, data, preserved_binary, binary_data])
         del preserved, preserved_binary, binary_data
+        if papyruspp:
+            data.drop(columns=['Activity_class', 'type_other'], inplace=True)
         return data
 
 
@@ -272,6 +279,11 @@ def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activit
     elif activity_types.difference(types_):
         raise ValueError(f'Type not supported, must be one of {types}')
     else:
+        # Allow processing of Papyrus++
+        papyruspp = 'Activity_class' not in data.columns
+        if papyruspp:
+            data['Activity_class'] = np.NaN
+            data['type_other'] = np.NaN
         # Transform activity_types to column names
         activity_types = [f"type_{types[i]}" for i in range(len(types)) if types_[i] in activity_types]
         # Columns with optional multiple values
@@ -344,6 +356,8 @@ def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activit
         # Add back binary data (might be empty)
         data = pd.concat([preserved, data, preserved_binary, binary_data])
         del preserved, preserved_binary, binary_data
+        if papyruspp:
+            data.drop(columns=['Activity_class', 'type_other'], inplace=True)
         return data
 
 
