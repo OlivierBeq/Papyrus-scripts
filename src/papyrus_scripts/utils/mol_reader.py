@@ -46,7 +46,10 @@ class ForwardMol2MolSupplier:
                 if len(new_buffer):
                     self._buffer += new_buffer
                 else:
-                    mol = MolFromMol2Block(self._buffer)
+                    mol = MolFromMol2Block(self._buffer,
+                                           self.sanitize,
+                                           self.removeHs,
+                                           self.cleanupSubstructures)
                     yield mol
                     break
             else:
