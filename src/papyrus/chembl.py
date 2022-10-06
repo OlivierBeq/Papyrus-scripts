@@ -7,25 +7,31 @@ from typing import Optional
 import pystow
 import chembl_downloader
 import pandas as pd
+from rdkit import Chem
 
 from .utils.pubchem import map_pubchem_assays
 from .utils.patents import map_patent_id
+from .utils.uniprot import uniprot_information
+from .utils.pandas_utils import equalize_cell_size_in_row
+from .utils.mol_standardize import standardize
 
 
 BASE_DIR = os.path.dirname(__file__)
 
 def process_chembl_data(papyrus_version: str,
                         chembl_version: Optional[int] = None,
-                        prefix: Optional[str] = None) -> None:
+                        prefix: Optional[str] = 'papyrus-creation',
+                        include_variants: bool = False) -> None:
     """Process data from ChEMBL to be integrated in Papyrus
 
     :param papyrus_version: The version of the Papyrus dataset being created.
-    :param chembl_version: Specific version of ChEMBL to be considered (default: latest)
+    :param chembl_version: Specific version of ChEMBL to be considered (default: None -> latest)
     :param prefix: Prefix directory, in pystow's data folder, where intermediary files
                    and ChEMBL SQLite will be stored.
+    :param include_variants: Whether to include variant information (must be improved before can be used)
     """
     # Determine default paths
-    papyruslib_root = 'papyrus-creation'
+    papyruslib_root = prefix
     chembl_root = 'chembl'
     # chembl-downloader handles the download of the SQLite db if need be
 
@@ -177,7 +183,7 @@ def process_chembl_data(papyrus_version: str,
                                             read_csv_kwargs={'sep': '\t'})
                              ])
     activity_df = activity_df.merge(compounds_df, on='molregno')
-    # Keep small molecules
+    # Keep small molecules # TODO: create custom filter as most new molecules are not annotated yet
     activity_df = activity_df[activity_df.molecule_type.str.contains('small molecule')]
     pystow.dump_df(papyruslib_root, chembl_root,
                    name=f'{papyrus_version}_low_quality_raw_bioactivities_only_small_molecules_c{chembl_version}.txt',
@@ -279,7 +285,8 @@ def process_chembl_data(papyrus_version: str,
     data = pd.concat([assay_df_1, assay_df_2, assay_df_3, assay_df_4,
                       assay_df_5, assay_df_6, assay_df_7, assay_df_8,
                       assay_df_9])
-    data = data[['assay_id', 'description', 'assay_type', 'assay_test_type', 'relationship_type', 'tid', 'confidence_score', 'chembl_id', 'src_assay_id', 'AID', 'doc_id', 'year', 'variant_id']]
+    data = data[['assay_id', 'description', 'assay_type', 'assay_test_type', 'relationship_type', 'tid',
+                 'confidence_score', 'chembl_id', 'src_assay_id', 'AID', 'doc_id', 'year', 'variant_id']]
     data.rename(columns={'chembl_id': 'assay_chembl_id', 'year': 'Year'}, inplace=True)
     data.drop_duplicates('assay_id', inplace=True)
 
@@ -290,18 +297,40 @@ def process_chembl_data(papyrus_version: str,
     if not assay_df.empty:
         raise RuntimeError(f'Some assays were not considered by the filters:\n{assay_df}')
 
-    # Read $(version)_raw_bioactivities_only_small_molecules_c$(chembl_version).txt
-    # Remove doc_id
-    # Join assays on assay_id
-    # Confidence score assigned
-    # confidence_score = '9' or confidence_score = '8' or confidence_score = '7' or confidence_score = '5'
-    # >> $(version)_raw_bioactivities_only_small_molecules_conf_9_8_7_5_c$(chembl_version).txt
-    # >> $(version)_low_quality_raw_bioactivities_only_small_molecules_conf_9_8_7_5_c$(chembl_version).txt
+    # Merge bioactivities and assays
+    activity_df = pystow.load_df(papyruslib_root, chembl_root,
+                                 name=f'{papyrus_version}_raw_bioactivities_only_small_molecules_c{chembl_version}.txt',
+                                 read_csv_kwargs={'sep': '\t'})
+    activity_df.drop(columns=['doc_id'])
+    activity_df = activity_df.merge(data, on='assay_id')
 
-    # Read $(version)_low_quality_raw_bioactivities_only_small_molecules_c$(chembl_version).txt
-    # Remove doc_id
-    # Join assays on assay_id
-    # >> append to $(version)_low_quality_raw_bioactivities_only_small_molecules_conf_9_8_7_5_c$(chembl_version).txt
+    # Filter on confidence score
+    ## 5   Multiple direct protein targets may be assigned
+    ## 7   Direct protein complex subunits assigned
+    ## 8   Homologous single protein target assigned
+    ## 9   Direct single protein target assigned
+    activity_df = activity_df[~activity_df.confidence_score.isna()]
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivities_only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
+                   obj=activity_df[activity_df.confidence_score.astype(int).isin([9, 8, 7, 5])])
+    # Remove higher confidence scores
+    activity_df = activity_df[~activity_df.confidence_score.astype(int).isin([9, 8, 7, 5])]
+
+    # Repeat for low quality data
+    low_qual_activity_df = pystow.load_df(papyruslib_root, chembl_root,
+                                          name=f'{papyrus_version}_low_quality_raw_bioactivities'
+                                               f'_only_small_molecules_c{chembl_version}.txt',
+                                          read_csv_kwargs={'sep': '\t'})
+    low_qual_activity_df.drop(columns=['doc_id'], inplace=True)
+    low_qual_activity_df = low_qual_activity_df.merge(data, on='assay_id')
+    low_qual_activity_df = pd.concat([activity_df, low_qual_activity_df])
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_bioactivities_only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
+                   obj=low_qual_activity_df)
+
+    del data, activity_df, low_qual_activity_df
+
+    # Protein classifications
     target_query = """
     SELECT target_dictionary.target_type,
            target_dictionary.pref_name,
@@ -309,23 +338,243 @@ def process_chembl_data(papyrus_version: str,
            target_dictionary.chembl_id
     FROM target_dictionary
     """
-    variant_mapping_query = """
-    SELECT variant_sequences.mutation,
-           variant_sequences.accession,
-           variant_sequences.sequence
-    FROM variant_sequences
-    WHERE variant_sequences.variant_id = ?
-    """
-    target_mapping_query = """
-    SELECT target_dictionary.target_type,
-           target_dictionary.pref_name,
-           target_dictionary.tid,
-           target_dictionary.chembl_id
-    FROM target_dictionary
-    WHERE target_dictionary.tid = ?
-    """
+    targets = chembl_downloader.query(target_query, version=chembl_version,
+                                      prefix=[papyruslib_root, chembl_root])
+    targets.rename(columns={'chembl_id': 'target_chembl_id',
+                            'pref_name': 'target_pref_name'},
+                   inplace=True)
+    target_ids = pd.concat([chembl_downloader.query(f"""
+    SELECT target_components.tid,
+           component_class.protein_class_id,
+           component_sequences.accession,
+           component_sequences.component_id
+    FROM target_components,
+         component_sequences,
+         component_class
+    WHERE target_components.component_id = component_sequences.component_id
+        AND component_sequences.component_id = component_class.component_id
+        AND target_components.tid = {tid}""", prefix=[papyruslib_root, chembl_root])
+                                for tid in targets.tid])
+    classification = pd.concat([chembl_downloader.query(f"""
+    SELECT protein_family_classification.protein_class_id,
+           protein_family_classification.l1,
+           protein_family_classification.l2,
+           protein_family_classification.l3,
+           protein_family_classification.l4,
+           protein_family_classification.l5,
+           protein_family_classification.l6,
+           protein_family_classification.l7,
+           protein_family_classification.l8
+    FROM protein_family_classification
+    WHERE protein_family_classification.protein_class_id = {class_id}""", prefix=[papyruslib_root, chembl_root])
+                                for class_id in target_ids.protein_class_id])
+    # Format classification
+    classification['Classification'] = classification[['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7', 'l8']].apply(lambda x: x.str.cat(sep='->'), axis=1)
+    classification.drop(columns=['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7', 'l8'], inplace=True)
+    # Merge
+    targets = targets.merge(target_ids, on='tid', how='outer').merge(classification, on='protein_class_id', how='outer')
+    del target_ids, classification
+    # Drop if no accession
+    targets = targets[~targets.accession.isna()]
+    targets = targets.drop_duplicates(subset=['accession', 'Classification'])
+    list_uniques = lambda x: ';'.join(set(str(k) for k in x))
+    # Keep unique values
+    targets = targets.groupby('accession').aggregate({'target_type': list_uniques, 'target_pref_name': list_uniques,
+                                                      'tid': list_uniques, 'target_chembl_id': list_uniques,
+                                                      'protein_class_id': list_uniques, 'component_id': list_uniques,
+                                                      'Classification': list_uniques}
+                                                     ).reset_index()
+    # Entry Q8MMZ4 is obsolete and has been merged with W7JX98
+    targets[targets.accession == 'Q8MMZ4', 'accession'] = 'W7JX98'
+    # Remove nucleic acids
+    targets = targets[~targets.accession.str.startswith('ENSG')]
+    # Obtain UniProt information
+    target_data = uniprot_information(targets.accession.tolist())
+    targets = targets.merge(target_data, on='accession', how='inner')
+    del target_data
+    # Explode data
+    targets = (targets.set_index('accession')
+                      .apply(lambda x: x.str.split(';'))
+                      .apply(equalize_cell_size_in_row, axis=1)
+                      .apply(pd.Series.explode)
+                      .reset_index())
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_target_list_c{chembl_version}.txt',
+                   obj=targets)
+    del targets
+
+    # Variants
+    if include_variants:
+        # TODO: improve filtering and quality check of variants
+        variants = pystow.load_df(papyruslib_root, chembl_root,
+                                     name=f'{papyrus_version}_raw_assay_list_c{chembl_version}.txt',
+                                     read_csv_kwargs={'sep': '\t'})
+        variants = variants[['variant_id', 'tid']]
+        variants = variants[~variants.variant_id.isna()]
+        variants.drop_duplicates('variant_id', inplace=True)
+
+        mutations = pd.concat([chembl_downloader.query(f"""
+            SELECT variant_sequences.variant_id,
+                   variant_sequences.mutation,
+                   variant_sequences.accession,
+                   variant_sequences.sequence
+            FROM variant_sequences
+            WHERE variant_sequences.variant_id = {variant_id}""", prefix=[papyruslib_root, chembl_root])
+                               for variant_id in variants.variant_id])
+        mutations['Length'] = mutations.sequence.str.len()
+        mutations = mutations.sort_values('variant_id')
+
+        targets = pd.concat([chembl_downloader.query(f"""
+                SELECT target_dictionary.target_type,
+                       target_dictionary.pref_name,
+                       target_dictionary.tid,
+                       target_dictionary.chembl_id
+                FROM target_dictionary
+                WHERE target_dictionary.tid = {tid}""", prefix=[papyruslib_root, chembl_root])
+                               for tid in variants.tid])
+        targets.rename(columns={'chembl_id': 'target_chembl_id',
+                                'pref_name': 'target_pref_name'},
+                       inplace=True)
+
+        variants = variants.merge(mutations, on='variant_id', how='inner').merge(targets, on='tid', how='inner')
+        del mutations, targets
+        target_ids = pd.concat([chembl_downloader.query(f"""
+            SELECT target_components.tid,
+                   component_class.protein_class_id,
+                   component_sequences.accession,
+                   component_sequences.component_id
+            FROM target_components,
+                 component_sequences,
+                 component_class
+            WHERE target_components.component_id = component_sequences.component_id
+                AND component_sequences.component_id = component_class.component_id
+                AND target_components.tid = {tid}""", prefix=[papyruslib_root, chembl_root])
+                                for tid in variants.tid])
+        classification = pd.concat([chembl_downloader.query(f"""
+            SELECT protein_family_classification.protein_class_id,
+                   protein_family_classification.l1,
+                   protein_family_classification.l2,
+                   protein_family_classification.l3,
+                   protein_family_classification.l4,
+                   protein_family_classification.l5,
+                   protein_family_classification.l6,
+                   protein_family_classification.l7,
+                   protein_family_classification.l8
+            FROM protein_family_classification
+            WHERE protein_family_classification.protein_class_id = {class_id}""", prefix=[papyruslib_root, chembl_root])
+                                    for class_id in target_ids.protein_class_id])
+        # Format classification
+        classification['Classification'] = classification[['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7', 'l8']].apply(
+            lambda x: x.str.cat(sep='->'), axis=1)
+        classification.drop(columns=['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7', 'l8'], inplace=True)
+        # Merge
+        variants = variants.merge(target_ids, on='tid', how='outer').merge(classification, on='protein_class_id',
+                                                                         how='outer')
+        del target_ids, classification
+        # Drop if no accession
+        variants = variants[~variants.accession.isna()]
+        list_uniques = lambda x: ';'.join(set(str(k) for k in x))
+        # Keep unique values
+        variants = variants.groupby(['accession', 'tid']).aggregate({'target_type': list_uniques, 'target_pref_name': list_uniques,
+                                                          'tid': list_uniques, 'target_chembl_id': list_uniques,
+                                                          'protein_class_id': list_uniques,
+                                                          'component_id': list_uniques,
+                                                          'Classification': list_uniques}
+                                                         ).reset_index()
+        # Entry Q8MMZ4 is obsolete and has been merged with W7JX98
+        variants[variants.accession == 'Q8MMZ4', 'accession'] = 'W7JX98'
+        # Remove nucleic acids
+        variants = variants[~variants.accession.str.startswith('ENSG')]
+        # Obtain UniProt information
+        variants_data = uniprot_information(variants.accession.tolist())
+        variants = variants.merge(variants_data, on='accession', how='inner')
+        del variants_data
+        # Explode data
+        variants = (variants.set_index('accession')
+                    .apply(lambda x: x.str.split(';'))
+                    .apply(equalize_cell_size_in_row, axis=1)
+                    .apply(pd.Series.explode)
+                    .reset_index())
+        # Sort and keep first occurence
+        variants = variants.sort_values('variant_id').drop_duplicates('variant_id')
+        variants = variants[["variant_id", "target_type", "target_pref_name", "tid", "target_chembl_id",
+                             "protein_class_id", "accession", "component_id", "Classification",
+                             "UniProtID", "Status", "Protein names",
+                             "mutation", "Gene names", "Organism", "Length", "sequence"]]
+        variants.rename(columns={'mutation': 'Mutation', 'sequence': 'Sequence'}, inplace=True)
+        pystow.dump_df(papyruslib_root, chembl_root,
+                       name=f'{papyrus_version}_raw_variant_target_list_c{chembl_version}.txt',
+                       obj=variants)
+        del variants
+
+        # Bioactivities with target information
+        bioactivities = pystow.load_df(papyruslib_root, chembl_root,
+                                       name=f'{papyrus_version}_raw_bioactivities_'
+                                            f'only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
+                                       read_csv_kwargs={'sep': '\t'})
+        targets = pystow.load_df(papyruslib_root, chembl_root,
+                                 name=f'{papyrus_version}_raw_target_list_c{chembl_version}.txt',
+                                 read_csv_kwargs={'sep': '\t'})
+        if include_variants:
+            variants = pystow.load_df(papyruslib_root, chembl_root,
+                                      name=f'{papyrus_version}_raw_variant_target_list_c{chembl_version}.txt',
+                                      read_csv_kwargs={'sep': '\t'})
+            bioactivities_variants = (~bioactivities.variant_id.isna() &
+                                      (bioactivities.variant_id != -1) &
+                                      (bioactivities.variant_id != ''))
+            bioactivities = pd.concat([bioactivities[bioactivities_variants].merge(variants, on='variant_id'),
+                                       bioactivities[~bioactivities_variants].merge(targets, on='tid')])
+        else:
+            bioactivities = bioactivities.merge(targets, on='tid')
+
+        del bioactivities_variants
+        # Save higher quality bioactivities
+        single_proteins = bioactivities.target_type == 'SINGLE PROTEIN'
+        pystow.dump_df(papyruslib_root, chembl_root,
+                       name=f'{papyrus_version}_raw_bioactivities_'
+                            f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
+                       obj=bioactivities[single_proteins])
+
+        # Repeat for lower quality bioactivities
+        bioactivities = bioactivities[~single_proteins]
+        low_qual_bioactivities = pystow.load_df(papyruslib_root, chembl_root,
+                                                name=f'{papyrus_version}_low_quality_raw_bioactivities_'
+                                                     f'only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
+                                                read_csv_kwargs={'sep': '\t'})
+        if include_variants:
+            low_qual_bioactivities_variants = (~low_qual_bioactivities.variant_id.isna() &
+                                               (low_qual_bioactivities.variant_id != -1) &
+                                               (low_qual_bioactivities.variant_id != ''))
+            low_qual_bioactivities = pd.concat([low_qual_bioactivities[low_qual_bioactivities_variants].merge(variants, on='variant_id'),
+                                                low_qual_bioactivities[~low_qual_bioactivities_variants].merge(targets, on='tid')])
+        else:
+            low_qual_bioactivities = low_qual_bioactivities.merge(targets, on='tid')
+
+        low_qual_bioactivities = pd.concat([bioactivities, low_qual_bioactivities])
+        del bioactivities, low_qual_bioactivities_variants
+        pystow.dump_df(papyruslib_root, chembl_root,
+                       name=f'{papyrus_version}_low_quality_raw_bioactivities_'
+                            f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
+                       obj=low_qual_bioactivities)
+        del low_qual_bioactivities
+
+    # Molecules
     molstructures_query = """
     SELECT compound_structures.molregno,
            compound_structures.molfile
     FROM compound_structures
-"""
+    """
+    molecules = chembl_downloader.query(molstructures_query, version=chembl_version,
+                                        prefix=[papyruslib_root, chembl_root])
+    # Remove duplicates molregno
+    molecules.drop_duplicates('molregno', inplace=True)
+    # Parse CTAB and standardize molecules
+    mols = molecules.molfile.apply(Chem.MolFromSmiles)
+    molecules.drop(columns=['molfile'])
+    molecules['standardised_smiles'] = mols.apply(standardize)
+    molecules['InChIKey'] = mols.apply(Chem.MolToInchiKey)
+    molecules['InChI_AuxInfo'] = mols.apply(Chem.MolToInchiAndAuxInfo)[1]
+    del mols
+    pystow.dump_df(papyruslib_root, chembl_root,
+                   name=f'{papyrus_version}_raw_molecules_list_with_molreg_c{chembl_version}.txt',
+                   obj=molecules)
