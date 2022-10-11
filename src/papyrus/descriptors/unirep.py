@@ -47,6 +47,6 @@ def get_unirep_descriptors(protein_data: pd.DataFrame,
     data = pd.DataFrame(data)
 
     # Reorder (should dict not be sorted anymore)
-    data = data[[col_seq_id] + [natsorted(data.drop(columns=[col_seq_id]).columns)]]
+    data = data[[col_seq_id] + natsorted(data.drop(columns=[col_seq_id]).columns)]
 
     return data
