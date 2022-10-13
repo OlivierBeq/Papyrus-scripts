@@ -2,7 +2,7 @@
 
 Collection of scripts to interact with the Papyrus bioactivity dataset.
 
-![alt text](figures/papyrus_workflow.png?raw=true)
+![alt text](figures/papyrus_workflow.svg)
 
 <br/>
 
@@ -13,7 +13,6 @@ Papyrus - A large scale curated dataset aimed at bioactivity predictions.
 ChemRxiv. Cambridge: Cambridge Open Engage; 2021;
 This content is a preprint and has not been peer-reviewed.
 ```
-
 
 ## Installation
 
