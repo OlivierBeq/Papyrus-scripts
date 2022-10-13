@@ -78,3 +78,18 @@ The scripts used to extract subsets, generate models and obtain visualizations c
 
 - Use of custom grouping schemes for training/test set splitting and cross-validation
 - Use custom molecular and protein descriptors (either Python function or file on disk) 
+
+
+## Logos
+
+Logos can be found under <a href="figures/logo">**figures/logo**</a>
+
+<div class="colored-table">
+
+|                                                              On white background                                                              |                          On colored background                      |
+|:---------------------------------------------------------------------------------------------------------------------------------------------:|:-------------------------------------------------------------------:|
+|                                            <img src="figures/logo/Papyrus_trnsp-bg.svg" width=200>                                            |      <img src="figures/logo/Papyrus_trnsp-bg-white.svg" width=200>  |
+
+</div>
+
+
