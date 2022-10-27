@@ -289,14 +289,7 @@ def qsar(data: pd.DataFrame,
          yscramble: bool = False,
          random_state: int = 1234,
          verbose: bool = True
-         ) -> Tuple[pd.DataFrame,
-                    Dict[str,
-                         Optional[Union[TransformerMixin,
-                                        LabelEncoder,
-                                        BaseCrossValidator,
-                                        Dict[str,
-                                             Union[RegressorMixin,
-                                                   ClassifierMixin]]]]]]:
+         ) -> Tuple[pd.DataFrame, Dict[str, Optional[Union[TransformerMixin, LabelEncoder, BaseCrossValidator, Dict[str, ClassifierMixin]]]]]:
     """Create QSAR models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -623,13 +616,7 @@ def pcm(data: pd.DataFrame,
         yscramble: bool = False,
         random_state: int = 1234,
         verbose: bool = True
-        ) -> Tuple[pd.DataFrame,
-                   Dict[str,
-                        Union[TransformerMixin,
-                              LabelEncoder,
-                              BaseCrossValidator,
-                              RegressorMixin,
-                              ClassifierMixin]]]:
+        ) -> Tuple[pd.DataFrame, Dict[str, Union[TransformerMixin, LabelEncoder, BaseCrossValidator, RegressorMixin, ClassifierMixin]]]:
     """Create PCM models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
