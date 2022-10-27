@@ -20,7 +20,7 @@ The Papyrus scripts require dependencies, a few of which can only be installed v
 
 1. Install conda dependencies first:
 ```bash
-conda install rdkit FPSim2 openbabel "h5py<3.2" cupy pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch -c conda-forge
+conda install rdkit -c conda-forge
 ```
 
 2. Then install Papyrus-scripts with pip
@@ -38,6 +38,17 @@ Then uninstall and reinstalling the library with the following commands:
 pip uninstall -y papyrus-scripts
 python -m pip install https://github.com/OlivierBeq/Papyrus-scripts/tarball/master
 ```
+
+Additional dependencies can be installed to allow:
+ - similarity and substructure searches
+    ```bash
+    conda install FPSim2 openbabel "h5py<3.2" cupy 
+    ```
+
+- training DNN models:
+    ```bash
+    conda install pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch
+    ```
 
 ## Donwload the dataset
 
