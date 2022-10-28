@@ -67,7 +67,7 @@ def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
     :param is3d: whether to load descriptors of the dataset containing stereochemistry
     :param version: version of the dataset to be read
     :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the molecular descriptor datasets
+    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
     :param ids: identifiers of the molecules which descriptors should be loaded
                 if is3d=True, then identifiers are InChIKeys, otherwise connectivities
     :param verbose: whether to show progress
@@ -191,18 +191,22 @@ def _iterate_filter_descriptors(data: Iterator, ids: Optional[List[str]], id_nam
 def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'unirep',
                              version: str = 'latest', chunksize: Optional[int] = None,
                              source_path: Optional[str] = None,
-                             ids: Optional[List[str]] = None, verbose: bool = True):
+                             ids: Optional[List[str]] = None, verbose: bool = True,
+                             **kwargs):
     """Get protein descriptors
 
-   :param desc_type: type of descriptor {'unirep'} or a prodec Descriptor or Transform instance
+   :param desc_type: type of descriptor {'unirep'} or a prodec instance of a Descriptor or Transform
    :param version: version of the dataset to be read
    :param chunksize: number of lines per chunk. To read without chunks, set to None
    :param source_path: If desc_type is 'unirep', folder containing the protein descriptor datasets.
-                       If desc_type is 'custom', the file path to a dataframe containing target_id
-                       as its first column and custom descriptors in the following ones.
-                       If desc_type is a ProDEC Descriptor or Transform, folder containing Papyrus protein data.
+   If desc_type is 'custom', the file path to a dataframe containing target_id
+   as its first column and custom descriptors in the following ones.
+   If desc_type is a ProDEC Descriptor or Transform instance, folder containing the bioactivity dataset
+   (default: pystow's home folder)
    :param ids: identifiers of the sequences which descriptors should be loaded (e.g. P30542_WT)
    :param verbose: whether to show progress
+   :param kwargs: keyword arguments passed to the `pandas` method of the ProDEC Descriptor or Transform instance
+                  (is ignored if `desc_type` is not a ProDEC Descriptor or Transform instance)
    :return: the dataframe of protein descriptors
     """
     if desc_type not in ['unirep', 'custom'] and not isinstance(desc_type, (Descriptor, Transform)):
@@ -245,29 +249,32 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
                                                        low_memory=True, chunksize=chunksize))
                               ]).rename(columns={'TARGET_NAME': 'target_id'})
     elif desc_type == 'custom':
-        if not os.path.isfile(source_path):
+        if not os.path.isfile(source_path.base.as_posix()):
             raise ValueError('source_path must be a file if using a custom descriptor type')
         if chunksize is None and ids is None:
-            return pd.read_csv(source_path, sep='\t', low_memory=True)
+            return pd.read_csv(source_path.base.as_posix(), sep='\t', low_memory=True)
         elif chunksize is None and ids is not None:
-            descriptors = pd.read_csv(source_path, sep='\t', low_memory=True)
+            descriptors = pd.read_csv(source_path.base.as_posix(), sep='\t', low_memory=True)
             if 'target_id' in descriptors.columns:
                 return descriptors[descriptors['target_id'].isin(ids)]
             return descriptors[descriptors['TARGET_NAME'].isin(ids)].rename(columns={'TARGET_NAME': 'target_id'})
         elif chunksize is not None and ids is None:
             return pd.concat([chunk
-                              for chunk in pbar(pd.read_csv(source_path, sep='\t',
+                              for chunk in pbar(pd.read_csv(source_path.base.as_posix(), sep='\t',
                                                             low_memory=True, chunksize=chunksize))
                               ]).rename(columns={'TARGET_NAME': 'target_id'})
         return pd.concat([chunk[chunk['target_id'].isin(ids)]
                           if 'target_id' in chunk.columns
                           else chunk[chunk['TARGET_NAME'].isin(ids)]
-                          for chunk in pbar(pd.read_csv(source_path, sep='\t', low_memory=True, chunksize=chunksize))
+                          for chunk in pbar(pd.read_csv(source_path.base.as_posix(),
+                                                        sep='\t', low_memory=True, chunksize=chunksize))
                           ]).rename(columns={'TARGET_NAME': 'target_id'})
     else:
         # Calculate protein descriptors
-        protein_data = read_protein_set(source_path).rename(columns={'TARGET_NAME': 'target_id'})
-        protein_data = protein_data[protein_data['target_id'].isin(ids)]
-        descriptors = desc_type.pandas_get(protein_data['Sequence'], protein_data['target_id'], quiet=True)
+        protein_data = read_protein_set(pystow.module('').base.as_posix(), version=version)
+        protein_data.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
+        if ids is not None:
+            protein_data = protein_data[protein_data['target_id'].isin(ids)]
+        descriptors = desc_type.pandas_get(protein_data['Sequence'], protein_data['target_id'], **kwargs)
         descriptors.rename(columns={'ID': 'target_id'}, inplace=True)
         return descriptors
