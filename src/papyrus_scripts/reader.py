@@ -273,8 +273,12 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
         # Calculate protein descriptors
         protein_data = read_protein_set(pystow.module('').base.as_posix(), version=version)
         protein_data.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
+        # Keep only selected proteins
         if ids is not None:
             protein_data = protein_data[protein_data['target_id'].isin(ids)]
-        descriptors = desc_type.pandas_get(protein_data['Sequence'], protein_data['target_id'], **kwargs)
+        # Filter out non-natural amino-acids
+        protein_data = protein_data.loc[protein_data['Sequence'].map(desc_type.Descriptor.is_sequence_valid), :]
+        # Obtain descriptors
+        descriptors = desc_type.pandas_get(protein_data['Sequence'].tolist(), protein_data['target_id'].tolist(), **kwargs)
         descriptors.rename(columns={'ID': 'target_id'}, inplace=True)
         return descriptors
