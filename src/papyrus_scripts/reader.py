@@ -194,7 +194,7 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
                              ids: Optional[List[str]] = None, verbose: bool = True):
     """Get protein descriptors
 
-   :param desc_type: type of descriptor {'unirep'} or a prodec Descriptor or Transform
+   :param desc_type: type of descriptor {'unirep'} or a prodec Descriptor or Transform instance
    :param version: version of the dataset to be read
    :param chunksize: number of lines per chunk. To read without chunks, set to None
    :param source_path: If desc_type is 'unirep', folder containing the protein descriptor datasets.
