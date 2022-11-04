@@ -198,9 +198,9 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
    :param desc_type: type of descriptor {'unirep'} or a prodec instance of a Descriptor or Transform
    :param version: version of the dataset to be read
    :param chunksize: number of lines per chunk. To read without chunks, set to None
-   :param source_path: If desc_type is 'unirep', folder containing the protein descriptor datasets.
-   If desc_type is 'custom', the file path to a dataframe containing target_id
-   as its first column and custom descriptors in the following ones.
+   :param source_path: If desc_type is 'unirep', folder containing the bioactivity dataset
+   (default: pystow's home folder). If desc_type is 'custom', the file path to a tab-separated dataframe
+   containing target_id as its first column and custom descriptors in the following ones.
    If desc_type is a ProDEC Descriptor or Transform instance, folder containing the bioactivity dataset
    (default: pystow's home folder)
    :param ids: identifiers of the sequences which descriptors should be loaded (e.g. P30542_WT)
@@ -211,74 +211,87 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
     """
     if desc_type not in ['unirep', 'custom'] and not isinstance(desc_type, (Descriptor, Transform)):
         raise ValueError("descriptor type not supported")
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version)
-    # Load data types
-    dtype_file = source_path.join(name='data_types.json').as_posix()
-    with open(dtype_file, 'r') as jsonfile:
-        dtypes = json.load(jsonfile, cls=TypeDecoder)
-    # Set verbose level
-    if verbose:
-        pbar = partial(tqdm, desc='Loading protein descriptors')
-    else:
-        pbar = partial(iter)
-    if desc_type == 'unirep':
-        unirep_files = locate_file(source_path.join('descriptors').as_posix(), r'\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*')
-        if len(unirep_files) == 0:
-            raise ValueError('Could not find unirep descriptor file')
-        if desc_type == 'unirep':
-            if chunksize is None and ids is None:
-                return pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
-            elif chunksize is None and ids is not None:
-                descriptors = pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
-                if 'target_id' in descriptors.columns:
-                    return descriptors[descriptors['target_id'].isin(ids)]
-                return descriptors[descriptors['TARGET_NAME'].isin(ids)].rename(columns={'TARGET_NAME': 'target_id'})
-            elif chunksize is not None and ids is None:
+    if desc_type != 'custom':
+        # Determine default paths
+        if source_path is not None:
+            os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
+        version = process_data_version(version=version, root_folder=source_path)
+        source_path = pystow.module('papyrus', version)
+        if not isinstance(desc_type, (Descriptor, Transform)):
+            # Load data types
+            dtype_file = source_path.join(name='data_types.json').as_posix()
+            with open(dtype_file, 'r') as jsonfile:
+                dtypes = json.load(jsonfile, cls=TypeDecoder)
+            # Set verbose level
+            if verbose:
+                pbar = partial(tqdm, desc='Loading protein descriptors')
+            else:
+                pbar = partial(iter)
+            if desc_type == 'unirep':
+                unirep_files = locate_file(source_path.join('descriptors').as_posix(), r'\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*')
+                if len(unirep_files) == 0:
+                    raise ValueError('Could not find unirep descriptor file')
+                if desc_type == 'unirep':
+                    if chunksize is None and ids is None:
+                        return pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
+                    elif chunksize is None and ids is not None:
+                        descriptors = pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
+                        if 'target_id' in descriptors.columns:
+                            return descriptors[descriptors['target_id'].isin(ids)]
+                        return descriptors[descriptors['TARGET_NAME'].isin(ids)].rename(columns={'TARGET_NAME': 'target_id'})
+                    elif chunksize is not None and ids is None:
+                        return pd.concat([chunk
+                                          for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
+                                                                        low_memory=True, chunksize=chunksize))
+                                          ]).rename(columns={'TARGET_NAME': 'target_id'})
+                    return pd.concat([chunk[chunk['target_id'].isin(ids)]
+                                      if 'target_id' in chunk.columns
+                                      else chunk[chunk['TARGET_NAME'].isin(ids)]
+                                      for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
+                                                               low_memory=True, chunksize=chunksize))
+                                      ]).rename(columns={'TARGET_NAME': 'target_id'})
+        else:
+            # Calculate protein descriptors
+            protein_data = read_protein_set(pystow.module('').base.as_posix(), version=version)
+            protein_data.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
+            # Keep only selected proteins
+            if ids is not None:
+                protein_data = protein_data[protein_data['target_id'].isin(ids)]
+            # Filter out non-natural amino-acids
+            protein_data = protein_data.loc[protein_data['Sequence'].map(desc_type.Descriptor.is_sequence_valid), :]
+            # Obtain descriptors
+            descriptors = desc_type.pandas_get(protein_data['Sequence'].tolist(), protein_data['target_id'].tolist(),
+                                               **kwargs)
+            descriptors.rename(columns={'ID': 'target_id'}, inplace=True)
+            return descriptors
+    elif desc_type == 'custom':
+        # Check path exists
+        if not os.path.isfile(source_path):
+            raise ValueError('source_path must point to an existing file if using a custom descriptor type')
+        # No chunksier, no filtering
+        if chunksize is None and ids is None:
+            return pd.read_csv(source_path, sep='\t', low_memory=True).rename(columns={'TARGET_NAME': 'target_id'})
+        # No chunksize but filtering
+        elif chunksize is None and ids is not None:
+            descriptors = pd.read_csv(source_path, sep='\t', low_memory=True)
+            descriptors.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
+            return descriptors[descriptors['target_id'].isin(ids)]
+        else:
+            # Set verbose level
+            if verbose:
+                pbar = partial(tqdm, desc='Loading custom protein descriptors')
+            else:
+                pbar = partial(iter)
+            # Chunksize but no filtering
+            if chunksize is not None and ids is None:
                 return pd.concat([chunk
-                                  for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
+                                  for chunk in pbar(pd.read_csv(source_path, sep='\t',
                                                                 low_memory=True, chunksize=chunksize))
                                   ]).rename(columns={'TARGET_NAME': 'target_id'})
+            # Both chunksize and filtering
             return pd.concat([chunk[chunk['target_id'].isin(ids)]
                               if 'target_id' in chunk.columns
                               else chunk[chunk['TARGET_NAME'].isin(ids)]
-                              for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
-                                                       low_memory=True, chunksize=chunksize))
+                              for chunk in pbar(pd.read_csv(source_path,
+                                                            sep='\t', low_memory=True, chunksize=chunksize))
                               ]).rename(columns={'TARGET_NAME': 'target_id'})
-    elif desc_type == 'custom':
-        if not os.path.isfile(source_path.base.as_posix()):
-            raise ValueError('source_path must be a file if using a custom descriptor type')
-        if chunksize is None and ids is None:
-            return pd.read_csv(source_path.base.as_posix(), sep='\t', low_memory=True)
-        elif chunksize is None and ids is not None:
-            descriptors = pd.read_csv(source_path.base.as_posix(), sep='\t', low_memory=True)
-            if 'target_id' in descriptors.columns:
-                return descriptors[descriptors['target_id'].isin(ids)]
-            return descriptors[descriptors['TARGET_NAME'].isin(ids)].rename(columns={'TARGET_NAME': 'target_id'})
-        elif chunksize is not None and ids is None:
-            return pd.concat([chunk
-                              for chunk in pbar(pd.read_csv(source_path.base.as_posix(), sep='\t',
-                                                            low_memory=True, chunksize=chunksize))
-                              ]).rename(columns={'TARGET_NAME': 'target_id'})
-        return pd.concat([chunk[chunk['target_id'].isin(ids)]
-                          if 'target_id' in chunk.columns
-                          else chunk[chunk['TARGET_NAME'].isin(ids)]
-                          for chunk in pbar(pd.read_csv(source_path.base.as_posix(),
-                                                        sep='\t', low_memory=True, chunksize=chunksize))
-                          ]).rename(columns={'TARGET_NAME': 'target_id'})
-    else:
-        # Calculate protein descriptors
-        protein_data = read_protein_set(pystow.module('').base.as_posix(), version=version)
-        protein_data.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
-        # Keep only selected proteins
-        if ids is not None:
-            protein_data = protein_data[protein_data['target_id'].isin(ids)]
-        # Filter out non-natural amino-acids
-        protein_data = protein_data.loc[protein_data['Sequence'].map(desc_type.Descriptor.is_sequence_valid), :]
-        # Obtain descriptors
-        descriptors = desc_type.pandas_get(protein_data['Sequence'].tolist(), protein_data['target_id'].tolist(), **kwargs)
-        descriptors.rename(columns={'ID': 'target_id'}, inplace=True)
-        return descriptors
