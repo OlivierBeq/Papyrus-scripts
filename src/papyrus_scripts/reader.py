@@ -198,9 +198,9 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
    :param desc_type: type of descriptor {'unirep'} or a prodec instance of a Descriptor or Transform
    :param version: version of the dataset to be read
    :param chunksize: number of lines per chunk. To read without chunks, set to None
-   :param source_path: If desc_type is 'unirep', folder containing the bioactivity dataset
-   (default: pystow's home folder). If desc_type is 'custom', the file path to a tab-separated dataframe
-   containing target_id as its first column and custom descriptors in the following ones.
+   :param source_path: If desc_type is 'unirep', folder containing the protein descriptor datasets.
+   If desc_type is 'custom', the file path to a tab-separated dataframe containing target_id
+   as its first column and custom descriptors in the following ones.
    If desc_type is a ProDEC Descriptor or Transform instance, folder containing the bioactivity dataset
    (default: pystow's home folder)
    :param ids: identifiers of the sequences which descriptors should be loaded (e.g. P30542_WT)
@@ -228,7 +228,7 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
             else:
                 pbar = partial(iter)
             if desc_type == 'unirep':
-                unirep_files = locate_file(source_path.join('descriptors').as_posix(), r'\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*')
+                unirep_files = locate_file(source_path.join('descriptors').as_posix(), r'(?:\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*)|(?:\d+\.\d+_combined_protdescs_unirep\.tsv.*)')
                 if len(unirep_files) == 0:
                     raise ValueError('Could not find unirep descriptor file')
                 if desc_type == 'unirep':

@@ -35,7 +35,7 @@ def main():
 @click.option('-S', '--structures', 'structs', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Should structures be downloaded (SD file).')
 @click.option('-d', '--descriptors', 'descs', type=click.Choice(['mold2', 'cddd', 'mordred', 'fingerprint',
-                                                                 'unirep', 'all', 'none']),
+                                                                 'unirep', 'prodec', 'all', 'none']),
               required=False, default=['none'], nargs=1,
               show_default=True, multiple=True,
               help=('Type of descriptors to be downloaded: mold2 (777 2D Mold2 descriptors), '
@@ -46,16 +46,13 @@ def main():
                     'unirep (6660 UniRep deep-learning protein sequence representations '
                     'containing 64, 256 and 1900-bit average hidden states, '
                     'final hidden states and final cell states), '
+                    'prodec (all ProDEC descriptors transformed with 50 average domains and lag 20), or '
                     'all (all descriptors for the selected stereochemistry), or '
                     'none (do not download any descriptor).'))
-@click.option('-r', '--repo', 'repo', type=click.Choice(['zenodo', 'googledrive']),
-              required=False, default='zenodo', nargs=1,
-              show_default=True, multiple=False,
-              help=('Repository to download the data from..'))
 @click.option('--force', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Force download if disk space is low'
                                       '(default: False for 10% disk space margin).')
-def download(output_directory, version, more, stereo, structs, descs, force, repo):
+def download(output_directory, version, more, stereo, structs, descs, force):
     if isinstance(version, tuple):
         version = list(version)
     if isinstance(descs, tuple):
@@ -67,7 +64,6 @@ def download(output_directory, version, more, stereo, structs, descs, force, rep
                      only_pp=not more,
                      structures=structs,
                      descriptors=descs,
-                     repo=repo,
                      progress=True,
                      disk_margin=0.0 if force else 0.1)
 
@@ -90,7 +86,7 @@ def download(output_directory, version, more, stereo, structs, descs, force, rep
 @click.option('-S', '--structures', 'structs', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Should structures be removed (SD file).')
 @click.option('-d', '--descriptors', 'descs', type=click.Choice(['mold2', 'cddd', 'mordred', 'fingerprint',
-                                                                   'unirep', 'all', 'none']),
+                                                                   'unirep', 'prodec', 'all', 'none']),
               required=False, default=['none'], nargs=1,
               show_default=True, multiple=True,
               help=('Type of descriptors to be removed: mold2 (777 2D Mold2 descriptors), '
