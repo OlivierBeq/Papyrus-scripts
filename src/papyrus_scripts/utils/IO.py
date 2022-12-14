@@ -189,7 +189,10 @@ def get_num_rows_in_file(filetype: str, is3D: bool, descriptor_name: Optional[st
         sizes = read_jsonfile(json_file)
         if filetype == 'bioactivities':
             if plusplus:
-                return sizes['papyrus++']
+                if 'papyrus_++' in sizes.keys():
+                    return sizes['papyrus_++']
+                else:
+                    return sizes['papyrus++']
             return sizes['papyrus_3D'] if is3D else sizes['papyrus_2D']
         elif filetype == 'structures':
             return sizes['structures_3D'] if is3D else sizes['structures_2D']
