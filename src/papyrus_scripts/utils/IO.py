@@ -126,6 +126,16 @@ def get_latest_downloaded_version(root_folder: str = None) -> List[str]:
     versions = read_jsonfile(version_json)
     return sorted(versions, key=lambda s: [int(u) for u in s.split('.')])[-1]
 
+
+def get_online_versions() -> List[str]:
+    """Identify the versions of the Papyrus data available online
+
+    :return: a list of the versions available
+    """
+    papyrus_links = get_papyrus_links()
+    return sorted(papyrus_links.keys(), key=lambda s: [int(u) for u in s.split('.')]) + ['latest']
+
+
 def process_data_version(version: str, root_folder: str = None):
     """Confirm the version is available, downloaded and convert synonyms.
 
