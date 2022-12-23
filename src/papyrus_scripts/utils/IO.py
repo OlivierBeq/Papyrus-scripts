@@ -9,6 +9,7 @@ import inspect
 import json
 import os
 import re
+from collections import namedtuple
 
 import requests
 import shutil
@@ -17,6 +18,7 @@ import gzip
 from typing import List, Optional
 
 import pystow
+import pandas as pd
 from tqdm.auto import tqdm
 
 
@@ -113,6 +115,35 @@ def get_downloaded_versions(root_folder: str = None) -> dict:
         os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
     version_json = pystow.join('papyrus', name='versions.json').as_posix()
     return read_jsonfile(version_json)
+
+
+def get_downloaded_papyrus_files(root_folder: str= None) -> pd.DataFrame:
+    """Identify downloaded files for each version of the Papyrus data
+
+    :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
+    """
+    # Obtain versions downloaded
+    downloaded_versions = get_downloaded_versions(root_folder)
+    # Obtain filenames that could have been downloaded
+    files = get_papyrus_links(offline=True)
+    # Keep only file names
+    file_info = namedtuple('file_info', ('version', 'short_name', 'file_name'))
+    files = [file_info(version, file, file_data['name'])
+             for version in downloaded_versions
+             for file, file_data in files[version].items()
+             if file in ['papyrus++', '2D_papyrus', '3D_papyrus', '2D_structures', '3D_structures',
+                         '2D_fingerprint', '3D_fingerprint', '2D_mordred', '3D_mordred',
+                         '2D_cddd', '2D_mold2', 'proteins', 'proteins_unirep', 'proteins_prodec']]
+    # Try to locate files
+    # Uses glob to prevent maintaining a mapping of subfolders and file names
+    # This does not check files have been downloaded in the right subfolders
+    data = pd.DataFrame([{'version': file.version,
+                          'short_name': file.short_name,
+                          'downloaded': len(glob.glob(
+                              os.path.join(pystow.module('papyrus', file.version).base.as_posix(), '**',
+                                           file.file_name), recursive=True)) > 0}
+                         for file in files])
+    return data
 
 
 def get_latest_downloaded_version(root_folder: str = None) -> List[str]:
