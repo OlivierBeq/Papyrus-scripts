@@ -11,3 +11,6 @@ from .preprocess import (keep_organism, keep_accession, keep_type, keep_source,
                          keep_similar, keep_substructure)
 
 from .modelling import qsar, pcm
+
+from .utils.mol_reader import MolSupplier
+from .utils import IO, UniprotMatch
