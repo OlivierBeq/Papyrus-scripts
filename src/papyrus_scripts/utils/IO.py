@@ -104,7 +104,7 @@ def get_disk_space(destination: str):
     return free
 
 
-def get_downloaded_versions(root_folder: str = None) -> List[str]:
+def get_downloaded_versions(root_folder: str = None) -> dict:
     """Identify versions of the downloaded Papyrus data
 
     :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
@@ -216,22 +216,25 @@ def get_num_rows_in_file(filetype: str, is3D: bool, descriptor_name: Optional[st
             elif descriptor_name == 'mordred':
                 return sizes['mordred_3D'] if is3D else sizes['mordred_2D']
 
-def get_papyrus_links():
+def get_papyrus_links(offline: bool = False):
     """Obtain the latest links to Papyrus data files from GitHub.
 
     If the connection to the GitHub server is made, the
     local version of the file is updated.
     Otherwise, defaults ot the local version of the file.
+
+    :param offline: do not attempt to download the latest file from GitHub
     """
-    url = "https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/db-links/links.json"
     local_file = os.path.join(os.path.dirname(__file__), 'links.json')
-    session = requests.session()
-    try:
-        res = session.get(url, verify=True)
-        with open(local_file, 'w') as oh:
+    if not offline:
+        url = "https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/db-links/links.json"
+        session = requests.session()
+        try:
+            res = session.get(url, verify=True)
+            with open(local_file, 'w') as oh:
                 oh.write(res.text)
-    except ConnectionError as e:
-        pass
+        except requests.exceptions.ConnectionError as e:
+            pass
     with open(local_file) as fh:
         data = json.load(fh)
     return data
