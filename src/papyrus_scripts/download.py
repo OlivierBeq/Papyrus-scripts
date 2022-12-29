@@ -77,6 +77,11 @@ def download_papyrus(outdir: Optional[str] = None,
             downloads.add('papyrus++')
             if not only_pp:
                 downloads.add('2D_papyrus')
+            elif progress:
+                # Ensure this warning is printed when donwloading the Papyrus++ dataset with progress on
+                print('You are downloading the high-quality Papyrus++ dataset.\n'
+                      'Should you want to access the entire, though of lower quality, Papyrus dataset,\n'
+                      'look into additional switches to this command.')
             if structures:
                 downloads.add('2D_structures')
             if 'mold2' in descriptors or 'all' in descriptors:
