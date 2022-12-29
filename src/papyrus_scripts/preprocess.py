@@ -620,7 +620,7 @@ def _chunked_keep_organism(data: Union[PandasTextFileReader, Iterator], protein_
 
 
 def keep_match(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], column: str, values: Union[Any, List[Any]]):
-    """Keep only the data matching desired columns with desired values.
+    """Keep only the data matching desired columns with desired values (equivalent to *isin*).
 
     :param data: the dataframe containing data to be filtered
     :param column: column to be filtered

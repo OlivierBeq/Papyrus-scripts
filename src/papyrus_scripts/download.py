@@ -18,7 +18,7 @@ def download_papyrus(outdir: Optional[str] = None,
                      stereo: bool = False,
                      only_pp: bool =True,
                      structures: bool = False,
-                     descriptors: Union[str, List[str]] = 'all',
+                     descriptors: Optional[Union[str, List[str]]] = 'all',
                      progress: bool = True,
                      disk_margin: float = 0.10) -> None:
     """Download the Papyrus data.
@@ -35,7 +35,7 @@ def download_papyrus(outdir: Optional[str] = None,
     """
 
     # Determine download parameters
-    CHUNKSIZE = 10 * 1048576  # 10 MB
+    CHUNKSIZE = 1048576  # 1 MB
     RETRIES = 3
     # Obtain links to files
     files = get_papyrus_links()
