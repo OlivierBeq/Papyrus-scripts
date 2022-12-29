@@ -100,28 +100,32 @@ def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
     elif desc_type in ['moe', 'all']:
         moe_files = locate_file(source_path.join('descriptors').as_posix(),
                                 rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_MOE\.tsv.*')
+    if verbose:
+        pbar = partial(tqdm, desc='Loading molecular descriptors')
+    else:
+        pbar = partial(iter)
     if desc_type == 'mold2':
-        return _filter_molecular_descriptors(pd.read_csv(mold2_files[0], sep='\t',
-                                                         dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize),
-                                             ids, 'InChIKey' if is3d else 'connectivity')
+        return _filter_molecular_descriptors(pbar(pd.read_csv(mold2_files[0], sep='\t',
+                                                              dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize),
+                                                  ids, 'InChIKey' if is3d else 'connectivity'))
     elif desc_type == 'mordred':
-        return _filter_molecular_descriptors(pd.read_csv(mordd_files[0], sep='\t',
-                                                         dtype=dtypes[f'mordred_{3 if is3d else 2}D'], low_memory=True,
-                                                         chunksize=chunksize),
-                                             ids, 'InChIKey' if is3d else 'connectivity')
+        return _filter_molecular_descriptors(pbar(pd.read_csv(mordd_files[0], sep='\t',
+                                                              dtype=dtypes[f'mordred_{3 if is3d else 2}D'], low_memory=True,
+                                                              chunksize=chunksize),
+                                                  ids, 'InChIKey' if is3d else 'connectivity'))
     elif desc_type == 'cddd':
-        return _filter_molecular_descriptors(pd.read_csv(cddds_files[0], sep='\t',
-                                                         dtype=dtypes['CDDD'], low_memory=True, chunksize=chunksize),
-                                             ids, 'InChIKey' if is3d else 'connectivity')
+        return _filter_molecular_descriptors(pbar(pd.read_csv(cddds_files[0], sep='\t',
+                                                              dtype=dtypes['CDDD'], low_memory=True, chunksize=chunksize),
+                                                  ids, 'InChIKey' if is3d else 'connectivity'))
     elif desc_type == 'fingerprint':
-        return _filter_molecular_descriptors(pd.read_csv(molfp_files[0], sep='\t',
-                                                         dtype=dtypes[f'{"E3FP" if is3d else "ECFP6"}'],
-                                                         low_memory=True, chunksize=chunksize),
-                                             ids, 'InChIKey' if is3d else 'connectivity')
+        return _filter_molecular_descriptors(pbar(pd.read_csv(molfp_files[0], sep='\t',
+                                                              dtype=dtypes[f'{"E3FP" if is3d else "ECFP6"}'],
+                                                              low_memory=True, chunksize=chunksize),
+                                                  ids, 'InChIKey' if is3d else 'connectivity'))
     elif desc_type == 'moe':
-        return _filter_molecular_descriptors(pd.read_csv(moe_files[0], sep='\t',
-                                                         low_memory=True, chunksize=chunksize),
-                                             ids, 'InChIKey' if is3d else 'connectivity')
+        return _filter_molecular_descriptors(pbar(pd.read_csv(moe_files[0], sep='\t',
+                                                              low_memory=True, chunksize=chunksize),
+                                                  ids, 'InChIKey' if is3d else 'connectivity'))
     elif desc_type == 'all':
         mold2 = _filter_molecular_descriptors(pd.read_csv(mold2_files[0], sep='\t',
                                                           dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize),
@@ -149,9 +153,9 @@ def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
             del mold2, mordd, cddds, molfp, moe
             data.reset_index(inplace=True)
             return data
-        return _filter_molecular_descriptors(_join_molecular_descriptors(mold2, mordd, molfp, cddds, moe,
-                                                                         on='InChIKey' if is3d else 'connectivity'),
-                                             ids, 'InChIKey' if is3d else 'connectivity')
+        return _filter_molecular_descriptors(pbar(_join_molecular_descriptors(mold2, mordd, molfp, cddds, moe,
+                                                                              on='InChIKey' if is3d else 'connectivity'),
+                                                  ids, 'InChIKey' if is3d else 'connectivity'))
 
 
 def _join_molecular_descriptors(*descriptors: Iterator, on: str = 'connectivity') -> Iterator:
