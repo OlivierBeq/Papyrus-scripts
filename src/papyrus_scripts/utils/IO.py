@@ -47,6 +47,8 @@ def write_jsonfile(data: object, json_outfile: str) -> None:
 
 def read_jsonfile(json_infile: str) -> dict:
     """Read in a json file and return the json object."""
+    if not os.path.isfile(json_infile):
+        return {}
     with open(json_infile) as infile:
         data = json.load(infile)
     return data
