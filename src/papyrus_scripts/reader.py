@@ -10,6 +10,7 @@ import pandas as pd
 from tqdm.auto import tqdm
 from prodec import Descriptor, Transform
 
+from .utils.mol_reader import MolSupplier
 from .utils.IO import locate_file, process_data_version, TypeDecoder
 
 
@@ -299,3 +300,77 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
                               for chunk in pbar(pd.read_csv(source_path,
                                                             sep='\t', low_memory=True, chunksize=chunksize))
                               ]).rename(columns={'TARGET_NAME': 'target_id'})
+
+
+def read_molecular_structures(is3d: bool = False, version: str = 'latest',
+                              chunksize: Optional[int] = None, source_path: Optional[str] = None,
+                              ids: Optional[List[str]] = None, verbose: bool = True):
+    """Get molecular structures
+
+    :param is3d: whether to load descriptors of the dataset containing stereochemistry
+    :param version: version of the dataset to be read
+    :param chunksize: number of lines per chunk. To read without chunks, set to None
+    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
+    :param ids: identifiers of the molecules which descriptors should be loaded
+                if is3d=True, then identifiers are InChIKeys, otherwise connectivities
+    :param verbose: whether to show progress
+    :return: the dataframe of molecular structures
+    """
+    # Determine default paths
+    if source_path is not None:
+        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
+    version = process_data_version(version=version, root_folder=source_path)
+    source_path = pystow.module('papyrus', version)
+    # Find the files
+    sd_files = locate_file(source_path.join('structures').as_posix(),
+                              rf'\d+\.\d+_combined_{3 if is3d else 2}D_set_with{"" if is3d else "out"}_stereochemistry.sd.*')
+    if chunksize is None:
+        data = []
+        # Iterate through the file
+        with MolSupplier(sd_files[0], show_progress=True) as f_handle:
+            for _, mol in f_handle:
+                # Obtain SD molecular properties
+                props = mol.GetPropsAsDict()
+                # If IDs given and not in the list, skip
+                if ids is not None and props['InChIKey' if is3d else 'connectivity'] not in ids:
+                    continue
+                # Else add structure to the dict
+                # and add the dict to data
+                props['mol'] = mol
+                data.append(props)
+        # Return the list of dicts as a pandas DataFrame
+        return pd.DataFrame(data)
+    else:
+        # Process the data through an iterator
+        structure_iterator = _structures_iterator(sd_files[0], chunksize, ids, is3d, verbose)
+        return structure_iterator
+
+
+def _structures_iterator(sd_file: str, chunksize: int,
+                         ids: Optional[List[str]] = None,
+                         is3d: bool = False, verbose: bool = True) -> Iterator[pd.DataFrame]:
+    if not isinstance(chunksize, int) or chunksize < 1:
+        raise ValueError('Chunksize must be a non-null positive integer.')
+    if verbose:
+        pbar = tqdm(desc='Loading molecular structures')
+    data = []
+    # Iterate through the file
+    with MolSupplier(sd_file) as f_handle:
+        for _, mol in f_handle:
+            # Obtain SD molecular properties
+            props = mol.GetPropsAsDict()
+            # If IDs given and not in the list, skip
+            id_ = props['InChIKey' if is3d else 'connectivity']
+            if (ids is not None) and (id_ not in ids):
+                continue
+            props['mol'] = mol
+            data.append(props)
+            # Chunk is complete
+            if len(data) == chunksize:
+                if verbose:
+                    pbar.update()
+                yield pd.DataFrame(data)
+                data = []
+        if verbose:
+            pbar.update()
+        yield pd.DataFrame(data)
