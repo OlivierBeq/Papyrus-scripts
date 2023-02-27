@@ -15,3 +15,5 @@ from .modelling import qsar, pcm
 
 from .utils.mol_reader import MolSupplier
 from .utils import IO, UniprotMatch
+
+__version__ = '1.0.0'
