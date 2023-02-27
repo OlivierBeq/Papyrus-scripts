@@ -136,16 +136,19 @@ def clean(output_directory, version, stereo, bioactivities, proteins,structs,
               metavar='OUTFILE', help='Output file containing the PDB matched Papytus data.')
 @click.option('--version', '-V', 'version', type=str, required=False, default='latest', nargs=1,
               metavar='XX.X', help='Version of the Papyrus data to be mapped (default: latest).')
+@click.option('--more', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should other data than Papyrus++ be downloaded '
+                                      '(considered only when --stereo is "without" or "both").')
 @click.option('-3D', 'is3D', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Toggle matching the non-standardized 3D data.')
 @click.option('-O', '--overwrite', 'overwrite', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Toggle overwriting recently downloaded cache files.')
 @click.option('--verbose', 'verbose', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Display progress.')
-def pdbmatch(indir, output, version, is3D, overwrite, verbose):
+def pdbmatch(indir, output, version, more, is3D, overwrite, verbose):
     CHUNKSIZE = 1000000
     update_rcsb_data(root_folder=indir, overwrite=overwrite, verbose=verbose)
-    data = read_papyrus(is3d=is3D, version=version, chunksize=CHUNKSIZE, source_path=indir)
+    data = read_papyrus(is3d=is3D, version=version, plusplus=not more, chunksize=CHUNKSIZE, source_path=indir)
     total = get_num_rows_in_file('bioactivities', is3D=is3D, version=version, root_folder=indir)
     matched_data = get_matches(data=data, root_folder=indir, verbose=verbose,
                                total=int(round(total / CHUNKSIZE, 0)), update=False)

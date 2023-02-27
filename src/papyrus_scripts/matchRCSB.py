@@ -36,7 +36,7 @@ def update_rcsb_data(root_folder: Optional[str] = None,
     if (os.path.isfile(output_path) and (time.time() - os.path.getmtime(output_path)) < 86400) and not overwrite:
         if verbose:
             print(f'RCSB data was obtained less than 24 hours ago: {output_path}\n'
-                  f'Set overwrite=True to force fetching again.')
+                  f'Set overwrite=True to force the fetching of data again.')
         return pd.read_csv(output_path, sep='\t')
     # Obtain the mapping InChI to PDB ligand code
     if verbose:
