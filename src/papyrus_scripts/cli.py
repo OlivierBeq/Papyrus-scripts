@@ -74,15 +74,17 @@ def download(output_directory, version, more, stereo, structs, descs, force):
               help='Directory where Papyrus data will be removed\n(default: pystow\'s home folder).')
 @click.option('--version', '-V', 'version', required=False, default=['latest'], multiple=True,
               metavar='XX.X', help='Version of the Papyrus data to be removed.')
+@click.option('--papyruspp', is_flag=True, required=False, default=False, nargs=1,
+              show_default=True, help='Should Papyrus++ bioactivities be removed.')
 @click.option('-s', '--stereo', 'stereo', type=click.Choice(['without', 'with', 'both']), required=False,
               default='without', nargs=1, show_default=True,
               help=('Type of data to be removed: without (standardised data without stereochemistry), '
                     'with (non-standardised data with stereochemistry), '
                     'both (both standardised and non-standardised data)'))
 @click.option('-B', '--bioactivities', is_flag=True, required=False, default=False, nargs=1,
-              show_default=True, help='Should bioactivities be removed (SD file).')
+              show_default=True, help='Should bioactivities be removed (TSV file).')
 @click.option('-P', '--proteins', is_flag=True, required=False, default=False, nargs=1,
-              show_default=True, help='Should bioactivities be removed (SD file).')
+              show_default=True, help='Should bioactivities be removed (TSV file).')
 @click.option('-S', '--structures', 'structs', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Should structures be removed (SD file).')
 @click.option('-d', '--descriptors', 'descs', type=click.Choice(['mold2', 'cddd', 'mordred', 'fingerprint',
@@ -107,7 +109,7 @@ def download(output_directory, version, more, stereo, structs, descs, force):
               show_default=True, help='Should all Papyrus data and versions be removed.')
 @click.option('--force', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Skip confirmation when removing the root directory.')
-def clean(output_directory, version, stereo, bioactivities, proteins,structs,
+def clean(output_directory, version, papyruspp, stereo, bioactivities, proteins,structs,
           descs, other_files, remove_version, remove_root, force):
     if isinstance(version, tuple):
         version = list(version)
@@ -115,6 +117,7 @@ def clean(output_directory, version, stereo, bioactivities, proteins,structs,
         descs = list(descs)
     remove_papyrus(outdir=output_directory,
                    version=version,
+                   papyruspp=papyruspp,
                    bioactivities=bioactivities,
                    proteins=proteins,
                    nostereo=stereo in ['without', 'both'],

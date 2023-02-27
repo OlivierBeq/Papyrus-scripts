@@ -81,7 +81,7 @@ def download_papyrus(outdir: Optional[str] = None,
                 # Ensure this warning is printed when donwloading the Papyrus++ dataset with progress on
                 print('You are downloading the high-quality Papyrus++ dataset.\n'
                       'Should you want to access the entire, though of lower quality, Papyrus dataset,\n'
-                      'look into additional switches to this command.')
+                      'look into additional switches of this command.')
             if structures:
                 downloads.add('2D_structures')
             if 'mold2' in descriptors or 'all' in descriptors:
@@ -206,6 +206,7 @@ def download_papyrus(outdir: Optional[str] = None,
 
 def remove_papyrus(outdir: Optional[str] = None,
                    version: Union[str, List[str]] = 'latest',
+                   papyruspp: bool = False,
                    bioactivities: bool = False,
                    proteins: bool = False,
                    nostereo: bool = True,
@@ -221,10 +222,11 @@ def remove_papyrus(outdir: Optional[str] = None,
 
     :param outdir: directory where Papyrus data is stored (default: pystow's directory)
     :param version: version of the dataset to be removed
+    :param papyruspp: should Papyrus++ bioactivities be removed
     :param bioactivities: should bioactivity data be removed
     :param proteins:  should protein data be removed
-    :param nostereo: should files related to 2D data be considered
-    :param stereo: should files related to 3D data be considered
+    :param nostereo: should the files related to 2D data be considered
+    :param stereo: should the files related to 3D data be considered
     :param structures: should molecule structures be removed
     :param descriptors: should molecular and protein descriptors be removed
     :param other_files: should other files (e.g. LICENSE, README, data_types, data_size) be removed
@@ -236,7 +238,7 @@ def remove_papyrus(outdir: Optional[str] = None,
     # Obtain links to files
     files = get_papyrus_links()
     # Handle exceptions
-    available_versions = list(files['zenodo'].keys())
+    available_versions = list(files.keys())
     if isinstance(version, list):
         for _version in version:
             if _version not in available_versions + ['latest', 'all']:
@@ -292,6 +294,8 @@ def remove_papyrus(outdir: Optional[str] = None,
             return
         # Prepare files to be removed
         removal = set()
+        if bioactivities and papyruspp:
+            removal.add('papyrus++')
         if bioactivities and nostereo:
             removal.add('2D_papyrus')
         elif bioactivities and stereo:
@@ -331,7 +335,7 @@ def remove_papyrus(outdir: Optional[str] = None,
             data = files[_version][ftype]
             dname, dsize = data['name'], data['size']
             # Determine path
-            if ftype in ['2D_papyrus', '3D_papyrus', 'proteins', 'readme']:
+            if ftype in ['papyrus++', '2D_papyrus', '3D_papyrus', 'proteins', 'readme']:
                 fpath = papyrus_version_root.join(name=dname).as_posix()
             elif ftype in ['2D_structures', '3D_structures']:
                 fpath = papyrus_version_root.join('structures', name=dname).as_posix()
@@ -360,16 +364,16 @@ def remove_papyrus(outdir: Optional[str] = None,
         if progress:
             pbar = tqdm(total=total, desc=f'Removing files from version {_version}', unit='B', unit_scale=True)
         for ftype in removal:
-            data = files['zenodo'][_version][ftype]
+            data = files[_version][ftype]
             dname, dsize = data['name'], data['size']
             # Determine path
-            if ftype in ['2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme', 'license']:
+            if ftype in ['papyrus++', '2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme', 'license']:
                 fpath = papyrus_version_root.join(name=dname).as_posix()
             elif ftype in ['2D_structures', '3D_structures']:
                 fpath = papyrus_version_root.join('structures', name=dname).as_posix()
             else:
                 fpath = papyrus_version_root.join('descriptors', name=dname).as_posix()
-            # File does not exists
+            # File does not exist
             if not os.path.isfile(fpath):
                 if progress:
                     pbar.update(dsize)
