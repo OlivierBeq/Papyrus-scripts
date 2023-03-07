@@ -16,18 +16,9 @@ This content is a preprint and has not been peer-reviewed.
 
 ## Installation
 
-The Papyrus scripts require dependencies, a few of which can only be installed via conda to the best of our knowledge. 
-
-1. Install conda dependencies first:
 ```bash
-conda install rdkit -c conda-forge
-```
-
-2. Then install Papyrus-scripts with pip
-```bash
-pip install https://github.com/OlivierBeq/Papyrus-scripts/tarball/master
+pip install papyrus-scripts
 ``` 
-Dependencies that PyPI resolves will auto-magically be installed.
 
 :warning: If pip gives the following error and resolves in import errors
 ```bash
@@ -36,7 +27,7 @@ Defaulting to user installation because normal site-packages is not writeable
 Then uninstall and reinstalling the library with the following commands:
 ```bash
 pip uninstall -y papyrus-scripts
-python -m pip install https://github.com/OlivierBeq/Papyrus-scripts/tarball/master
+python -m pip install papyrus-scripts
 ```
 
 Additional dependencies can be installed to allow:
