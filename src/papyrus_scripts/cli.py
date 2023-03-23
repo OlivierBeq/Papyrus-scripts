@@ -14,11 +14,16 @@ from .utils.IO import get_num_rows_in_file, process_data_version, convert_gz_to_
 from .subsim_search import FPSubSim2
 from .fingerprint import Fingerprint, get_fp_from_name
 
-@click.group()
+
+CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
+
+
+@click.group(context_settings=CONTEXT_SETTINGS)
 def main():
     pass
 
-@main.command(help='Download Papyrus data.')
+
+@main.command(help='Download Papyrus data.', context_settings=CONTEXT_SETTINGS)
 @click.option('-o', '--out_dir', 'output_directory', type=str, required=False,
               default=None, nargs=1, show_default=True, metavar='OUTDIR',
               help='Directory where Papyrus data will be stored\n(default: pystow\'s home folder).')
@@ -68,7 +73,7 @@ def download(output_directory, version, more, stereo, structs, descs, force):
                      disk_margin=0.0 if force else 0.1)
 
 
-@main.command(help='Remove Papyrus data.')
+@main.command(help='Remove Papyrus data.', context_settings=CONTEXT_SETTINGS)
 @click.option('-o', '--out_dir', 'output_directory', type=str, required=False,
               default=None, nargs=1, show_default=True, metavar='OUTDIR',
               help='Directory where Papyrus data will be removed\n(default: pystow\'s home folder).')
@@ -131,7 +136,7 @@ def clean(output_directory, version, papyruspp, stereo, bioactivities, proteins,
                    progress=True)
 
 
-@main.command(help='Identify matches of the RCSB PDB data in the Papyrus data.')
+@main.command(help='Identify matches of the RCSB PDB data in the Papyrus data.', context_settings=CONTEXT_SETTINGS)
 @click.option('--indir', '-i', 'indir', type=str, required=False, default=None, nargs=1,
               metavar='INDIR', show_default=True,
               help='Directory where Papyrus data will be stored\n(default: pystow\'s home folder).')
@@ -203,7 +208,8 @@ class Mutex(click.Option):
         return super(Mutex, self).handle_parse_result(ctx, opts, args)
 
 
-@main.command(help='Create a FPSubSim2 library for substructure/similarity searches.')
+@main.command(help='Create a FPSubSim2 library for substructure/similarity searches.',
+              context_settings=CONTEXT_SETTINGS)
 @click.option('-i, --indir', 'indir', type=str, required=False, default=None, nargs=1,
               metavar='INDIR', show_default=True,
               help='Directory where Papyrus data will be stored\n(default: pystow\'s home folder).')
@@ -313,7 +319,8 @@ Fingerprint:
                                      progress=verbose, njobs=njobs)
 
 
-@main.command(help='Transform the compression of Papyrus files from LZMA to Gzip and vice-versa.')
+@main.command(help='Transform the compression of Papyrus files from LZMA to Gzip and vice-versa.',
+              context_settings=CONTEXT_SETTINGS)
 @click.option('-i', '--indir', 'indir', type=str, required=False, default=None, nargs=1,
               metavar='INDIR', show_default=True,
               help='Directory where Papyrus data is stored\n(default: pystow\'s home folder).')
