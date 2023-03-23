@@ -575,7 +575,7 @@ def _consume_deeper_chunks(generator: Union[PandasTextFileReader, Iterator]):
 
 
 def keep_organism(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], protein_data: pd.DataFrame,
-                  organism: Optional[Union[str, List[str]]] = 'Human',
+                  organism: Optional[Union[str, List[str]]] = 'Homo sapiens (Human)',
                   generic_regex: bool = False):
     """Keep only the data matching desired protein classifications.
 
