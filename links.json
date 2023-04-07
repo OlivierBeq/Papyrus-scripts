@@ -28,9 +28,9 @@
     ],
     "papyrus++": {
       "name": "05.4++_combined_set_without_stereochemistry.tsv.xz",
-      "url": "https://drive.google.com/uc?id=1Z3Y7BTrUxgui1E6e1qYbG-YiCEPf_95L&confirm=t",
-      "size": 96413812,
-      "sha256": "e37aef941739ec2524a13a25d515812e91b90f2241bf4c1185096ed5e5a01999"
+      "url": "https://drive.google.com/uc?id=1ES8V3Pbw3xVpDIjs9J2RL2jeTHr_YTm0&confirm=t",
+      "size": 40278204,
+      "sha256": "42dcbe76b33ad541f6c54673eccffa15af64785cf844938c0f73518dfdf4404b"
     },
     "2D_papyrus": {
       "name": "05.4_combined_set_without_stereochemistry.tsv.xz",
@@ -132,9 +132,9 @@
     }],
     "papyrus++": {
       "name": "05.5++_combined_set_without_stereochemistry.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5%2B%2B_combined_set_without_stereochemistry.tsv.xz?download=1",
-      "size": 116092692,
-      "sha256": "ad15ac5535c6640f8dc3e501b1c7fd0cb39b7bbcd025e4506ec5efc82ec0a266"
+      "url": "https://drive.google.com/uc?id=11QDDruvyf8OhVuGf5V38etvorL8SPqcp&confirm=t",
+      "size": 41357608,
+      "sha256": "8ecaea9533f3c475dca6d335f30dd1b4abb259fa77b7441548dd15879e1afa58"
     },
     "2D_papyrus": {
       "name": "05.5_combined_set_without_stereochemistry.tsv.xz",
@@ -224,9 +224,9 @@
     },
     "papyrus++": {
       "name": "05.6++_combined_set_without_stereochemistry.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6%2B%2B_combined_set_without_stereochemistry.tsv.xz?download=1",
-      "size": 104203892,
-      "sha256": "3499c9364a3a9044090ccdf44f21346546945f729c79925de0906194eec9a0b2"
+      "url": "https://drive.google.com/uc?id=1KCzcAJBvn_EcYjyBrOTmxzWFKGoazJp2&confirm=t",
+      "size": 31085780,
+      "sha256": "7518019c3ba287cd4cd0ff29425fe9da8a4760d891d22ed1abb33da4920cf96a"
     },
     "2D_papyrus": {
       "name": "05.6_combined_set_without_stereochemistry.tsv.xz",
