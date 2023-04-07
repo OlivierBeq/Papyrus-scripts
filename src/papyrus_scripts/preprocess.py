@@ -83,7 +83,7 @@ def _chunked_keep_quality(chunks: Union[PandasTextFileReader, Iterator], min_qua
         yield filtered_chunk
 
 
-def process_group(group):
+def process_group(group, additional_columns: Optional[List[str]] = None):
     """Aggregate data from one group accordingly"""
     if (group.values[0] == group.values).all():  # If all values are equal, return first record
         group['pchembl_value_Mean'] = group['pchembl_value']
@@ -93,13 +93,20 @@ def process_group(group):
         group['pchembl_value_Median'] = group['pchembl_value']
         group['pchembl_value_MAD'] = np.NaN
         return group.iloc[:1, :]
+    # Lambda: Return one value if all are the same
     listvals = lambda x: ';'.join(set(str(y) for y in x)) if (x.values[0] == x.values).all() else ';'.join(
         str(y) for y in x)
+    # Lambda: Return all values everytime
     listallvals = lambda x: ';'.join(str(y) for y in x)
+    # Aggregation rules
     mappings = {'source': 'first', 'CID': listvals, 'AID': listvals,
-                'type_IC50': listallvals, 'type_EC50': listallvals, 'type_KD': listallvals,
-                'type_Ki': listallvals, 'type_other': listallvals, 'relation': listvals,
+                'type_IC50': listvals, 'type_EC50': listvals, 'type_KD': listvals,
+                'type_Ki': listvals, 'type_other': listvals, 'relation': listvals,
                 'pchembl_value': listallvals}
+    # Consider other columns
+    if additional_columns is not None:
+        for column in additional_columns:
+            mappings[column] = listvals
     return pd.concat([group.groupby('Activity_ID').aggregate(mappings).reset_index(),
                       group.groupby('Activity_ID')['pchembl_value'].aggregate(pchembl_value_Mean='mean',
                                                                               pchembl_value_StdDev='std',
@@ -110,9 +117,9 @@ def process_group(group):
                                                                               ).reset_index(drop=True)], axis=1)
 
 
-def process_groups(groups):
+def process_groups(groups, additional_columns: Optional[List[str]] = None):
     """Aggregate data from multiple groups"""
-    return pd.concat([process_group(group) for group in groups])
+    return pd.concat([process_group(group, additional_columns) for group in groups])
 
 
 def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], source: Union[List[str], str] = 'all', njobs: int = 1,
