@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+"""Match data of the Papyrus dataset with that of the Protein Data Bank."""
+
 import os
 import time
 from typing import Iterator, Generator, Optional, Union
@@ -18,7 +20,7 @@ from .utils import UniprotMatch
 def update_rcsb_data(root_folder: Optional[str] = None,
                      overwrite: bool = False,
                      verbose: bool = True
-                    ) -> pd.DataFrame:
+                     ) -> pd.DataFrame:
     """Update the local data of the RCSB.
 
     :param root_folder: Directory where Papyrus bioactivity data is stored (default: pystow's home folder)

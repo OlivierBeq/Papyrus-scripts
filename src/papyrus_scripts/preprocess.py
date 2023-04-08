@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+"""Filtering capacities of the Papyrus-scripts."""
+
 import os
 from itertools import chain
 from typing import Any, List, Optional, Union, Iterator, Iterable
@@ -20,7 +22,8 @@ from .subsim_search import FPSubSim2
 def equalize_cell_size_in_row(row, cols=None, fill_mode='internal', fill_value: object = ''):
     """Equalize the number of values in each list-containing cell of a pandas dataframe.
     
-    Slightly adapted from user nphaibk (https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-multiple-list-columns-in-a-pandas-dataframe)
+Slightly adapted from user nphaibk:
+https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-multiple-list-columns-in-a-pandas-dataframe
     
     :param row: pandas row the function should be applied to
     :param cols: columns for which equalization must be performed
@@ -32,11 +35,15 @@ def equalize_cell_size_in_row(row, cols=None, fill_mode='internal', fill_value: 
     """
     if not cols:
         cols = row.index
+    # Obtain indices of columns of interest
     jcols = [j for j, v in enumerate(row.index) if v in cols]
     if len(jcols) < 1:
         jcols = range(len(row.index))
+    # Obtain lengths of each values
     Ls = [len(x) for x in row.values]
+    # Ensure not all values are the same
     if not Ls[:-1] == Ls[1:]:
+        # Ensure values are lists
         vals = [v if isinstance(v, list) else [v] for v in row.values]
         if fill_mode == 'external':
             vals = [[e] + [fill_value] * (max(Ls) - 1) if (not j in jcols) and (isinstance(row.values[j], list))
@@ -54,8 +61,8 @@ def equalize_cell_size_in_row(row, cols=None, fill_mode='internal', fill_value: 
     return row
 
 
-def keep_quality(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], min_quality: str = 'high') -> Union[
-    pd.DataFrame, Iterator]:
+def keep_quality(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
+                 min_quality: str = 'high') -> Union[pd.DataFrame, Iterator]:
     """Keep only the data with the minimum defined quality
     
     :param data: the dataframe, chunked or not into a pandas TextFileReader, containing data to be filtered
@@ -122,8 +129,8 @@ def process_groups(groups, additional_columns: Optional[List[str]] = None):
     return pd.concat([process_group(group, additional_columns) for group in groups])
 
 
-def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], source: Union[List[str], str] = 'all', njobs: int = 1,
-                verbose: bool = False) -> pd.DataFrame:
+def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], source: Union[List[str], str] = 'all',
+                njobs: int = 1, verbose: bool = False) -> pd.DataFrame:
     """Keep only the data from the defined source(s).
     
     :param data: the dataframe containing data to be filtered
@@ -233,7 +240,8 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
         return data
 
 
-def _chunked_keep_source(data: Union[PandasTextFileReader, Iterator], source: Union[List[str], str], njobs) -> pd.DataFrame:
+def _chunked_keep_source(data: Union[PandasTextFileReader, Iterator], source: Union[List[str], str],
+                         njobs: int) -> pd.DataFrame:
     for chunk in data:
         yield keep_source(chunk, source, njobs)
 
@@ -257,8 +265,8 @@ def is_multiple_types(row, activity_types: List[str]):
     return np.any([';' in str(row[activity_type]) for activity_type in activity_types])
 
 
-def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activity_types: Union[List[str], str] = 'ic50', njobs: int = 1,
-              verbose: bool = False):
+def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activity_types: Union[List[str], str] = 'ic50',
+              njobs: int = 1, verbose: bool = False):
     """Keep only the data matching desired activity types
     
     :param data: the dataframe containing data to be filtered
@@ -400,7 +408,8 @@ def _chunked_keep_accession(data: Union[PandasTextFileReader, Iterator], accessi
 def equalize_cell_size_in_column(col, fill_mode='internal', fill_value: object = ''):
     """Equalize the number of values in each list-containing cell of a pandas dataframe.
 
-    Adapted from user nphaibk (https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-multiple-list-columns-in-a-pandas-dataframe)
+    Adapted from user nphaibk
+https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-multiple-list-columns-in-a-pandas-dataframe
 
     :param col: pandas Series the function should be applied to
     :param fill_mode: 'internal' to repeat the only/last value of a cell as much as needed
@@ -432,13 +441,13 @@ def keep_protein_class(data: Union[pd.DataFrame, PandasTextFileReader, Iterator]
     :param data: the dataframe containing data to be filtered
     :param protein_data: the dataframe of Papyrus protein targets
     :param classes: protein classes to keep (case insensitive).
-                    - {'l2': 'Kinase'} matches all proteins with classification 'Enzyme->Kinase'
-                    - {'l5': 'Adenosine receptor'} matches 'Membrane receptor->Family A G protein-coupled receptor->Small molecule receptor (family A GPCR)->Nucleotide-like receptor (family A GPCR)-> Adenosine receptor'
-                    - All levels in the same dict are enforced, e.g. {'l1': ''Epigenetic regulator', 'l3': 'HDAC class IIb'} does not match records without the specified l1 AND l3
-                    - If given a list of dicts, results in a union of the dicts, e.g. [{'l2': 'Kinase'}, {'l1': 'Membrane receptor'}] matches records with classification either 'Enzyme->Kinase' or 'Membrane receptor'
-                    - Level-independent patterns can be specified with the 'l?' key, e.g. {'l?': 'SLC'} matches any classification level containing the 'SLC' keyword
-                      Only one 'l?' per dict is supported.
-                      Mixed usage of 'l?' and level-specific patterns (e.f. 'l1') is not supported
+    - {'l2': 'Kinase'} matches all proteins with classification 'Enzyme->Kinase'
+    - {'l5': 'Adenosine receptor'} matches 'Membrane receptor->Family A G protein-coupled receptor->Small molecule receptor (family A GPCR)->Nucleotide-like receptor (family A GPCR)-> Adenosine receptor'
+    - All levels in the same dict are enforced, e.g. {'l1': ''Epigenetic regulator', 'l3': 'HDAC class IIb'} does not match records without the specified l1 AND l3
+    - If given a list of dicts, results in a union of the dicts, e.g. [{'l2': 'Kinase'}, {'l1': 'Membrane receptor'}] matches records with classification either 'Enzyme->Kinase' or 'Membrane receptor'
+    - Level-independent patterns can be specified with the 'l?' key, e.g. {'l?': 'SLC'} matches any classification level containing the 'SLC' keyword
+    Only one 'l?' per dict is supported.
+    Mixed usage of 'l?' and level-specific patterns (e.f. 'l1') is not supported
     :param generic_regex: whether to consider generic patterns 'l?' as regex, allowing for partial match.
 
     :return: the data with desired protein classes
@@ -681,7 +690,7 @@ def keep_similar(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], mole
 
     :param data: the dataframe containing data to be filtered
     :param molecule_smiles: the query molecule(s)
-    :param fpsubsim_file: path to FPSubSim2 database
+    :param fpsubsim2_file: path to FPSubSim2 database
     :param fingerprint: fingerprint to be used for similarity search
     :param threshold: similarity threshold
     :param cuda: whether to use GPU for similarity searches
@@ -714,7 +723,7 @@ def _chunked_keep_similar(data: Union[PandasTextFileReader, Iterator], molecule_
     fpss2.load(fpsubsim2_file)
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
-    similarity_engine = fpss2.get_similarity_lib(cuda=cuda)
+    similarity_engine = fpss2.get_similarity_lib(cuda=cuda, fp_signature=fingerprint._hash)
     similar_mols = pd.concat(
         [similarity_engine.similarity(smiles, threshold=threshold) for smiles in tqdm(molecule_smiles)], axis=0)
     similar_mols = similar_mols.iloc[:, -2:]

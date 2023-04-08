@@ -23,6 +23,7 @@ except ImportError as e:
     nn.Module = list
     PandasIterableDataset = int
 
+
 def cuda(var: nn.Module):
     """Move model parameters and buffers to GPU if a GPU is available.
 
@@ -67,8 +68,8 @@ def set_seed(seed: Optional[int] = None) -> Optional[np.random.Generator]:
 
 
 class BaseNN(nn.Module):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
-                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+                 early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: Optional[int] = None):
         """Base class for neural networks.
 
@@ -96,7 +97,7 @@ class BaseNN(nn.Module):
         self.dropout = dropout
         self.rng = set_seed(random_seed)
 
-    def set_validation(self, X: Union[Iterator, pd.DataFrame], y : Union[Iterator, pd.Series]):
+    def set_validation(self, X: Union[Iterator, pd.DataFrame], y: Union[Iterator, pd.Series]):
         """Set the validation set to be used during fitting.
 
         :param X: features to predict y from
@@ -123,7 +124,7 @@ class BaseNN(nn.Module):
         """Reset weights and reload the initial state of the model"""
         self.load_state_dict(T.load(os.path.join(self.out, 'empty_model.pkg')))
 
-    def fit(self, X: Union[Iterator, pd.DataFrame], y : Union[Iterator, pd.Series]):
+    def fit(self, X: Union[Iterator, pd.DataFrame], y: Union[Iterator, pd.Series]):
         """Fit neural network with training set and optimize for loss on validation set.
 
         :param X: features to predict y from
@@ -220,8 +221,8 @@ class BaseNN(nn.Module):
 
 
 class SingleTaskNNClassifier(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
-                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+                 early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: Optional[int] = None):
         """Neural Network classifier to predict a unique endpoint.
 
@@ -292,8 +293,8 @@ class SingleTaskNNClassifier(BaseNN):
 
 
 class SingleTaskNNRegressor(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
-                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+                 early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: Optional[int] = None):
         """Neural Network regressor to predict a unique endpoint.
 
@@ -311,7 +312,7 @@ class SingleTaskNNRegressor(BaseNN):
         self.dropoutl = nn.Dropout(self.dropout)
         self.criterion = nn.MSELoss()
 
-    def set_architecture(self, n_dim:int):
+    def set_architecture(self, n_dim: int):
         """Set dimension of input.
 
         :param n_dim: number of input parameters
@@ -334,8 +335,8 @@ class SingleTaskNNRegressor(BaseNN):
 
 
 class MultiTaskNNClassifier(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
-                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+                 early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: Optional[int] = None):
         """Neural Network classifier to predict multiple endpoints.
 
@@ -354,7 +355,7 @@ class MultiTaskNNClassifier(BaseNN):
         self.activation = nn.Sigmoid()
         self.dropoutl = nn.Dropout(self.dropout)
 
-    def set_architecture(self, n_dim:int, n_task:int):
+    def set_architecture(self, n_dim: int, n_task: int):
         """Set dimension of input and number of classes to be predicted.
 
         :param n_dim: number of input parameters
@@ -396,8 +397,8 @@ class MultiTaskNNClassifier(BaseNN):
 
 
 class MultiTaskNNRegressor(BaseNN):
-    def __init__(self, out: str, epochs:int=100, lr:float=1e-3,
-                 early_stop: int = 100, batch_size: int =1024, dropout: float=0.25,
+    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+                 early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: Optional[int] = None):
         """Neural Network regressor to predict multiple endpoints.
 
@@ -415,8 +416,7 @@ class MultiTaskNNRegressor(BaseNN):
         self.dropoutl = nn.Dropout(self.dropout)
         self.criterion = nn.MSELoss()
 
-
-    def set_architecture(self, n_dim:int, n_task:int):
+    def set_architecture(self, n_dim: int, n_task: int):
         """Set dimension of input.
 
         :param n_dim: number of input parameters
@@ -516,6 +516,7 @@ def extract_y(data: Union[PandasTextFileReader, Iterator], y_col: List[str]):
         if not np.all(chunk.columns.isin(y_col)):
             raise ValueError(f'columns {chunk.columns} not found in data')
         return T.Tensor(chunk[y_col])
+
 
 def extract_x(data: Union[PandasTextFileReader, Iterator], y_col: List[str]):
     """Extract the columns from the data."""

@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+"""Modelling capacities of the Papyrus-scripts from the Papyrus dataset."""
+
 from copy import deepcopy
 import warnings
 from itertools import chain, combinations
@@ -57,6 +59,8 @@ def filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
     :param data: data to be filtered, either a dataframe or an iterator of chunks
     :param column_name: name of the column to apply the filter on
     :param keep_values: allowed values
+    :param progress: show progress bar
+    :param total: number of chunks in data if data is an Iterator
     :return: a pandas dataframe
     """
     if isinstance(data, pd.DataFrame):
@@ -99,24 +103,30 @@ def model_metrics(model, y_true, x_test) -> dict:
         # Mean averages
         y_true_mean = y_true.mean()
         y_pred_mean = y_pred.mean()
-        return {'number' : y_true.size,
-                'R2' : R2(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'MSE' : MSE(y_true, y_pred, squared=True) if len(y_pred) >= 2 else 0,
-                'RMSE' : MSE(y_true, y_pred, squared=False) if len(y_pred) >= 2 else 0,
-                'MSLE' : MSLE(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'RMSLE' : np.sqrt(MSLE(y_true, y_pred)) if len(y_pred) >= 2 else 0,
-                'MAE' : MAE(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Explained Variance' : eVar(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Max Error' : maxE(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Mean Poisson Distrib' : MPD(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Mean Gamma Distrib' : MGD(y_true, y_pred) if len(y_pred) >= 2 else 0,
+        return {'number': y_true.size,
+                'R2': R2(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'MSE': MSE(y_true, y_pred, squared=True) if len(y_pred) >= 2 else 0,
+                'RMSE': MSE(y_true, y_pred, squared=False) if len(y_pred) >= 2 else 0,
+                'MSLE': MSLE(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'RMSLE': np.sqrt(MSLE(y_true, y_pred)) if len(y_pred) >= 2 else 0,
+                'MAE': MAE(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'Explained Variance': eVar(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'Max Error': maxE(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'Mean Poisson Distrib': MPD(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'Mean Gamma Distrib': MGD(y_true, y_pred) if len(y_pred) >= 2 else 0,
                 'Pearson r': pearsonR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
-                'Spearman r' : spearmanR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
+                'Spearman r': spearmanR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
                 'Kendall tau': kendallTau(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
-                'R2_0 (pred. vs. obs.)' : 1 - (sum((xi - k_prime * yi) **2 for xi, yi in zip(y_true, y_pred)) / sum((xi - y_true_mean) ** 2 for xi in y_true)) if len(y_pred) >= 2 else 0,
-                'R\'2_0 (obs. vs. pred.)' : 1 - (sum((yi - k * xi) **2 for xi, yi in zip(y_true, y_pred)) / sum((yi - y_pred_mean) ** 2 for yi in y_pred)) if len(y_pred) >= 2 else 0,
-                'k slope (pred. vs obs.)' : k,
-                'k\' slope (obs. vs pred.)' : k_prime,
+                'R2_0 (pred. vs. obs.)': 1 - (sum((xi - k_prime * yi) ** 2
+                                                  for xi, yi in zip(y_true, y_pred)) /
+                                              sum((xi - y_true_mean) ** 2
+                                                  for xi in y_true)) if len(y_pred) >= 2 else 0,
+                'R\'2_0 (obs. vs. pred.)': 1 - (sum((yi - k * xi) ** 2
+                                                    for xi, yi in zip(y_true, y_pred)) /
+                                                sum((yi - y_pred_mean) ** 2
+                                                    for yi in y_pred)) if len(y_pred) >= 2 else 0,
+                'k slope (pred. vs obs.)': k,
+                'k\' slope (obs. vs pred.)': k_prime,
                 }
     # Classification
     elif isinstance(model, (ClassifierMixin, SingleTaskNNClassifier, MultiTaskNNClassifier)):
@@ -129,26 +139,30 @@ def model_metrics(model, y_true, x_test) -> dict:
                 values['MCC'] = mcc
             except RuntimeWarning:
                 pass
-            values[':'.join(str(x) for x in model.classes_)] = ':'.join([str(int(sum(y_true == class_))) for class_ in model.classes_])
+            values[':'.join(str(x) for x in model.classes_)] = ':'.join([str(int(sum(y_true == class_)))
+                                                                         for class_ in model.classes_])
             values['ACC'] = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) != 0 else 0
             values['BACC'] = (tp / (tp + fn) + tn / (tn + fp)) / 2
             values['Sensitivity'] = tp / (tp + fn) if tp + fn != 0 else 0
             values['Specificity'] = tn / (tn + fp) if tn + fp != 0 else 0
             values['PPV'] = tp / (tp + fp) if tp + fp != 0 else 0
             values['NPV'] = tn / (tn + fn) if tn + fn != 0 else 0
-            values['F1'] = 2 * values['Sensitivity'] * values['PPV'] / (values['Sensitivity'] + values['PPV']) if (values['Sensitivity'] + values['PPV']) != 0 else 0
+            values['F1'] = 2 * values['Sensitivity'] * values['PPV'] / (values['Sensitivity'] + values['PPV']) \
+                if (values['Sensitivity'] + values['PPV']) != 0 \
+                else 0
             if hasattr(model, "predict_proba"):  # able to predict probability
                 y_probas = model.predict_proba(x_test)
                 if y_probas.shape[1] == 1:
                     y_proba = y_probas.ravel()
-                    values['AUC 1'] = ROCAUC(y_true, y_probas)
+                    values['AUC 1'] = ROCAUC(y_true, y_proba)
                 else:
                     for i in range(len(model.classes_)):
                         y_proba = y_probas[:, i].ravel()
                         try:
                             values['AUC %s' % model.classes_[i]] = ROCAUC(y_true, y_proba)
                         except ValueError:
-                            warnings.warn('Only one class present in y_true. ROC AUC score is not defined in that case. '
+                            warnings.warn('Only one class present in y_true. '
+                                          'ROC AUC score is not defined in that case. '
                                           'Stratify your folds to avoid such warning.')
                             values['AUC %s' % model.classes_[i]] = np.nan
         # Multiclasses
@@ -163,17 +177,19 @@ def model_metrics(model, y_true, x_test) -> dict:
                 except RuntimeWarning:
                     pass
                 values['%s|number' % model.classes_[i]] = int(sum(y_true == model.classes_[i]))
-                values['%s|ACC' % model.classes_[i]] = (tp + tn) / (tp + tn + fp + fn) if (
-                                                                                                  tp + tn + fp + fn) != 0 else 0
+                values['%s|ACC' % model.classes_[i]] = (tp + tn) / (tp + tn + fp + fn) \
+                    if (tp + tn + fp + fn) != 0\
+                    else 0
                 values['%s|BACC' % model.classes_[i]] = (tp / (tp + fn) + tn / (tn + fp)) / 2
                 values['%s|Sensitivity' % model.classes_[i]] = tp / (tp + fn) if tp + fn != 0 else 0
                 values['%s|Specificity' % model.classes_[i]] = tn / (tn + fp) if tn + fp != 0 else 0
                 values['%s|PPV' % model.classes_[i]] = tp / (tp + fp) if tp + fp != 0 else 0
                 values['%s|NPV' % model.classes_[i]] = tn / (tn + fn) if tn + fn != 0 else 0
-                values['%s|F1' % model.classes_[i]] = 2 * values['%s|Sensitivity' % model.classes_[i]] * values[
-                    '%s|PPV' % model.classes_[i]] / (values['%s|Sensitivity' % model.classes_[i]] + values[
-                    '%s|PPV' % model.classes_[i]]) if (values['%s|Sensitivity' % model.classes_[i]] + values[
-                    '%s|PPV' % model.classes_[i]]) != 0 else 0
+                values['%s|F1' % model.classes_[i]] = \
+                    2 * values['%s|Sensitivity' % model.classes_[i]] * values['%s|PPV' % model.classes_[i]] / \
+                    (values['%s|Sensitivity' % model.classes_[i]] + values['%s|PPV' % model.classes_[i]]) \
+                     if (values['%s|Sensitivity' % model.classes_[i]] + values['%s|PPV' % model.classes_[i]]) != 0 \
+                     else 0
                 i += 1
             if hasattr(model, "predict_proba"):  # able to predict probability
                 y_probas = model.predict_proba(x_test)
@@ -199,7 +215,7 @@ def crossvalidate_model(data: pd.DataFrame,
     """Create a machine learning model predicting values in the first column
 
    :param data: data containing the dependent vairable (in the first column) and other features
-   :param model: estimator (may be classifier or regressor) to use for model building
+   :param model: estimator (either classifier or regressor) to use for model building
    :param folds: cross-validator
    :param groups: groups to split the labels according to
    :param verbose: whether to show fold progression
@@ -289,7 +305,9 @@ def qsar(data: pd.DataFrame,
          yscramble: bool = False,
          random_state: int = 1234,
          verbose: bool = True
-         ) -> Tuple[pd.DataFrame, Dict[str, Optional[Union[TransformerMixin, LabelEncoder, BaseCrossValidator, Dict[str, ClassifierMixin]]]]]:
+         ) -> Tuple[pd.DataFrame, Dict[str,
+                                       Optional[Union[TransformerMixin, LabelEncoder,
+                                                      BaseCrossValidator, Dict[str, ClassifierMixin]]]]]:
     """Create QSAR models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -297,6 +315,7 @@ def qsar(data: pd.DataFrame,
     :param endpoint: value to be predicted or to derive classes from
     :param num_points: minimum number of points for the activity of a target to be modelled
     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
+    :param version: version of the papyrus dataset to use for modelling
     :param descriptors: type of desriptors to be used for model training
     :param descriptor_path: path to Papyrus descriptors (default: pystow's default path)
     :param descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded (None disables chunking)
@@ -305,26 +324,28 @@ def qsar(data: pd.DataFrame,
     :param folds: number of cross-validation folds to be performed
     :param stratify: whether to stratify folds for cross validation, ignored if model is RegressorMixin
     :param split_by: how should folds be determined {'random', 'Year', 'cluster', 'custom'}
-                      If 'random', exactly test_set_size is extracted for test set.
-                      If 'Year', the size of the test and training set are not looked at
-                      If 'cluster' or 'custom', the groups giving proportion closest to test_set_size will be used to defined the test set
+    If 'random', exactly test_set_size is extracted for test set.
+    If 'Year', the size of the test and training set are not looked at
+    If 'cluster' or 'custom', the groups giving proportion closest to test_set_size will be used to defined the test set
     :param split_year: Year from which on the test set is extracted (ignored if split_by is not 'Year')
     :param test_set_size: proportion of the dataset to be used as test set
-    :param cluster_method: clustering method to use to extract test set and cross-validation folds (ignored if split_by is not 'cluster')
-    :param custom_groups: custom groups to use to extract test set and cross-validation fold (ignored if split_by is not 'custom').
-                           Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
-                           (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
-                           of each compound.
+    :param cluster_method: clustering method to use to extract test set and cross-validation folds
+    (ignored if split_by is not 'cluster')
+    :param custom_groups: custom groups to use to extract test set and cross-validation fold
+    (ignored if split_by is not 'custom').
+    Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
+    (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
+    of each compound.
     :param scale: should the features be scaled using the custom scaling_method
     :param scale_method: scaling method to be applied to features (ignored if scale is False)
     :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
     :param random_state: seed to use for train/test splitting and KFold shuffling
     :param verbose: log details to stdout
     :return: both:
-                    - a dataframe of the cross-validation results where each line is a fold of QSAR modelling of an accession
-                    - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
-                      the data splitter for cross-validation,  and for each accession in the data:
-                      the fitted models on each cross-validation fold and the model fitted on the complete training set.
+    - a dataframe of the cross-validation results where each line is a fold of QSAR modelling of an accession
+    - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
+    the data splitter for cross-validation,  and for each accession in the data:
+    the fitted models on each cross-validation fold and the model fitted on the complete training set.
     """
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', 'custom'}")
@@ -474,7 +495,8 @@ def qsar(data: pd.DataFrame,
                 if len(train_data_classes) < 2:
                     results.append(pd.DataFrame([[targets[i_target],
                                                   ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
-                                                  f'Only one activity class in traing set for temporal split at {split_year}']],
+                                                  'Only one activity class in traing set '
+                                                  f'for temporal split at {split_year}']],
                                                 columns=['target', 'A:N', 'error']))
                     if verbose:
                         pbar.update()
@@ -482,7 +504,8 @@ def qsar(data: pd.DataFrame,
                 elif len(test_data_classes) < 2:
                     results.append(pd.DataFrame([[targets[i_target],
                                                   ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
-                                                  f'Only one activity class in traing set for temporal split at {split_year}']],
+                                                  'Only one activity class in traing set '
+                                                  f'for temporal split at {split_year}']],
                                                 columns=['target', 'A:N', 'error']))
                     if verbose:
                         pbar.update()
@@ -519,8 +542,8 @@ def qsar(data: pd.DataFrame,
                                 index=y_train.index, dtype=y_train.dtype,
                                 name=y_train.name)
             y_test = pd.Series(data=lblenc.transform(y_test),
-                                index=y_test.index, dtype=y_test.dtype,
-                                name=y_test.name)
+                               index=y_test.index, dtype=y_test.dtype,
+                               name=y_test.name)
             y_train = y_train.astype(np.int32)
             y_test = y_test.astype(np.int32)
         # Reorganize data
@@ -540,7 +563,8 @@ def qsar(data: pd.DataFrame,
             if not train_enough_data:
                 results.append(pd.DataFrame([[targets[i_target],
                                               ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
-                                              f'Not enough data in minority class of the training set for all {folds} folds']],
+                                              'Not enough data in minority class of '
+                                              f'the training set for all {folds} folds']],
                                             columns=['target', 'A:N', 'error']))
                 if verbose:
                     pbar.update()
@@ -549,7 +573,8 @@ def qsar(data: pd.DataFrame,
             elif not test_enough_data:
                 results.append(pd.DataFrame([[targets[i_target],
                                               ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
-                                              f'Not enough data in minority class of the training set for all {folds} folds']],
+                                              'Not enough data in minority class of '
+                                              f'the training set for all {folds} folds']],
                                             columns=['target', 'A:N', 'error']))
                 if verbose:
                     pbar.update()
@@ -616,7 +641,9 @@ def pcm(data: pd.DataFrame,
         yscramble: bool = False,
         random_state: int = 1234,
         verbose: bool = True
-        ) -> Tuple[pd.DataFrame, Dict[str, Union[TransformerMixin, LabelEncoder, BaseCrossValidator, RegressorMixin, ClassifierMixin]]]:
+        ) -> Tuple[pd.DataFrame, Dict[str,
+                                      Union[TransformerMixin, LabelEncoder,
+                                            BaseCrossValidator, RegressorMixin, ClassifierMixin]]]:
     """Create PCM models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -624,38 +651,43 @@ def pcm(data: pd.DataFrame,
     :param endpoint: value to be predicted or to derive classes from
     :param num_points: minimum number of points for the activity of a target to be modelled
     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
+    :param version: version of the papyrus dataset to use for modelling
     :param mol_descriptors: type of desriptors to be used for model training
     :param mol_descriptor_path: path to Papyrus descriptors
-    :param mol_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded (None disables chunking)
+    :param mol_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded
+    (None disables chunking)
     :param prot_sequences_path: path to Papyrus sequences
     :param prot_descriptors: type of desriptors to be used for model training
     :param prot_descriptor_path: path to Papyrus descriptors
-    :param prot_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded (None disables chunking)
+    :param prot_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded
+    (None disables chunking)
     :param activity_threshold: threshold activity between acvtive and inactive compounds (ignored if using a regressor)
     :param model: machine learning model to be used for PCM modelling
     :param folds: number of cross-validation folds to be performed
     :param stratify: whether to stratify folds for cross validation, ignored if model is RegressorMixin
     :param split_by: how should folds be determined {'random', 'Year', 'cluster', 'custom'}
-                      If 'random', exactly test_set_size is extracted for test set.
-                      If 'Year', the size of the test and training set are not looked at
-                      If 'cluster' or 'custom', the groups giving proportion closest to test_set_size will be used to defined the test set
+    If 'random', exactly test_set_size is extracted for test set.
+    If 'Year', the size of the test and training set are not looked at
+    If 'cluster' or 'custom', the groups giving proportion closest to test_set_size will be used to defined the test set
     :param split_year: Year from which on the test set is extracted (ignored if split_by is not 'Year')
     :param test_set_size: proportion of the dataset to be used as test set
-    :param cluster_method: clustering method to use to extract test set and cross-validation folds (ignored if split_by is not 'cluster')
-    :param custom_groups: custom groups to use to extract test set and cross-validation fold (ignored if split_by is not 'custom').
-                           Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
-                           (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
-                           of each compound.
+    :param cluster_method: clustering method to use to extract test set and cross-validation folds
+    (ignored if split_by is not 'cluster')
+    :param custom_groups: custom groups to use to extract test set and cross-validation fold
+    (ignored if split_by is not 'custom').
+    Groups must be a pandas DataFrame with only two Series.The first Series is either InChIKey or connectivity
+    (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
+    of each compound.
     :param scale: should the features be scaled using the custom scaling_method
     :param scale_method: scaling method to be applied to features (ignored if scale is False)
     :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
     :param random_state: seed to use for train/test splitting and KFold shuffling
     :param verbose: log details to stdout
     :return: both:
-                    - a dataframe of the cross-validation results where each line is a fold of PCM modelling
-                    - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
-                      the data splitter for cross-validation, fitted models on each cross-validation fold,
-                      the model fitted on the complete training set.
+    - a dataframe of the cross-validation results where each line is a fold of PCM modelling
+    - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
+    the data splitter for cross-validation, fitted models on each cross-validation fold,
+    the model fitted on the complete training set.
     """
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', 'custom'}")
@@ -693,9 +725,9 @@ def pcm(data: pd.DataFrame,
     data = data.drop(columns=[merge_on])
     # Get and merge protein descriptors
     prot_descs = read_protein_descriptors(prot_descriptors, version, prot_descriptor_chunksize,
-                                         prot_sequences_path if isinstance(prot_descriptors, (Descriptor, Transform))
-                                         else prot_descriptor_path,
-                                         data['target_id'].unique())
+                                          prot_sequences_path if isinstance(prot_descriptors, (Descriptor, Transform))
+                                          else prot_descriptor_path,
+                                          data['target_id'].unique())
     data = data.merge(prot_descs, on='target_id')
     data = data.drop(columns=['target_id'])
     del prot_descs
@@ -830,36 +862,43 @@ def pcm(data: pd.DataFrame,
 #     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
 #     :param mol_descriptors: type of desriptors to be used for model training
 #     :param mol_descriptor_path: path to Papyrus descriptors
-#     :param mol_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded (None disables chunking)
+#     :param mol_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded
+#     (None disables chunking)
 #     :param prot_sequences_path: path to Papyrus sequences
 #     :param prot_descriptors: type of desriptors to be used for model training
 #     :param prot_descriptor_path: path to Papyrus descriptors
-#     :param prot_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded (None disables chunking)
-#     :param activity_threshold: threshold activity between acvtive and inactive compounds (ignored if using a regressor)
+#     :param prot_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded
+#     (None disables chunking)
+#     :param activity_threshold: threshold activity between acvtive and inactive compounds
+#     (ignored if using a regressor)
 #     :param model: DNN model to be fitted (default: None = SingleTaskNNClassifier
 #     :param folds: number of cross-validation folds to be performed
 #     :param stratify: whether to stratify folds for cross validation, ignored if model is RegressorMixin
 #     :param split_by: how should folds be determined {'random', 'Year', 'cluster', 'custom'}
-#                       If 'random', exactly test_set_size is extracted for test set.
-#                       If 'Year', the size of the test and training set are not looked at
-#                       If 'cluster' or 'custom', the groups giving proportion closest to test_set_size will be used to defined the test set
+#     If 'random', exactly test_set_size is extracted for test set.
+#     If 'Year', the size of the test and training set are not looked at
+#     If 'cluster' or 'custom', the groups giving proportion closest to test_set_size
+#     will be used to defined the test set
 #     :param split_year: Year from which on the test set is extracted (ignored if split_by is not 'Year')
 #     :param test_set_size: proportion of the dataset to be used as test set
-#     :param cluster_method: clustering method to use to extract test set and cross-validation folds (ignored if split_by is not 'cluster')
-#     :param custom_groups: custom groups to use to extract test set and cross-validation fold (ignored if split_by is not 'custom').
-#                            Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
-#                            (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
-#                            of each compound.
+#     :param cluster_method: clustering method to use to extract test set and cross-validation folds
+#     (ignored if split_by is not 'cluster')
+#     :param custom_groups: custom groups to use to extract test set and cross-validation fold
+#     (ignored if split_by is not 'custom').
+#     Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
+#     (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
+#     of each compound.
 #     :param scale: should to data be scaled to zero mean and unit variance
 #     :param random_state: seed to use for train/test splitting and KFold shuffling
 #     :param verbose: log details to stdout
 #     :return: both:
-#                     - a dataframe of the cross-validation results where each line is a fold of PCM modelling
-#                     - the model fitted on all folds for further use
+#     - a dataframe of the cross-validation results where each line is a fold of PCM modelling
+#     - the model fitted on all folds for further use
 #     """
 #     if split_by.lower() not in ['year', 'random', 'cluster', 'custom']:
 #         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', 'custom'}")
-#     if not isinstance(model, (RegressorMixin, ClassifierMixin, SingleTaskNNClassifier, SingleTaskNNRegressor, MultiTaskNNClassifier, MultiTaskNNRegressor)):
+#     if not isinstance(model, (RegressorMixin, ClassifierMixin, SingleTaskNNClassifier,
+#                               SingleTaskNNRegressor, MultiTaskNNClassifier, MultiTaskNNRegressor)):
 #         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
 #     warnings.filterwarnings("ignore", category=RuntimeWarning)
 #     if model is None:
@@ -897,7 +936,8 @@ def pcm(data: pd.DataFrame,
 #     if pcm:
 #         # Get and merge protein descriptors
 #         prot_descs = get_protein_descriptors(prot_descriptors,
-#                                              prot_sequences_path if isinstance(prot_descriptors, (Descriptor, Transform))
+#                                              prot_sequences_path if isinstance(prot_descriptors,
+#                                                                                (Descriptor, Transform))
 #                                              else prot_descriptor_path,
 #                                              prot_descriptor_chunksize,
 #                                              data['target_id'].unique())
@@ -916,7 +956,8 @@ def pcm(data: pd.DataFrame,
 #     # Build model for targets reaching criteria
 #     # Insufficient data points
 #     if data.shape[0] < num_points:
-#         raise ValueError(f'too few datapoints to build PCM model: {data.shape[0]} while at least {num_points} expected')
+#         raise ValueError('too few datapoints to build PCM model: '
+#                          f'{data.shape[0]} while at least {num_points} expected')
 #     if model_type == 'regressor':
 #         min_activity = data[endpoint].min()
 #         max_activity = data[endpoint].max()

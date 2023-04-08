@@ -238,7 +238,7 @@ class MolSupplier:
             elif self.format == 'mol2':
                 self.supplier = ForwardMol2MolSupplier(self._handle, **self.kwargs)
 
-    def set_start_progress_total(self, start: int=0, progress: bool=True, total: Optional[int]=None):
+    def set_start_progress_total(self, start: int = 0, progress: bool = True, total: Optional[int] = None):
         """Set the start, progress and total for iterating through the supplier.
 
         :param start: starting value for generated identifiers while enumerating molecules

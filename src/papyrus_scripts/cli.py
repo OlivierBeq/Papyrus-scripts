@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+"""Command line interface of the Papyrus-scripts"""
+
 import sys
 import os
 import inspect
@@ -20,6 +22,7 @@ CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
 
 @click.group(context_settings=CONTEXT_SETTINGS)
 def main():
+    """Group allowing subcommands to be defined"""
     pass
 
 
@@ -58,6 +61,7 @@ def main():
               show_default=True, help='Force download if disk space is low'
                                       '(default: False for 10% disk space margin).')
 def download(output_directory, version, more, stereo, structs, descs, force):
+    """CLI to download the Papyrus datas."""
     if isinstance(version, tuple):
         version = list(version)
     if isinstance(descs, tuple):
@@ -92,8 +96,8 @@ def download(output_directory, version, more, stereo, structs, descs, force):
               show_default=True, help='Should bioactivities be removed (TSV file).')
 @click.option('-S', '--structures', 'structs', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Should structures be removed (SD file).')
-@click.option('-d', '--descriptors', 'descs', type=click.Choice(['mold2', 'cddd', 'mordred', 'fingerprint',
-                                                                   'unirep', 'prodec', 'all', 'none']),
+@click.option('-d', '--descriptors', 'descs',
+              type=click.Choice(['mold2', 'cddd', 'mordred', 'fingerprint', 'unirep', 'prodec', 'all', 'none']),
               required=False, default=['none'], nargs=1,
               show_default=True, multiple=True,
               help=('Type of descriptors to be removed: mold2 (777 2D Mold2 descriptors), '
@@ -116,6 +120,7 @@ def download(output_directory, version, more, stereo, structs, descs, force):
               show_default=True, help='Skip confirmation when removing the root directory.')
 def clean(output_directory, version, papyruspp, stereo, bioactivities, proteins,structs,
           descs, other_files, remove_version, remove_root, force):
+    """CLI to remove the Papyrus data."""
     if isinstance(version, tuple):
         version = list(version)
     if isinstance(descs, tuple):
@@ -234,6 +239,7 @@ class Mutex(click.Option):
 @click.option('--fhelp', 'fingerprint_help', is_flag=True, default=False, required=False,
               help='Show advanced help about fingerprints.')
 def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerprint_help):
+    """CLI to create a database for similarity and substructure searches."""
     # Switch to advanced fingerprint help
     if fingerprint_help:
         fp_name_list = []  # Names of avaliable fingerprints
@@ -242,12 +248,15 @@ def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerp
         for fp_type in Fingerprint.derived():
             fp_name = fp_type().name  # Obtain fp name
             # Obtain argument names and default values
-            fp_params = [(key, value._default) for key, value in inspect.signature(fp_type.__init__).parameters.items() if key != 'self']
+            fp_params = [(key, value._default)
+                         for key, value in inspect.signature(fp_type.__init__).parameters.items()
+                         if key != 'self']
             # Format fp names and arguments
             fp_name_list.append(f"    {fp_name}")
             if len(fp_params):  # Fp has arguments
                 fp_parameter_list.append(f"      {fp_name}")
-                fp_parameter_list.extend(f"        {param_name} = {default_value}" for param_name, default_value in fp_params)
+                fp_parameter_list.extend(f"        {param_name} = {default_value}"
+                                         for param_name, default_value in fp_params)
             else:  # Fp has no argument
                 fp_no_parameter_list.append(f"      {fp_name}")
         # Format the entire lists
@@ -310,13 +319,13 @@ Fingerprint:
                 # Convert type of parameter values
                 try:
                     fp_param[param_name] = eval(param_value)
-                except:
+                except Exception as e:
                     print(f'Parameters were wrongly formatted: {param_value}')
                     sys.exit()
             fingerprints.append(get_fp_from_name(fp_name, **fp_param))
         for version_ in version:
-            fpss.create_from_papyrus(is3d=is3D, version=version_, outfile=output, fingerprint=fingerprints, root_folder=indir,
-                                     progress=verbose, njobs=njobs)
+            fpss.create_from_papyrus(is3d=is3D, version=version_, outfile=output, fingerprint=fingerprints,
+                                     root_folder=indir, progress=verbose, njobs=njobs)
 
 
 @main.command(help='Transform the compression of Papyrus files from LZMA to Gzip and vice-versa.',
@@ -328,21 +337,21 @@ Fingerprint:
               metavar='XX.X', help='Version of the Papyrus data to be transformed (default: latest).')
 @click.option('-f', '--format', 'format', type=click.Choice(['xz', 'gzip']),
               required=False, default=None, nargs=1, show_default=True, multiple=False,
-              help=('Compression type to transform the data to. Is inferred if not specified.'))
+              help='Compression type to transform the data to. Is inferred if not specified.')
 @click.option('-l', '--level', 'level', type=click.IntRange(0, 9),
               required=False, default=None, nargs=1, show_default=True, multiple=False,
-              help=('Compression level of output files.'))
+              help='Compression level of output files.')
 @click.option('-e', '--extreme', 'extreme', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Should extreme compression be toggled on.')
 def convert(indir, version, format, level, extreme):
+    """CLI to interconvert Papyrus data from/to GZIP from/to XZ."""
     if isinstance(version, tuple):
         version = list(version)
     if indir is None:
         indir = str(pystow.utils.get_base(''))
     version = process_data_version(version, indir)
     if format is None:
-        # Infer from the most abundant file type
-        formats = {'xz': [], 'gzip': []}
+        # Infer from name
         for root, _, files in os.walk(os.path.join(indir, 'papyrus', version)):
             for name in files:
                 if name.lower().endswith('xz'):

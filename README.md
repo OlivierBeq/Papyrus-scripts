@@ -89,18 +89,18 @@ download_papyrus(version='latest', only_pp=False, structures=True, descriptors='
 Different online servers host the Papyrus data based on release and ChEMBL version (table below).
 
  
-| Papyrus version | ChEMBL version |                                Zenodo                                |                                                            4TU                                                            |                                                Google Drive                                                 |
-|:---------------:|:--------------:|:--------------------------------------------------------------------:|:-------------------------------------------------------------------------------------------------------------------------:|:-----------------------------------------------------------------------------------------------------------:|
-|      05.4       |       29       |                                 :x:                                  |                                 [:heavy_check_mark:](https://doi.org/10.4121/16896406.v2)                                 | [:heavy_check_mark:](https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing)  | 
-|      05.5       |       30       | [:heavy_check_mark:](https://zenodo.org/record/7019874#.Y2lECL3MKUk) |                                                            :x:                                                            | [:heavy_check_mark:](https://drive.google.com/drive/folders/1BrCx0lN1YVvjgXOOaJZHJ7DBrLqFAbWV?usp=sharing)  |
-|      05.6       |       31       | [:heavy_check_mark:](https://zenodo.org/record/7377161#.Y5BvrHbMKUk) |                                                           :x:                                                             |                                                     :x:                                                     |
+| Papyrus version | ChEMBL version |                                Zenodo                                |                            4TU                            |                                                Google Drive                                                 |
+|:---------------:|:--------------:|:--------------------------------------------------------------------:|:---------------------------------------------------------:|:-----------------------------------------------------------------------------------------------------------:|
+|      05.4       |       29       |                                 :x:                                  | [:heavy_check_mark:](https://doi.org/10.4121/16896406.v2) | [:heavy_check_mark:](https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing)  | 
+|      05.5       |       30       | [:heavy_check_mark:](https://zenodo.org/record/7019874#.Y2lECL3MKUk) |                            :x:                            | [:heavy_check_mark:](https://drive.google.com/drive/folders/1BrCx0lN1YVvjgXOOaJZHJ7DBrLqFAbWV?usp=sharing)  |
+|      05.6       |       31       | [:heavy_check_mark:](https://zenodo.org/record/7377161#.Y5BvrHbMKUk) |                            :x:                            |                                                     :x:                                                     |
 
 Precomputed molecular and protein descriptors along with molecular structures (2D for default set and 3D for low quality set with stereochemistry) are not available for version 05.4 from 4TU but are from Google Drive.
 
 As stated in the pre-print **we strongly encourage** the use of the dataset in which stereochemistry was not considered.
 This corresponds to files containing the mention "2D" and/or "without_stereochemistry". 
 
-## Inter-conversion of the compressed files
+## Interconversion of the compressed files
 
 The available LZMA-compressed files (*.xz*) may not be supported by some software (e.g. Pipeline Pilot).
 <br/>**Decompressing the data is strongly discouraged!**<br/>
@@ -159,9 +159,9 @@ Two version exist depending on the background used.
 
 <div class="colored-table">
 
-|                                                              On white background                                                              |                          On colored background                      |
-|:---------------------------------------------------------------------------------------------------------------------------------------------:|:-------------------------------------------------------------------:|
-|                                            <img src="figures/logo/Papyrus_trnsp-bg.svg" width=200>                                            |      <img src="figures/logo/Papyrus_trnsp-bg-white.svg" width=200>  |
+|                                                              On white background                                                              |                     On colored background                     |
+|:---------------------------------------------------------------------------------------------------------------------------------------------:|:-------------------------------------------------------------:|
+|                                            <img src="figures/logo/Papyrus_trnsp-bg.svg" width=200>                                            | <img src="figures/logo/Papyrus_trnsp-bg-white.svg" width=200> |
 
 </div>
 

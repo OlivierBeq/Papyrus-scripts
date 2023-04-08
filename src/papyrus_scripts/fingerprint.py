@@ -40,7 +40,11 @@ class Fingerprint(ABC):
             self.length = 307
         if not self.length:
             raise Exception("fingerprint size is not specified")
-        self._hash = f'{hex(abs(np.sum(np.frombuffer(hashlib.sha256((self.name + json.dumps(self.params, sort_keys=True)).encode()).digest(), dtype=np.int64))) % 65537)}'
+        self._hash = self.name + json.dumps(self.params, sort_keys=True)
+        self._hash = hashlib.sha256((self._hash).encode()).digest()
+        self._hash = np.frombuffer(self._hash, dtype=np.int64)
+        self._hash = abs(np.sum(self._hash)) % 65537
+        self._hash = f'{hex(self._hash)}'
 
     def __repr__(self):
         return f'{self.name}_{self.length}bits_{self._hash}'
@@ -105,14 +109,15 @@ class MorganFingerprint(RDKitFingerprint):
 class TopologicalTorsionFingerprint(RDKitFingerprint):
     def __init__(self, nBits: int = 2048, targetSize: int = 4, fromAtoms: List = 0,
                  ignoreAtoms: List = 0, atomInvariants: List = 0, includeChirality: bool = False):
-        super(TopologicalTorsionFingerprint, self).__init__('TopologicalTorsion',
-                                                            {"nBits": nBits,
-                                                             "targetSize": targetSize,
-                                                             "fromAtoms": fromAtoms,
-                                                             "ignoreAtoms": ignoreAtoms,
-                                                             "atomInvariants": atomInvariants,
-                                                             "includeChirality": includeChirality, },
-                                                            rdMolDescriptors.GetHashedTopologicalTorsionFingerprintAsBitVect)
+        super(TopologicalTorsionFingerprint, self
+              ).__init__('TopologicalTorsion',
+                         {"nBits": nBits,
+                          "targetSize": targetSize,
+                          "fromAtoms": fromAtoms,
+                          "ignoreAtoms": ignoreAtoms,
+                          "atomInvariants": atomInvariants,
+                          "includeChirality": includeChirality, },
+                         rdMolDescriptors.GetHashedTopologicalTorsionFingerprintAsBitVect)
 
 
 class AtomPairFingerprint(RDKitFingerprint):

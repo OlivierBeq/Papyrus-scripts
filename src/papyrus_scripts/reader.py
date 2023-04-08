@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+"""Reading capacities of the Papyrus-scripts."""
+
 import json
 import os
 from typing import Optional, Union, Iterator, List
@@ -155,8 +157,8 @@ def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
             data.reset_index(inplace=True)
             return data
         return _filter_molecular_descriptors(pbar(_join_molecular_descriptors(mold2, mordd, molfp, cddds, moe,
-                                                                              on='InChIKey' if is3d else 'connectivity'),
-                                                  ids, 'InChIKey' if is3d else 'connectivity'))
+                                                                              on='InChIKey' if is3d else 'connectivity')),
+                                                  ids, 'InChIKey' if is3d else 'connectivity')
 
 
 def _join_molecular_descriptors(*descriptors: Iterator, on: str = 'connectivity') -> Iterator:
@@ -185,7 +187,7 @@ def _filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
         return _iterate_filter_descriptors(data, ids, id_name)
 
 
-def _iterate_filter_descriptors(data: Iterator, ids: Optional[List[str]], id_name: str):
+def _iterate_filter_descriptors(data: Iterator, ids: Optional[List[str]], id_name: Optional[str]):
     for chunk in data:
         if ids is None:
             yield chunk

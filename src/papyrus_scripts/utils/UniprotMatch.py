@@ -238,6 +238,7 @@ class UniprotMatch:
         :param from_db: Type of identifier supplied through 'ids'
         :param to_db: Type of identifier to be obtained
         :param taxon: Taxon ID of the species if 'from_db' is 'Gene_Name'
+        :param verbose: Increase verbosity
         :return: A dictionary with query ids as keys and the respective mapped results
 
         Adapted from David Araripe's (@DavidAraripe) original code

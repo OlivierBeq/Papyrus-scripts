@@ -58,7 +58,7 @@ class TypeEncoder(json.JSONEncoder):
     """Custom json encoder to support types as values."""
 
     def default(self, obj):
-        """Add support if value if a type."""
+        """Add support if value is a type."""
         if isinstance(obj, type):
             return {'__type__': {'module': inspect.getmodule(obj).__name__,
                                  'type': obj.__name__}
@@ -119,7 +119,7 @@ def get_downloaded_versions(root_folder: str = None) -> dict:
     return read_jsonfile(version_json)
 
 
-def get_downloaded_papyrus_files(root_folder: str= None) -> pd.DataFrame:
+def get_downloaded_papyrus_files(root_folder: str = None) -> pd.DataFrame:
     """Identify downloaded files for each version of the Papyrus data
 
     :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
@@ -205,49 +205,50 @@ def locate_file(dirpath: str, regex_pattern: str):
 
 def get_num_rows_in_file(filetype: str, is3D: bool, descriptor_name: Optional[str] = None, version: str = 'latest',
                          plusplus: bool = True, root_folder: Optional[str] = None) -> int:
-        """Get the number of rows a Papyrus file has.
+    """Get the number of rows a Papyrus file has.
 
 
-        :param filetype: Type of file, one of {'bioactivities', 'structures', 'descriptors'}
-        :param is3D: Whether to consider the standardised (2D) or non-standardised (3D) data
-        :param descriptor_name: Name of the descriptor, one of {'cddd', 'mold2', 'mordred', 'fingerprint'},
-                                only considered if type='descriptors'.
-        :param version: Version of Papyrus to be considered
-        :param plusplus: If bioactivities come from the Papyrus++ very high quality curated set,
-                         only considered if type='bioactivitities'.
-        :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
-        :return: The number of lines in the corresponding file
-        """
-        if not filetype in ['bioactivities', 'structures', 'descriptors']:
-            raise ValueError('filetype must be one of [\'bioactivities\', \'structures\', \'descriptors\']')
-        if filetype == 'descriptors' and (
-                descriptor_name is None or descriptor_name not in ['cddd', 'mold2', 'mordred', 'fingerprint']):
-            raise ValueError('filetype must be one of [\'cddd\', \'mold2\', \'mordred\', \'fingerprint\']')
-        # Process version shortcuts
-        version = process_data_version(version=version, root_folder=root_folder)
-        if root_folder is not None:
-            os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
-        json_file = pystow.join('papyrus', version, name='data_size.json').as_posix()
-        # Obtain file sizes (number of lines)
-        sizes = read_jsonfile(json_file)
-        if filetype == 'bioactivities':
-            if plusplus:
-                if 'papyrus_++' in sizes.keys():
-                    return sizes['papyrus_++']
-                else:
-                    return sizes['papyrus++']
-            return sizes['papyrus_3D'] if is3D else sizes['papyrus_2D']
-        elif filetype == 'structures':
-            return sizes['structures_3D'] if is3D else sizes['structures_2D']
-        elif filetype == 'descriptors':
-            if descriptor_name == 'cddd':
-                return sizes['cddd']
-            elif descriptor_name == 'mold2':
-                return sizes['mold2']
-            elif descriptor_name == 'fingerprint':
-                return sizes['E3FP'] if is3D else sizes['ECFP6']
-            elif descriptor_name == 'mordred':
-                return sizes['mordred_3D'] if is3D else sizes['mordred_2D']
+    :param filetype: Type of file, one of {'bioactivities', 'structures', 'descriptors'}
+    :param is3D: Whether to consider the standardised (2D) or non-standardised (3D) data
+    :param descriptor_name: Name of the descriptor, one of {'cddd', 'mold2', 'mordred', 'fingerprint'},
+                            only considered if type='descriptors'.
+    :param version: Version of Papyrus to be considered
+    :param plusplus: If bioactivities come from the Papyrus++ very high quality curated set,
+                     only considered if type='bioactivitities'.
+    :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
+    :return: The number of lines in the corresponding file
+    """
+    if filetype not in ['bioactivities', 'structures', 'descriptors']:
+        raise ValueError('filetype must be one of [\'bioactivities\', \'structures\', \'descriptors\']')
+    if filetype == 'descriptors' and (
+            descriptor_name is None or descriptor_name not in ['cddd', 'mold2', 'mordred', 'fingerprint']):
+        raise ValueError('filetype must be one of [\'cddd\', \'mold2\', \'mordred\', \'fingerprint\']')
+    # Process version shortcuts
+    version = process_data_version(version=version, root_folder=root_folder)
+    if root_folder is not None:
+        os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
+    json_file = pystow.join('papyrus', version, name='data_size.json').as_posix()
+    # Obtain file sizes (number of lines)
+    sizes = read_jsonfile(json_file)
+    if filetype == 'bioactivities':
+        if plusplus:
+            if 'papyrus_++' in sizes.keys():
+                return sizes['papyrus_++']
+            else:
+                return sizes['papyrus++']
+        return sizes['papyrus_3D'] if is3D else sizes['papyrus_2D']
+    elif filetype == 'structures':
+        return sizes['structures_3D'] if is3D else sizes['structures_2D']
+    elif filetype == 'descriptors':
+        if descriptor_name == 'cddd':
+            return sizes['cddd']
+        elif descriptor_name == 'mold2':
+            return sizes['mold2']
+        elif descriptor_name == 'fingerprint':
+            return sizes['E3FP'] if is3D else sizes['ECFP6']
+        elif descriptor_name == 'mordred':
+            return sizes['mordred_3D'] if is3D else sizes['mordred_2D']
+
 
 def get_papyrus_links(offline: bool = False):
     """Obtain the latest links to Papyrus data files from GitHub.
@@ -279,7 +280,7 @@ def convert_xz_to_gz(input_file: str, output_file: str,
     """Convert a LZMA-compressed xz file to a GZIP-compressed file.
 
     :param input_file: Path of the input file
-    :param ouput_file: Path of the output file
+    :param output_file: Path of the output file
     :param compression_level: Compression level of the output file (if None, defaults to 9)
     :param progress: Show conversion progress.
     """
@@ -313,7 +314,7 @@ def convert_gz_to_xz(input_file: str, output_file: str,
     """Convert a GZIP- compressed file to a LZMA-compressed xz file.
 
     :param input_file: Path of the input file
-    :param ouput_file: Path of the output file
+    :param output_file: Path of the output file
     :param compression_level: Compression level of the output file (if None, defaults to 6)
     :param extreme: Should extreme compression be toggled on top of the compression level
     :param progress: Show conversion progress.

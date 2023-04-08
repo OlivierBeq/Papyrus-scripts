@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+"""Download utilities of the Papyrus scripts."""
+
 import os
 import zipfile
 import shutil
@@ -9,14 +11,15 @@ import requests
 import pystow
 from tqdm.auto import tqdm
 
-from .utils.IO import get_disk_space, enough_disk_space, assert_sha256sum, read_jsonfile, write_jsonfile, get_papyrus_links
+from .utils.IO import (get_disk_space, enough_disk_space, assert_sha256sum,
+                       read_jsonfile, write_jsonfile, get_papyrus_links)
 
 
 def download_papyrus(outdir: Optional[str] = None,
                      version: Union[str, List[str]] = 'latest',
                      nostereo: bool = True,
                      stereo: bool = False,
-                     only_pp: bool =True,
+                     only_pp: bool = True,
                      structures: bool = False,
                      descriptors: Optional[Union[str, List[str]]] = 'all',
                      progress: bool = True,
@@ -50,7 +53,7 @@ def download_papyrus(outdir: Optional[str] = None,
         version = latest_version
         if progress:
             print(f'Latest version: {version}')
-    elif (isinstance(version, list) and 'latest' in version):
+    elif isinstance(version, list) and 'latest' in version:
         for i in range(len(version)):
             if version[i] == 'latest':
                 version[i] = latest_version
@@ -144,7 +147,8 @@ def download_papyrus(outdir: Optional[str] = None,
             for subfile in download:
                 dname, durl, dsize, dhash = subfile['name'], subfile['url'], subfile['size'], subfile['sha256']
                 # Determine path
-                if ftype in ['papyrus++', '2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size', 'readme', 'license', 'requirements']:
+                if ftype in ['papyrus++', '2D_papyrus', '3D_papyrus', 'proteins', 'data_types', 'data_size',
+                             'readme', 'license', 'requirements']:
                     fpath = papyrus_version_root.join(name=dname).as_posix()
                 elif ftype in ['2D_structures', '3D_structures']:
                     fpath = papyrus_version_root.join('structures', name=dname).as_posix()
@@ -154,7 +158,7 @@ def download_papyrus(outdir: Optional[str] = None,
                 if os.path.isfile(fpath) and assert_sha256sum(fpath, dhash):
                     if progress:
                         pbar.update(dsize)
-                    continue # skip
+                    continue  # skip
                 # Download file
                 correct = False  # ensure file is not corrupted
                 retries = RETRIES
@@ -249,7 +253,7 @@ def remove_papyrus(outdir: Optional[str] = None,
         version = latest_version
         if progress:
             print(f'Latest version: {version}')
-    elif (isinstance(version, list) and 'latest' in version):
+    elif isinstance(version, list) and 'latest' in version:
         for i in range(len(version)):
             if version[i] == 'latest':
                 version[i] = latest_version
@@ -350,7 +354,7 @@ def remove_papyrus(outdir: Optional[str] = None,
                 os.remove('data_size.json')
                 os.remove('LICENSE.txt')
             # Handle other files
-            if os.path.isfile(fpath): # file exists
+            if os.path.isfile(fpath):  # file exists
                 total += dsize  # add size to be removed
             else:  # file does not exist
                 del removal[i]
