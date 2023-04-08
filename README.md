@@ -139,10 +139,11 @@ The scripts used to extract subsets, generate models and obtain visualizations c
 
 ## Features to come
 
-- ~~Substructure and similarity molecular searches~~
-- ~~ability to use DNN models~~
-- ~~ability to repeat model training over multiple seeds~~
-- y-scrambling
+- [x] Substructure and similarity molecular searches
+- [x] ability to use DNN models
+- [ ] adapt models to QSPRpred
+- [x] ability to repeat model training over multiple seeds
+- [ ] y-scrambling
  
 ## Examples to come
 
