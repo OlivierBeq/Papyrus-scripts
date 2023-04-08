@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+"""ChEMBL data mining."""
+
 import os
 import re
 from typing import Optional
