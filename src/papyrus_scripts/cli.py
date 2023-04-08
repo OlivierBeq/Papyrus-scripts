@@ -5,6 +5,7 @@
 import sys
 import os
 import inspect
+from collections import defaultdict
 
 import click
 import pystow
@@ -351,6 +352,7 @@ def convert(indir, version, format, level, extreme):
         indir = str(pystow.utils.get_base(''))
     version = process_data_version(version, indir)
     if format is None:
+        format = defaultdict(list)
         # Infer from name
         for root, _, files in os.walk(os.path.join(indir, 'papyrus', version)):
             for name in files:
