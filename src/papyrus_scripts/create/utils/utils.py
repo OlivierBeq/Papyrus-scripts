@@ -2,18 +2,21 @@
 
 import os
 import glob
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Union
+
+import pandas as pd
 from shortuuid import ShortUUID
 
 from pandas.io.parsers import TextFileReader as PandasTextFileReader
 import pystow
 
 
-def process_and_write_chunks(data: PandasTextFileReader, func: Callable, dest: str, *pystow_prefixes, **kwargs) -> None:
-    """Process incoming chunks of data using the specified function and wrtie the results into the given destination.
+def process_and_write_chunks(data: PandasTextFileReader, func: Callable[[pd.DataFrame], Union[pd.DataFrame, Iterator]],
+                             dest: str, *pystow_prefixes, **kwargs) -> None:
+    """Process incoming chunks of data using the specified function and write the results into the given destination.
 
     :param data: iterator of data to be processed
-    :param func: function to apply to the incoming data
+    :param func: function to apply to the incoming data with return value a dataframe or an iterator
     :param dest: file to write the processed result to
     :param pystow_prefixes: prefixes to store the destination file into
     :param kwargs: keywords arguments to be passed to pystow
