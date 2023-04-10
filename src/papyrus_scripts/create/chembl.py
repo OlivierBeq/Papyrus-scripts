@@ -17,7 +17,7 @@ from pandas.io.parsers import TextFileReader as PandasTextFileReader
 from .utils.pubchem import map_pubchem_assays
 from .utils.patents import map_patent_id
 from .utils.uniprot import uniprot_information
-from .utils.pandas_utils import equalize_cell_size_in_row
+from ..preprocess import equalize_cell_size_in_row
 from .utils.mol_standardize import standardize
 from .utils.utils import process_and_write_chunks, remove_temporary_files
 
@@ -174,7 +174,7 @@ def process_chembl_data(papyrus_version: str,
 
     def process_pubchem_activities(activity_df: pd.DataFrame, negate: bool = False):
         activity_df = process_inconclusive_activities(activity_df, negate=True)
-        # PubChem origin src_id = 7
+        # PubChem's origin src_id = 7
         mask = activity_df.src_id == 7
         if not negate:
             return activity_df[mask]
@@ -241,7 +241,7 @@ def process_chembl_data(papyrus_version: str,
                              papyruslib_root, chembl_root)
     del compounds_df
 
-    def merge_chembl_and_pubchem_bioactivities_and_molecules(activity_df):
+    def merge_chembl_and_pubchem_bioactivities_and_molecules(activity_df: pd.DataFrame):
         # Load compounds
         compounds_df = pystow.load_df(papyruslib_root, chembl_root,
                                       name=f'{papyrus_version}_raw_molecule_list_c{chembl_version}.txt',
@@ -672,96 +672,96 @@ def process_chembl_data(papyrus_version: str,
                                  papyruslib_root, chembl_root)
         del variants
 
-        # Bioactivities with target information
-        bioactivities: PandasTextFileReader = pystow.load_df(papyruslib_root, chembl_root,
-                                                             name=f'{papyrus_version}_raw_bioactivities_'
-                                                                  f'only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
-                                                             read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
+    # Bioactivities with target information
+    bioactivities: PandasTextFileReader = pystow.load_df(papyruslib_root, chembl_root,
+                                                         name=f'{papyrus_version}_raw_bioactivities_'
+                                                              f'only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
+                                                         read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
 
-        def merge_bioactivities_and_targets(bioactivities: pd.DataFrame, negate: bool = False):
-            targets = pystow.load_df(papyruslib_root, chembl_root,
-                                     name=f'{papyrus_version}_raw_target_list_c{chembl_version}.txt',
-                                     read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
+    def merge_bioactivities_and_targets(bioactivities: pd.DataFrame, negate: bool = False):
+        targets = pystow.load_df(papyruslib_root, chembl_root,
+                                 name=f'{papyrus_version}_raw_target_list_c{chembl_version}.txt',
+                                 read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
 
-            for chunk in targets:
-                data = bioactivities.merge(chunk, on='tid')
+        for chunk in targets:
+            data = bioactivities.merge(chunk, on='tid')
+            if not negate:
+                # Keep single proteins
+                yield data[data.target_type == 'SINGLE PROTEIN']
+            else:
+                yield data[data.target_type != 'SINGLE PROTEIN']
+
+    def merge_bioactivities_and_variant_targets(bioactivities: pd.DataFrame, negate: bool = False):
+        variants = pystow.load_df(papyruslib_root, chembl_root,
+                                  name=f'{papyrus_version}_raw_variant_target_list_c{chembl_version}.txt',
+                                  read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
+        # Process variants
+        for chunk in variants:
+            bioactivities_variants = (~bioactivities.variant_id.isna() &
+                                      (bioactivities.variant_id != -1) &
+                                      (bioactivities.variant_id != ''))
+            if not bioactivities[bioactivities_variants].empty:
+                data = bioactivities[bioactivities_variants].merge(chunk, on='variant_id')
                 if not negate:
                     # Keep single proteins
                     yield data[data.target_type == 'SINGLE PROTEIN']
                 else:
                     yield data[data.target_type != 'SINGLE PROTEIN']
+        del variants
 
-        def merge_bioactivities_and_variant_targets(bioactivities: pd.DataFrame, negate: bool = False):
-            variants = pystow.load_df(papyruslib_root, chembl_root,
-                                      name=f'{papyrus_version}_raw_variant_target_list_c{chembl_version}.txt',
-                                      read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
-            # Process variants
-            for chunk in variants:
-                bioactivities_variants = (~bioactivities.variant_id.isna() &
-                                          (bioactivities.variant_id != -1) &
-                                          (bioactivities.variant_id != ''))
-                if not bioactivities[bioactivities_variants].empty:
-                    data = bioactivities[bioactivities_variants].merge(chunk, on='variant_id')
-                    if not negate:
-                        # Keep single proteins
-                        yield data[data.target_type == 'SINGLE PROTEIN']
-                    else:
-                        yield data[data.target_type != 'SINGLE PROTEIN']
-            del variants
+        targets = pystow.load_df(papyruslib_root, chembl_root,
+                                 name=f'{papyrus_version}_raw_target_list_c{chembl_version}.txt',
+                                 read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
+        # Process WT
+        for chunk in targets:
+            bioactivities_variants = (~bioactivities.variant_id.isna() &
+                                      (bioactivities.variant_id != -1) &
+                                      (bioactivities.variant_id != ''))
+            if not bioactivities[~bioactivities_variants].empty:
+                data = bioactivities[~bioactivities_variants].merge(chunk, on='tid')
+                if not negate:
+                    # Keep single proteins
+                    yield data[data.target_type == 'SINGLE PROTEIN']
+                else:
+                    yield data[data.target_type != 'SINGLE PROTEIN']
+        del targets
 
-            targets = pystow.load_df(papyruslib_root, chembl_root,
-                                     name=f'{papyrus_version}_raw_target_list_c{chembl_version}.txt',
-                                     read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
-            # Process WT
-            for chunk in targets:
-                bioactivities_variants = (~bioactivities.variant_id.isna() &
-                                          (bioactivities.variant_id != -1) &
-                                          (bioactivities.variant_id != ''))
-                if not bioactivities[~bioactivities_variants].empty:
-                    data = bioactivities[~bioactivities_variants].merge(chunk, on='tid')
-                    if not negate:
-                        # Keep single proteins
-                        yield data[data.target_type == 'SINGLE PROTEIN']
-                    else:
-                        yield data[data.target_type != 'SINGLE PROTEIN']
-            del targets
-
-        if include_variants:
-            # Higher quality variant data
-            process_and_write_chunks(bioactivities,
-                                     merge_bioactivities_and_variant_targets,
-                                     f'{papyrus_version}_raw_bioactivities_'
-                                     f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
-                                     papyruslib_root, chembl_root)
-            # Reinstantiate for lower quality variant data
-            bioactivities = pystow.load_df(papyruslib_root, chembl_root,
-                                           name=f'{papyrus_version}_raw_bioactivities_'
-                                                f'only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
-                                           read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
-            # Lower quality variant data
-            process_and_write_chunks(bioactivities,
-                                     partial(merge_bioactivities_and_targets, negate=True),
-                                     f'{papyrus_version}_low_quality_raw_bioactivities_'
-                                     f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
-                                     papyruslib_root, chembl_root)
-        else:
-            # Higher quality data
-            process_and_write_chunks(bioactivities,
-                                     merge_bioactivities_and_targets,
-                                     f'{papyrus_version}_raw_bioactivities_'
-                                     f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
-                                     papyruslib_root, chembl_root)
-            # Reinstantiate for lower quality data
-            bioactivities = pystow.load_df(papyruslib_root, chembl_root,
-                                           name=f'{papyrus_version}_raw_bioactivities_'
-                                                f'only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
-                                           read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
-            # Lower quality data
-            process_and_write_chunks(bioactivities,
-                                     partial(merge_bioactivities_and_targets, negate=True),
-                                     f'{papyrus_version}_low_quality_raw_bioactivities_'
-                                     f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
-                                     papyruslib_root, chembl_root)
+    if include_variants:
+        # Higher quality variant data
+        process_and_write_chunks(bioactivities,
+                                 merge_bioactivities_and_variant_targets,
+                                 f'{papyrus_version}_raw_bioactivities_'
+                                 f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
+                                 papyruslib_root, chembl_root)
+        # Reinstantiate for lower quality variant data
+        bioactivities = pystow.load_df(papyruslib_root, chembl_root,
+                                       name=f'{papyrus_version}_raw_bioactivities_'
+                                            f'only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
+                                       read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
+        # Lower quality variant data
+        process_and_write_chunks(bioactivities,
+                                 partial(merge_bioactivities_and_targets, negate=True),
+                                 f'{papyrus_version}_low_quality_raw_bioactivities_'
+                                 f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
+                                 papyruslib_root, chembl_root)
+    else:
+        # Higher quality data
+        process_and_write_chunks(bioactivities,
+                                 merge_bioactivities_and_targets,
+                                 f'{papyrus_version}_raw_bioactivities_'
+                                 f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
+                                 papyruslib_root, chembl_root)
+        # Reinstantiate for lower quality data
+        bioactivities = pystow.load_df(papyruslib_root, chembl_root,
+                                       name=f'{papyrus_version}_raw_bioactivities_'
+                                            f'only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
+                                       read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
+        # Lower quality data
+        process_and_write_chunks(bioactivities,
+                                 partial(merge_bioactivities_and_targets, negate=True),
+                                 f'{papyrus_version}_low_quality_raw_bioactivities_'
+                                 f'only_small_molecules_conf_9_8_7_5_with_protein_accession_c{chembl_version}.txt',
+                                 papyruslib_root, chembl_root)
 
     # Molecules
     molstructures_query = """
@@ -781,6 +781,7 @@ def process_chembl_data(papyrus_version: str,
         molecules.drop(columns=['molfile'])
         molecules['standardised_smiles'] = mols.apply(standardize)
         molecules['InChIKey'] = mols.apply(Chem.MolToInchiKey)
+        molecules['InChI'] = mols.apply(Chem.MolToInchi)
         molecules['InChI_AuxInfo'] = mols.apply(Chem.MolToInchiAndAuxInfo)[1]
         return molecules
 
@@ -788,3 +789,67 @@ def process_chembl_data(papyrus_version: str,
                              process_molecules,
                              f'{papyrus_version}_raw_molecules_list_with_molreg_c{chembl_version}.txt',
                              papyruslib_root, chembl_root)
+
+    # Combine all data to bioactivities
+    bioactivities = pystow.load_df(papyruslib_root, chembl_root,
+                                   name=f'{papyrus_version}_raw_bioactivities_'
+                                        f'only_small_molecules_conf_9_8_7_5_c{chembl_version}.txt',
+                                   read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
+
+    def merge_all_bioactivities_and_molecules(activity_df: pd.DataFrame):
+        # Load compounds
+        compounds_df = pystow.load_df(papyruslib_root, chembl_root,
+                                      name=f'{papyrus_version}_raw_molecules_list_with_molreg_c{chembl_version}.txt',
+                                      read_csv_kwargs={'sep': '\t', 'chunksize': chunksize})
+        for chunk in compounds_df:
+            # Merge ChEMBL & PubChem bioactivities onto molecules
+            activity_df = activity_df.merge(chunk, on='molregno')
+            # Rename and drop columns
+            activity_df = activity_df.rename(columns={'accession': 'TARGET_NAME'})
+            activity_df = activity_df.drop(columns=['tid'])
+            # Create TID and add mutations to target name
+            activity_df['TID'] = 'ChEMBL:' + activity_df.target_chembl_id
+            activity_df['TARGET_NAME'] = (activity_df['TARGET_NAME'] + '_' +
+                                          activity_df.mutation.apply(lambda x: '_'.join(x)
+                                                                               if isinstance(x, str) and len(x) > 0
+                                                                               else 'WT'
+                                                                     ))
+            # Annotate assay type
+            activity_df['ADME_TYPE_assay'] = activity_df.assay_type.apply(lambda x: '1' if x == 'A' else 0)
+            activity_df['BINDING_TYPE_assay'] = activity_df.assay_type.apply(lambda x: '1' if x == 'B' else 0)
+            activity_df['FUNCTIONAL_TYPE_assay'] = activity_df.assay_type.apply(lambda x: '1' if x == 'F' else 0)
+            activity_df['UNKNOWN_TYPE_assay'] = (activity_df[['ADME_TYPE_assay',
+                                                              'BINDING_TYPE_assay',
+                                                              'FUNCTIONAL_TYPE_assay']
+                                                            ].sum(axis=1) == 0
+                                                 ).astype(int)
+            activity_df = activity_df.rename(columns={'molregno': 'id'})
+            # activity_df = activity_df[activity_df.pchemb_value.str.len() > 0]
+            yield activity_df
+
+    def filter_high_quality_bioactivities(activity_df: pd.DataFrame):
+        merged = merge_all_bioactivities_and_molecules(activity_df)
+        for chunk in merged:
+            chunk = chunk[(chunk.pchembl_value.str.len() > 0)]
+            # Focus on high quality
+            #   7: Direct protein complex subunits assigned
+            #   9: Direct single protein target assigned
+            high_quality = chunk[chunk.confidence_score.astype(str).isin(['7', '9'])]
+            # Drop duplicates
+            high_quality = high_quality[high_quality.potential_duplicate.astype(str) == '0']
+            high_quality = high_quality.rename(columns={'standardised_smiles': 'smiles'})
+            yield high_quality
+
+    def filter_medium_quality_bioactivities(activity_df: pd.DataFrame):
+        merged = merge_all_bioactivities_and_molecules(activity_df)
+        for chunk in merged:
+            chunk = chunk[(chunk.pchembl_value.str.len() > 0)]
+            # Focus on medium quality
+            #   5   Multiple direct protein targets may be assigned
+            #   8   Homologous single protein target assigned
+            medium_quality = chunk[~chunk.confidence_score.astype(str).isin(['7', '9'])]
+            # Drop duplicates
+            medium_quality = medium_quality[medium_quality.potential_duplicate.astype(str) == '0']
+            medium_quality = medium_quality.rename(columns={'standardised_smiles': 'smiles'})
+            yield medium_quality
+
