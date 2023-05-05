@@ -33,7 +33,7 @@ python -m pip install papyrus-scripts
 Additional dependencies can be installed to allow:
  - similarity and substructure searches
     ```bash
-    conda install FPSim2 openbabel "h5py<3.2" cupy 
+    conda install FPSim2 openbabel h5py cupy -c conda-forge
     ```
 
 - training DNN models:
