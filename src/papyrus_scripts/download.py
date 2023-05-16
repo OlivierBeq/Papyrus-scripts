@@ -82,9 +82,11 @@ def download_papyrus(outdir: Optional[str] = None,
                 downloads.add('2D_papyrus')
             elif progress:
                 # Ensure this warning is printed when donwloading the Papyrus++ dataset with progress on
-                print('You are downloading the high-quality Papyrus++ dataset.\n'
+                print('########## DISCLAIMER ##########\n'
+                      'You are downloading the high-quality Papyrus++ dataset.\n'
                       'Should you want to access the entire, though of lower quality, Papyrus dataset,\n'
-                      'look into additional switches of this command.')
+                      'look into additional switches of this command.\n'
+                      '################################')
             if structures:
                 downloads.add('2D_structures')
             if 'mold2' in descriptors or 'all' in descriptors:
@@ -118,19 +120,23 @@ def download_papyrus(outdir: Optional[str] = None,
                 for subfile in files[_version][ftype]:
                     total += subfile['size']
             else:
-                raise ValueError(f'Papyrus versioning file corrupted: {files[_version][ftype]} '
+                raise ValueError('########## ERROR ##########\n'
+                                 f'Papyrus versioning file corrupted: {files[_version][ftype]} '
                                  'is neither a dict or a list.\nThis is most likely due to bad formatting '
                                  'of the underlying parsed JSON files. If you are not the maintainer, please '
                                  'remove the Papyrus data and enforce root folder removal and download '
-                                 'the data before trying again.')
+                                 'the data before trying again.\n'
+                                 '################################')
         if progress:
             print(f'Number of files to be downloaded: {len(downloads)}\n'
                   f'Total size: {tqdm.format_sizeof(total)}B')
         # Verify enough disk space
         if not enough_disk_space(papyrus_version_root.base.as_posix(), total, disk_margin):
-            print(f'Not enough disk space ({disk_margin:.0%} kept for safety)\n'
+            print('########## ERROR ##########\n'
+                  f'Not enough disk space ({disk_margin:.0%} kept for safety)\n'
                   f'Available: {tqdm.format_sizeof(get_disk_space(papyrus_version_root.base.as_posix()))}B\n'
-                  f'Required: {tqdm.format_sizeof(total)}B')
+                  f'Required: {tqdm.format_sizeof(total)}B\n'
+                  '################################')
             return
         # Download files
         if progress:
