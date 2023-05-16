@@ -176,7 +176,11 @@ def process_data_version(version: str, root_folder: str = None):
     :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
     """
     # Handle exceptions
-    available_versions = get_downloaded_versions(root_folder) + ['latest']
+    available_versions = get_downloaded_versions(root_folder)
+    if len(available_versions) == 0:
+        raise IOError('Papyrus data not available (did you download it first?)')
+    else:
+        available_versions += ['latest']
     if version not in available_versions:
         raise ValueError(f'version can only be one of [{", ".join(available_versions)}]')
     elif version == 'latest':
