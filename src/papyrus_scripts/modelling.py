@@ -256,7 +256,7 @@ def train_test_proportional_group_split(data: pd.DataFrame,
                                         test_size: float = 0.30,
                                         verbose: bool = False
                                         ) -> Tuple[pd.DataFrame, pd.DataFrame, List[int], List[int]]:
-    """Split the data into training and test sets according to the groups that respect most test_size
+    """Split the data into training and test sets according to the groups that respect most test_size (based on MSE)
 
    :param data: the data to be split up into training and test sets
    :param groups: groups to split the data according to
@@ -323,19 +323,24 @@ def qsar(data: pd.DataFrame,
     :param model: machine learning model to be used for QSAR modelling
     :param folds: number of cross-validation folds to be performed
     :param stratify: whether to stratify folds for cross validation, ignored if model is RegressorMixin
-    :param split_by: how should folds be determined {'random', 'Year', 'cluster', 'custom'}
+    :param split_by: how should folds be determined {'random', 'Year', 'cluster', 'custom-cluster' 'custom'}
     If 'random', exactly test_set_size is extracted for test set.
     If 'Year', the size of the test and training set are not looked at
-    If 'cluster' or 'custom', the groups giving proportion closest to test_set_size will be used to defined the test set
+    If 'cluster', 'custom-cluster', the groups giving proportion closest to test_set_size will be used to
+    define the test set. 'cluster' uses `cluster_method` to define groups while 'custom-cluster' uses user provided
+    groups and creates the best suited proportional split among them.
+    If 'custom', the groups to be used untouched, specifying either 'training' or 'test' for each entry (other labels
+    are disregarded).
     :param split_year: Year from which on the test set is extracted (ignored if split_by is not 'Year')
     :param test_set_size: proportion of the dataset to be used as test set
     :param cluster_method: clustering method to use to extract test set and cross-validation folds
     (ignored if split_by is not 'cluster')
     :param custom_groups: custom groups to use to extract test set and cross-validation fold
-    (ignored if split_by is not 'custom').
-    Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
+    (ignored if split_by is not 'custom-cluster' or 'custom').
+    Groups must be a pandas DataFrame with only two Series.The first Series is either InChIKey or connectivity
     (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
-    of each compound.
+    of each compound specifying either 'training' or 'test' for each entry (other labels are disregarded) when
+    `split_by` is 'custom' or cluster membership when `split_by` is 'custom-cluster'.
     :param scale: should the features be scaled using the custom scaling_method
     :param scale_method: scaling method to be applied to features (ignored if scale is False)
     :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
@@ -347,8 +352,9 @@ def qsar(data: pd.DataFrame,
     the data splitter for cross-validation,  and for each accession in the data:
     the fitted models on each cross-validation fold and the model fitted on the complete training set.
     """
-    if split_by.lower() not in ['year', 'random', 'cluster', 'custom']:
-        raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', 'custom'}")
+    if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
+        raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster',"
+                         "'custom-cluster', 'custom'}")
     if not isinstance(model, (RegressorMixin, ClassifierMixin)):
         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -375,11 +381,12 @@ def qsar(data: pd.DataFrame,
         # Change endpoint
         endpoint = 'Activity_class'
         del preserved, active, inactive
-    # Get  and merge molecular descriptors
+    # Get and merge molecular descriptors
     descs = read_molecular_descriptors(descriptors, 'connectivity' not in data.columns,
                                        version, descriptor_chunksize, descriptor_path)
     descs = filter_molecular_descriptors(descs, merge_on, data[merge_on].unique())
     data = data.merge(descs, on=merge_on)
+    merge_on_values = data[[merge_on]]
     data = data.drop(columns=[merge_on])
     del descs
     # Table of results
@@ -391,6 +398,7 @@ def qsar(data: pd.DataFrame,
     # Build QSAR model for targets reaching criteria
     for i_target in range(n_targets - 1, -1, -1):
         tmp_data = data[data['target_id'] == targets[i_target]]
+        tmp_merge_on_values = merge_on_values[merge_on_values.index.isin(tmp_data.index)]
         if verbose:
             pbar.set_description(f'Building QSAR for target: {targets[i_target]} #datapoints {tmp_data.shape[0]}',
                                  refresh=True)
@@ -520,12 +528,18 @@ def qsar(data: pd.DataFrame,
             training_set, test_set, training_groups, _ = train_test_proportional_group_split(tmp_data, groups,
                                                                                              test_set_size,
                                                                                              verbose=verbose)
-        elif split_by.lower() == 'custom':
+        elif split_by.lower() == 'custom-cluster':
             # Merge from custom split DataFrame
-            groups = tmp_data[[merge_on]].merge(custom_groups, on=merge_on).iloc[:, 1].tolist()
+            groups = tmp_merge_on_values.merge(custom_groups, on=merge_on).iloc[:, 1].tolist()
             training_set, test_set, training_groups, _ = train_test_proportional_group_split(tmp_data, groups,
                                                                                              test_set_size,
                                                                                              verbose=verbose)
+        elif split_by.lower() == 'custom':
+            # Merge from custom split DataFrame
+            groups = tmp_merge_on_values.merge(custom_groups, on=merge_on)
+            training_set = tmp_data[tmp_merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'training'][merge_on])]
+            test_set = tmp_data[tmp_merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'test'][merge_on])]
+            training_groups = None
         # Drop columns not used for training
         training_set = training_set.drop(columns=['Year', 'target_id'])
         test_set = test_set.drop(columns=['Year', 'target_id'])
@@ -665,19 +679,24 @@ def pcm(data: pd.DataFrame,
     :param model: machine learning model to be used for PCM modelling
     :param folds: number of cross-validation folds to be performed
     :param stratify: whether to stratify folds for cross validation, ignored if model is RegressorMixin
-    :param split_by: how should folds be determined {'random', 'Year', 'cluster', 'custom'}
+    :param split_by: how should folds be determined {'random', 'Year', 'cluster', 'custom-cluster' 'custom'}
     If 'random', exactly test_set_size is extracted for test set.
     If 'Year', the size of the test and training set are not looked at
-    If 'cluster' or 'custom', the groups giving proportion closest to test_set_size will be used to defined the test set
+    If 'cluster', 'custom-cluster', the groups giving proportion closest to test_set_size will be used to
+    define the test set. 'cluster' uses `cluster_method` to define groups while 'custom-cluster' uses user provided
+    groups and creates the best suited proportional split among them.
+    If 'custom', the groups to be used untouched, specifying either 'training' or 'test' for each entry (other labels
+    are disregarded).
     :param split_year: Year from which on the test set is extracted (ignored if split_by is not 'Year')
     :param test_set_size: proportion of the dataset to be used as test set
     :param cluster_method: clustering method to use to extract test set and cross-validation folds
     (ignored if split_by is not 'cluster')
     :param custom_groups: custom groups to use to extract test set and cross-validation fold
-    (ignored if split_by is not 'custom').
+    (ignored if split_by is not 'custom-cluster' or 'custom').
     Groups must be a pandas DataFrame with only two Series.The first Series is either InChIKey or connectivity
     (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
-    of each compound.
+    of each compound specifying either 'training' or 'test' for each entry (other labels are disregarded) when
+    `split_by` is 'custom' or cluster membership when `split_by` is 'custom-cluster'.
     :param scale: should the features be scaled using the custom scaling_method
     :param scale_method: scaling method to be applied to features (ignored if scale is False)
     :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
@@ -689,8 +708,9 @@ def pcm(data: pd.DataFrame,
     the data splitter for cross-validation, fitted models on each cross-validation fold,
     the model fitted on the complete training set.
     """
-    if split_by.lower() not in ['year', 'random', 'cluster', 'custom']:
-        raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', 'custom'}")
+    if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
+        raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', "
+                         "'custom-cluster',  'custom'}")
     if not isinstance(model, (RegressorMixin, ClassifierMixin)):
         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -722,6 +742,7 @@ def pcm(data: pd.DataFrame,
                                            version, mol_descriptor_chunksize, mol_descriptor_path)
     mol_descs = filter_molecular_descriptors(mol_descs, merge_on, data[merge_on].unique())
     data = data.merge(mol_descs, on=merge_on)
+    merge_on_values = data[[merge_on]]
     data = data.drop(columns=[merge_on])
     # Get and merge protein descriptors
     prot_descs = read_protein_descriptors(prot_descriptors, version, prot_descriptor_chunksize,
@@ -760,12 +781,21 @@ def pcm(data: pd.DataFrame,
         training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
                                                                                          test_set_size,
                                                                                          verbose=verbose)
-    elif split_by.lower() == 'custom':
+    elif split_by.lower() == 'custom-cluster':
         # Merge from custom split DataFrame
-        groups = data[[merge_on]].merge(custom_groups, on=merge_on).iloc[:, 1].tolist()
+        groups = merge_on_values.merge(custom_groups, on=merge_on).iloc[:, 1].tolist()
         training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
                                                                                          test_set_size,
                                                                                          verbose=verbose)
+    elif split_by.lower() == 'custom':
+        # groups = custom_groups.iloc[:, 1]
+        # training_set = data[merge_on_values.squeeze().isin(custom_groups[groups == 'training'][merge_on])]
+        # test_set = data[merge_on_values.squeeze().isin(custom_groups[groups == 'test'][merge_on])]
+        # Merge from custom split DataFrame
+        groups = merge_on_values.merge(custom_groups, on=merge_on)
+        training_set = data[merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'training'][merge_on])]
+        test_set = data[merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'test'][merge_on])]
+        training_groups = None
     # Drop columns not used for training
     training_set = training_set.drop(columns=['Year'])
     test_set = test_set.drop(columns=['Year'])
