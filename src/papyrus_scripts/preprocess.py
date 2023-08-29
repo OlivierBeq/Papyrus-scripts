@@ -159,7 +159,8 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
         return data
     # Source not defined
     elif set(source).difference(sources):
-        raise ValueError(f'Source not supported, must be one of {sources}')
+        # Supplied source not in data sources
+        return data[data.source == 'SOURCE UNAVAILABLE']  # Ensures an empty dataframe with colnames is returned
     # Sources are defined
     else:
         # Columns with optional multiple values
