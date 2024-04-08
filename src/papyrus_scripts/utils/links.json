@@ -114,25 +114,25 @@
   },
     "requirements": [{
         "name": "LICENSE.txt",
-        "url": "https://drive.google.com/uc?id=1BxgAHXyskKoqeoVNigiqH2GTVJ5-B0GR&confirm=t",
+        "url": "https://zenodo.org/records/10943207/files/LICENSE.txt?download=1",
         "size": 20138,
         "sha256": "3b2890eacd851373001c4a14623458e3adaf1b1967939aa9c38a318e28d61c00"
     },
     {
       "name": "data_types.json",
-      "url": "https://drive.google.com/uc?id=19EIDDypF9GvCvXVcOjQ2k5ZDQ3wy4B0B&confirm=t",
+      "url": "https://zenodo.org/records/10943207/files/data_types.json?download=1",
       "size": 450678,
       "sha256": "d38f0b6b53f0450c5530b5bf44d8a7d0bb85417f22b7c818237e3346fe68149c"
     },
     {
       "name": "data_size.json",
-      "url": "https://drive.google.com/uc?id=1z504RsrLxN3RJN4EfGXsHe50uAoEr2lK&confirm=t",
+      "url": "https://zenodo.org/records/10943207/files/data_size.json?download=1",
       "size": 324,
       "sha256": "513307863c4acc779789340e900821ff8f38c845865aa078edc649caa1559dcc"
     }],
     "papyrus++": {
       "name": "05.5++_combined_set_without_stereochemistry.tsv.xz",
-      "url": "https://drive.google.com/uc?id=11QDDruvyf8OhVuGf5V38etvorL8SPqcp&confirm=t",
+      "url": "https://zenodo.org/records/10943207/files/05.5++_combined_set_without_stereochemistry.tsv.xz?download=1",
       "size": 41357608,
       "sha256": "8ecaea9533f3c475dca6d335f30dd1b4abb259fa77b7441548dd15879e1afa58"
     },
