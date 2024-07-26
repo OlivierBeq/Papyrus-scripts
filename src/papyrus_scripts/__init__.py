@@ -16,4 +16,6 @@ from .modelling import qsar, pcm
 from .utils.mol_reader import MolSupplier
 from .utils import IO, UniprotMatch
 
-__version__ = '1.0.3'
+from .oop import PapyrusDataset
+
+__version__ = '2.0.0'

@@ -16,8 +16,7 @@ from .utils.mol_reader import MolSupplier
 from .utils.IO import locate_file, process_data_version, TypeDecoder
 
 
-def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = True, chunksize: Optional[int] = None, source_path: Optional[str] = None) -> Union[
-    Iterator[pd.DataFrame], pd.DataFrame]:
+def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = True, chunksize: Optional[int] = None, source_path: Optional[str] = None) -> Union[Iterator[pd.DataFrame], pd.DataFrame]:
     """Read the Papyrus dataset.
 
     :param is3d: whether to consider stereochemistry or not (default: False)

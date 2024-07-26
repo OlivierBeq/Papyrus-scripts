@@ -174,6 +174,8 @@ def process_data_version(version: str, root_folder: str = None):
 
     :param version: version to be confirmed and/or converted.
     :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
+    :return: version number
+    :raises: IOError is the version is not available
     """
     # Handle exceptions
     available_versions = get_downloaded_versions(root_folder)
@@ -187,6 +189,19 @@ def process_data_version(version: str, root_folder: str = None):
         version = get_latest_downloaded_version(root_folder)
     return version
 
+
+def is_local_version_available(version: str, root_folder: str = None):
+    """Confirm the version is available and downloaded
+
+    :param version: version to check the local availability.
+    :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
+    :return: True if the version is available locally, False otherwise
+    """
+    try:
+        _ = process_data_version(version=version, root_folder=root_folder)
+        return True
+    except IOError:
+        return False
 
 def locate_file(dirpath: str, regex_pattern: str):
     """Find file(s) matching the given pattern in the given directory
