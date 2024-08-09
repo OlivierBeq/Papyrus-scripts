@@ -130,19 +130,19 @@ class PapyrusDataset:
     def consume_chunks(self, progress: bool = True) -> pd.DataFrame:
         return self.aggregate(progress=progress)
 
-    def molecules(self, chunksize: Optional[int] = None, progress: bool = False) -> PapyrusMoleculeSet:
+    def molecules(self, chunksize: Optional[int] = 1_000_000, progress: bool = False) -> PapyrusMoleculeSet:
         ids = self.aggregate(progress=progress)['connectivity' if self.papyrus_params['is3d'] else 'InChIKey'].unique()
         molecules = reader.read_molecular_structures(is3d=self.papyrus_params['is3d'],
                                                      version=self.papyrus_params['version'],
                                                      chunksize=chunksize,
                                                      source_path=self.papyrus_params['source_path'],
-                                                     ids=ids, verbose=progress)
-        return PapyrusMoleculeSet(molecules)
+                                                     ids=ids, verbose=False)
+        return PapyrusMoleculeSet(molecules, {**self.papyrus_params, 'chunksize': chunksize})
 
     def proteins(self, progress: bool = False) -> PapyrusProteinSet:
         ids = self.aggregate(progress=progress)['target_id'].unique()
         proteins = self.papyrus_protein_data[self.papyrus_protein_data.target_id.isin(ids)]
-        return PapyrusProteinSet(proteins)
+        return PapyrusProteinSet(proteins, self.papyrus_params)
 
     def match_rcsb_pdb(self, update: bool = True, progress: bool = False) -> PapyrusPDBProteinSet:
         total = (-(-self.papyrus_params['num_rows'] // self.papyrus_params['chunksize'])
@@ -338,10 +338,14 @@ class PapyrusMoleculeSet:
     def __init__(self, df: Union[pd.DataFrame, Iterator], papyrus_params: Dict):
         self.data = df
         self.papyrus_params = papyrus_params
+        self.num_rows = IO.get_num_rows_in_file(filetype='structures', is3D=self.papyrus_params['is3d'],
+                                                version=self.papyrus_params['version'],
+                                                plusplus=self.papyrus_params['plusplus'],
+                                                root_folder=self.papyrus_params['source_path'])
 
-    def to_dataframe(self):
+    def to_dataframe(self, progress: bool = False):
         if isinstance(self.data, Iterator):
-            return preprocess.consume_chunks(generator=self.data, progress=False)
+            return self.aggregate(progress=progress)
         return self.data
 
     def __repr__(self):
@@ -359,8 +363,8 @@ class PapyrusMoleculeSet:
                                                  ids=ids,
                                                  verbose=progress)
 
-    def aggregate(self, progress: bool = True) -> pd.DataFrame:
-        total = (-(-self.papyrus_params['num_rows'] // self.papyrus_params['chunksize'])
+    def aggregate(self, progress: bool = False) -> pd.DataFrame:
+        total = (-(-self.num_rows // self.papyrus_params['chunksize'])
                  if self.papyrus_params['chunksize'] is not None
                  else None)
         if isinstance(self.data, pd.DataFrame):
