@@ -24,15 +24,17 @@ class PapyrusDataset:
     """Papyrus dataset to facilitate data access and filtering."""
 
     def __init__(self, is3d: bool = False, version: str = 'latest', plusplus: bool = True,
-                 chunksize: Optional[int] = 1_000_000, source_path: Optional[str] = None):
+                 chunksize: Optional[int] = 1_000_000, source_path: Optional[str] = None,
+                 download_progress: bool = False):
         self.papyrus_params = dict(is3d=is3d, version=version, plusplus=plusplus,
                                    chunksize=chunksize, source_path=source_path,
                                    num_rows=IO.get_num_rows_in_file(filetype='bioactivities', is3D=is3d,
                                                                     version=version, plusplus=plusplus,
-                                                                    root_folder=source_path))
+                                                                    root_folder=source_path),
+                                   download_progress=download_progress)
         if not IO.is_local_version_available(version=version, root_folder=source_path):
             download.download_papyrus(outdir=source_path, version=version, nostereo=not is3d, stereo=is3d,
-                                      only_pp=plusplus, structures=True, descriptors=None, progress=False,
+                                      only_pp=plusplus, structures=True, descriptors=None, progress=download_progress,
                                       disk_margin=0.0)
         self.papyrus_bioactivity_data = reader.read_papyrus(is3d=is3d, version=version, plusplus=plusplus,
                                                             chunksize=chunksize, source_path=source_path)
@@ -44,13 +46,15 @@ class PapyrusDataset:
     def from_dataframe(df: pd.DataFrame,
                        is3d: bool, version: str,
                        plusplus: bool = True,
-                       source_path: Optional[str] = None
+                       source_path: Optional[str] = None,
+                       download_progress: bool = False
                        ) -> PapyrusDataset:
         dataset = PapyrusDataset.__new__(PapyrusDataset)
         dataset.papyrus_bioactivity_data = df
         dataset.papyrus_protein_data = reader.read_protein_set(source_path=source_path, version=version)
         dataset.papyrus_params = dict(is3d=is3d, version=version, plusplus=plusplus,
-                                   chunksize=len(df), source_path=source_path, num_rows=len(df))
+                                      chunksize=len(df), source_path=source_path, num_rows=len(df),
+                                      download_progress=download_progress)
         dataset._can_reset = False
         return dataset
 
@@ -130,6 +134,9 @@ class PapyrusDataset:
     def consume_chunks(self, progress: bool = True) -> pd.DataFrame:
         return self.aggregate(progress=progress)
 
+    def to_dataframe(self, progress: bool = True) -> pd.DataFrame:
+        return self.aggregate(progress=progress)
+
     def molecules(self, chunksize: Optional[int] = 1_000_000, progress: bool = False) -> PapyrusMoleculeSet:
         ids = self.aggregate(progress=progress)['connectivity' if self.papyrus_params['is3d'] else 'InChIKey'].unique()
         molecules = reader.read_molecular_structures(is3d=self.papyrus_params['is3d'],
@@ -142,7 +149,8 @@ class PapyrusDataset:
     def proteins(self, progress: bool = False) -> PapyrusProteinSet:
         ids = self.aggregate(progress=progress)['target_id'].unique()
         proteins = self.papyrus_protein_data[self.papyrus_protein_data.target_id.isin(ids)]
-        return PapyrusProteinSet(proteins, self.papyrus_params)
+        return PapyrusProteinSet(proteins, self.papyrus_params,
+                                 len(proteins))
 
     def match_rcsb_pdb(self, update: bool = True, progress: bool = False) -> PapyrusPDBProteinSet:
         total = (-(-self.papyrus_params['num_rows'] // self.papyrus_params['chunksize'])
@@ -156,7 +164,7 @@ class PapyrusDataset:
         return f'{type(self).__name__}<{", ".join(f"{key}={value}" for key, value in self.papyrus_params.items())}>'
 
     def reset(self):
-        """Reset the underlying data stream if not instantiated from a dataframe."""
+        """Reset the underlying data stream if not instantiated from a dataframe and return if was reset."""
         if self._can_reset:
             self.papyrus_bioactivity_data = reader.read_papyrus(is3d=self.papyrus_params['is3d'],
                                                                 version=self.papyrus_params['version'],
@@ -355,13 +363,23 @@ class PapyrusMoleculeSet:
 
     def molecular_descriptors(self, desc_type: str, progress: bool = False) -> pd.DataFrame:
         ids = self.aggregate(progress)['connectivity' if self.papyrus_params['is3d'] else 'InChIKey'].unique()
-        return reader.read_molecular_descriptors(desc_type=desc_type,
-                                                 is3d=self.papyrus_params['is3d'],
-                                                 version=self.papyrus_params['version'],
-                                                 chunksize=self.papyrus_params['chunksize'],
-                                                 source_path=self.papyrus_params['source_path'],
-                                                 ids=ids,
-                                                 verbose=progress)
+        # Handle descriptors not yet downloaded
+        try:
+            return reader.read_molecular_descriptors(desc_type=desc_type,
+                                                     is3d=self.papyrus_params['is3d'],
+                                                     version=self.papyrus_params['version'],
+                                                     chunksize=self.papyrus_params['chunksize'],
+                                                     source_path=self.papyrus_params['source_path'],
+                                                     ids=ids,
+                                                     verbose=progress)
+        except FileNotFoundError:
+            download.download_papyrus(outdir=self.papyrus_params['source_path'],
+                                      version=self.papyrus_params['version'],
+                                      nostereo=not self.papyrus_params['is3d'], stereo=self.papyrus_params['is3d'],
+                                      only_pp=self.papyrus_params['plusplus'], structures=False,
+                                      descriptors=desc_type, progress=self.papyrus_params['download_progress'],
+                                      disk_margin=0.0)
+            return self.molecular_descriptors(desc_type, progress)
 
     def aggregate(self, progress: bool = False) -> pd.DataFrame:
         total = (-(-self.num_rows // self.papyrus_params['chunksize'])
@@ -379,29 +397,46 @@ class PapyrusMoleculeSet:
         return self.aggregate(progress=progress)
 
 class PapyrusProteinSet:
-    def __init__(self, df: Union[pd.DataFrame, Iterator], papyrus_params: Dict):
+    def __init__(self, df: Union[pd.DataFrame, Iterator], papyrus_params: Dict, num_proteins: int):
         self.data = df
         self.papyrus_params = papyrus_params
-
-    def to_dataframe(self):
-        if isinstance(self.data, Iterator):
-            return preprocess.consume_chunks(generator=self.data, progress=False)
-        return self.data
+        self.num_rows = num_proteins
 
     def __repr__(self):
         if isinstance(self.data, Iterator):
             return f'{type(self).__name__}<iterator of proteins>'
         return f'{type(self).__name__}<{len(self.data)} proteins>'
 
+    def to_dataframe(self, progress: bool = False) -> pd.DataFrame:
+        if isinstance(self.data, Iterator):
+            total = (-(-self.num_rows // self.papyrus_params['chunksize'])
+                     if self.papyrus_params['chunksize'] is not None
+                     else None)
+            return preprocess.consume_chunks(generator=self.data, progress=progress, total=total)
+        return self.data
+
+    def aggregate(self, progress: bool = False) -> pd.DataFrame:
+        return self.to_dataframe(progress)
+
+    def agg(self, progress: bool = True) -> pd.DataFrame:
+        return self.to_dataframe(progress=progress)
+
+    def consume_chunks(self, progress: bool = True) -> pd.DataFrame:
+        return self.to_dataframe(progress=progress)
+
 class PapyrusPDBProteinSet:
 
-    def __init__(self, df: Union[pd.DataFrame, Iterator], papyrus_params: Dict):
+    def __init__(self, df: Union[pd.DataFrame, Iterator], papyrus_params: Dict, num_proteins: int):
         self.data = df
         self.papyrus_params = papyrus_params
+        self.num_rows = num_proteins
 
-    def to_dataframe(self):
+    def to_dataframe(self, progress: bool = True) -> pd.DataFrame:
         if isinstance(self.data, Iterator):
-            return preprocess.consume_chunks(generator=self.data, progress=False)
+            total = (-(-self.num_rows // self.papyrus_params['chunksize'])
+                     if self.papyrus_params['chunksize'] is not None
+                     else None)
+            return preprocess.consume_chunks(generator=self.data, progress=progress, total=total)
         return self.data
 
     def __repr__(self):
@@ -414,25 +449,28 @@ class PapyrusPDBProteinSet:
                             progress: bool = False
                             ) -> pd.DataFrame:
         ids = self.aggregate(progress)['target_id'].unique()
-        return reader.read_protein_descriptors(desc_type=desc_type,
-                                               is3d=self.papyrus_params['is3d'],
-                                               version=self.papyrus_params['version'],
-                                               chunksize=self.papyrus_params['chunksize'],
-                                               source_path=self.papyrus_params['source_path'],
-                                               ids=ids,
-                                               verbose=progress)
+        try:
+            return reader.read_protein_descriptors(desc_type=desc_type,
+                                                   is3d=self.papyrus_params['is3d'],
+                                                   version=self.papyrus_params['version'],
+                                                   chunksize=self.papyrus_params['chunksize'],
+                                                   source_path=self.papyrus_params['source_path'],
+                                                   ids=ids,
+                                                   verbose=progress)
+        except FileNotFoundError:
+            download.download_papyrus(outdir=self.papyrus_params['source_path'],
+                                      version=self.papyrus_params['version'],
+                                      nostereo=not self.papyrus_params['is3d'], stereo=self.papyrus_params['is3d'],
+                                      only_pp=self.papyrus_params['plusplus'], structures=False,
+                                      descriptors=desc_type, progress=self.papyrus_params['download_progress'],
+                                      disk_margin=0.0)
+            return self.protein_descriptors(desc_type, progress)
 
     def aggregate(self, progress: bool = True) -> pd.DataFrame:
-        total = (-(-self.papyrus_params['num_rows'] // self.papyrus_params['chunksize'])
-                 if self.papyrus_params['chunksize'] is not None
-                 else None)
-        if isinstance(self.data, pd.DataFrame):
-            return self.data
-        return preprocess.consume_chunks(generator=self.data,
-                                         progress=progress, total=total)
+        return self.to_dataframe(progress)
 
     def agg(self, progress: bool = True) -> pd.DataFrame:
-        return self.aggregate(progress=progress)
+        return self.to_dataframe(progress=progress)
 
     def consume_chunks(self, progress: bool = True) -> pd.DataFrame:
-        return self.aggregate(progress=progress)
+        return self.to_dataframe(progress=progress)
