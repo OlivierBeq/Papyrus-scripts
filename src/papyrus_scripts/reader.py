@@ -26,6 +26,9 @@ def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = T
     :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
     :return: the Papyrus activity dataset
     """
+    # Papyrus++ with stereo does not exist
+    if is3d and plusplus:
+        raise ValueError('Papyrus++ is only available without stereochemistry.')
     # Determine default paths
     if source_path is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
