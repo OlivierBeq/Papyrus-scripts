@@ -132,7 +132,7 @@ def process_groups(groups, additional_columns: Optional[List[str]] = None):
 def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], source: Union[List[str], str] = 'all',
                 njobs: int = 1, verbose: bool = False) -> pd.DataFrame:
     """Keep only the data from the defined source(s).
-    
+
     :param data: the dataframe containing data to be filtered
     :param source: source(s) to be kept, 'all' or ''any' to keep all data
     :param njobs: number of cores on which multiple processes are spawned to speed up filtering
@@ -154,11 +154,16 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
     if isinstance(source, str):
         source = [source]
     source = list(map(str.lower, source))
+    # Set pattern for regex matching of sources
+    sources_pattern = '|'.join(f'^{x}|{x}$' for x in source)
+    # Sources matching patterns
+    source_matches = pd.Series(list(sources)).str.match(sources_pattern)
+    source_adatped = pd.Series(list(sources)).where(source_matches).dropna().tolist()
     # Keep all data if source is a list containing 'any', 'all' or all accepted values
     if 'any' in source or 'all' in source or len(set(source).intersection(sources)) == len(sources):
         return data
     # Source not defined
-    elif set(source).difference(sources):
+    elif set(source_adatped).difference(sources):
         # Supplied source not in data sources
         return data[data.source == 'SOURCE UNAVAILABLE']  # Ensures an empty dataframe with colnames is returned
     # Sources are defined
@@ -174,11 +179,11 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
         # Keep trace of order of columns
         ordered_columns = data.columns.tolist()
         # Keep binary data associated to source
-        preserved_binary = data[~data['Activity_class'].isna() & data['source'].str.lower().isin(source)]
+        preserved_binary = data[~data['Activity_class'].isna() & data['source'].str.lower().isin(source_adatped)]
         # Separate data with multiple sources
         binary_data = data[
-            ~data['Activity_class'].isna() & data['source'].str.contains(';') & data['source'].str.contains(
-                '|'.join(source), case=False)]
+            ~data['Activity_class'].isna() & data['source'].str.contains(';') &
+            data['source'].str.lower().str.contains('|'.join(source_adatped), case=False)]
         data = data[data['Activity_class'].isna()]
         if not binary_data.empty:
             # Keep columns and index
@@ -196,16 +201,16 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
                 .apply(pd.Series.explode)  # Unnest the data
                 .reset_index())  # Recover Activity_ID
             # Filter by sources
-            binary_included = binary_included[binary_included['source'].str.lower().isin(source)]
+            binary_included = binary_included[binary_included['source'].str.lower().isin(source_adatped)]
             # Join back with remove columns
             binary_data = binary_included.merge(binary_excluded, how='inner', on='Activity_ID')[ordered_columns]
             del binary_included, binary_excluded
         # Separate records not needing any processing
-        preserved = data[data['source'].str.lower().isin(source)]
+        preserved = data[data['source'].str.lower().isin(source_adatped)]
         # Remove records with non-matching non-unique source
         data = data[
-            ~data['source'].str.lower().isin(source) & data['source'].str.contains(';') & data['source'].str.contains(
-                '|'.join(source), case=False)]
+            ~data['source'].str.lower().isin(source_adatped) & data['source'].str.contains(';') &
+            data['source'].str.lower().str.contains('|'.join(source_adatped), case=False)]
         if not data.empty:
             # Keep columns and index
             included = data[[x for x in data.columns if x in cols2split + ['Activity_ID']]]
@@ -220,15 +225,19 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
                         .apply(pd.Series.explode)  # Unnest the data
                         .reset_index())  # Recover Activity_ID
             # Filter by sources
-            included = included[included['source'].str.lower().isin(source)]
+            included = included[included['source'].str.lower().isin(source_adatped)]
             # Aggregate data on Activity_ID
-            _, grouped = list(zip(*included.swifter.progress_bar(verbose).apply(pd.to_numeric, errors='ignore').groupby(
-                'Activity_ID')))
+            _, grouped = list(zip(*(included.swifter
+                                            .progress_bar(verbose)
+                                            .apply(pd.to_numeric, errors='ignore')
+                                            .groupby('Activity_ID')
+                                    )))
             del included
             # Use joblib to speed up the aggregation process
             filtered = pd.concat(Parallel(n_jobs=njobs, backend='loky', verbose=int(verbose))(
-                delayed(process_groups)(grouped[i:i + 1000]) for i in range(0, len(grouped), 1000))).reset_index(
-                drop=True)
+                delayed(process_groups)(grouped[i:i + 1000])
+                for i in range(0, len(grouped), 1000)
+            )).reset_index(drop=True)
             del grouped
             # Join back with remove columns
             data = filtered.fillna(0).merge(excluded, how='inner', on='Activity_ID')[ordered_columns]
