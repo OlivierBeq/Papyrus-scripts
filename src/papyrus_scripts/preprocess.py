@@ -21,10 +21,10 @@ from .subsim_search import FPSubSim2
 
 def equalize_cell_size_in_row(row, cols=None, fill_mode='internal', fill_value: object = ''):
     """Equalize the number of values in each list-containing cell of a pandas dataframe.
-    
+
 Slightly adapted from user nphaibk:
 https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-multiple-list-columns-in-a-pandas-dataframe
-    
+
     :param row: pandas row the function should be applied to
     :param cols: columns for which equalization must be performed
     :param fill_mode: 'internal' to repeat the only/last value of a cell as much as needed
@@ -64,7 +64,7 @@ https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-mul
 def keep_quality(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
                  min_quality: str = 'high') -> Union[pd.DataFrame, Iterator]:
     """Keep only the data with the minimum defined quality
-    
+
     :param data: the dataframe, chunked or not into a pandas TextFileReader, containing data to be filtered
                  or an Iterator of data chunks
     :param min_quality: minimal quality {'high', 'medium', 'low'} to be kept
@@ -258,7 +258,7 @@ def _chunked_keep_source(data: Union[PandasTextFileReader, Iterator], source: Un
 
 def is_activity_type(row, activity_types: List[str]):
     """Check if the row matches one of the activity types
-    
+
     :param row: pandas row the function should be applied to
     :param activity_types: activity types the row should partially match
     """
@@ -268,7 +268,7 @@ def is_activity_type(row, activity_types: List[str]):
 
 def is_multiple_types(row, activity_types: List[str]):
     """Check if the row matches one of the activity types and if they contain multiple values
-    
+
     :param row: pandas row the function should be applied to
     :param activity_types: activity types with multiple values the row should partially match
     """
@@ -278,7 +278,7 @@ def is_multiple_types(row, activity_types: List[str]):
 def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activity_types: Union[List[str], str] = 'ic50',
               njobs: int = 1, verbose: bool = False):
     """Keep only the data matching desired activity types
-    
+
     :param data: the dataframe containing data to be filtered
     :param activity_types: type of activity to keep: {'IC50', 'EC50', 'KD', 'Ki', 'all'}
     :param njobs: number of cores on which multiple processes are spawned to speed up filtering
@@ -629,7 +629,7 @@ def keep_organism(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], pro
                            for x in organism])
                  )].index.tolist()
     else:
-        query = '(' + ' or '.join([f'Organism == "{x}"' for x in organism]) + ')'
+        query = '(' + ' or '.join([f'Organism.str.lower() == "{x.lower()}"' for x in organism]) + ')'
         indices = protein_data.query(query).index.tolist()
     # Obtain targets from filtered indices
     targets = protein_data.loc[indices, 'target_id']
