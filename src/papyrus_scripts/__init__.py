@@ -9,7 +9,8 @@ from .reader import (read_papyrus, read_protein_set, read_protein_descriptors,
 from .matchRCSB import update_rcsb_data, get_matches
 from .preprocess import (keep_organism, keep_accession, keep_type, keep_source,
                          keep_protein_class, keep_quality, keep_contains, keep_match,
-                         keep_similar, keep_substructure, consume_chunks, yscrambling)
+                         keep_similar, keep_substructure, keep_not_contains, keep_not_match,
+                         keep_dissimilar, keep_not_substructure, consume_chunks, yscrambling)
 
 from .modelling import qsar, pcm
 

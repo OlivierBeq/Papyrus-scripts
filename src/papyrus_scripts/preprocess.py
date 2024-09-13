@@ -669,9 +669,33 @@ def _chunked_keep_match(data: Union[PandasTextFileReader, Iterator], column: str
         filtered_chunk = keep_match(chunk, column, values)
         yield filtered_chunk
 
+def keep_not_match(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], column: str, values: Union[Any, List[Any]]):
+    """Keep only the data where specified columns do not match specified values (equivalent to *~isin*).
+
+    :param data: the dataframe containing data to be filtered
+    :param column: column to be filtered
+    :param values: values to be unmatched
+
+    :return: the data which columns do not match the specified values
+    """
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_not_match(data, column, values)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    if not isinstance(values, list):
+        values = [values]
+    return data[~data[column].isin(values)]
+
+
+def _chunked_keep_not_match(data: Union[PandasTextFileReader, Iterator], column: str, values: Union[Any, List[Any]]):
+    for chunk in data:
+        filtered_chunk = keep_not_match(chunk, column, values)
+        yield filtered_chunk
+
 
 def keep_contains(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
-    """Keep only the data matching desired columns containing desired values.
+    """Keep only the data for which the desired column contain the desired value.
 
     :param data: the dataframe containing data to be filtered
     :param column: column to be filtered
@@ -692,6 +716,31 @@ def keep_contains(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], col
 def _chunked_keep_contains(data: Union[PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
     for chunk in data:
         filtered_chunk = keep_contains(chunk, column, value, case, regex)
+        yield filtered_chunk
+
+
+def keep_not_contains(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
+    """Keep the data for which the specified column does not contain the specified value.
+
+    :param data: the dataframe containing data to be filtered
+    :param column: column to be filtered
+    :param value: value to be removed
+    :param case: whether value is case-sensitive
+    :param regex: whether to interpret value as a regular expression
+
+    :return: the data not containing desired values
+    """
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_not_contains(data, column, value, case, regex)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    return data[~data[column].str.contains(value, case=case, regex=regex)]
+
+
+def _chunked_keep_not_contains(data: Union[PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
+    for chunk in data:
+        filtered_chunk = keep_not_contains(chunk, column, value, case, regex)
         yield filtered_chunk
 
 
@@ -742,6 +791,53 @@ def _chunked_keep_similar(data: Union[PandasTextFileReader, Iterator], molecule_
         yield filtered_chunk
 
 
+def keep_dissimilar(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str, fingerprint: Fingerprint = MorganFingerprint(), threshold: float = 0.7, cuda: bool = False):
+    """Keep only data associated to molecules not similar to the query.
+
+    :param data: the dataframe containing data to be filtered
+    :param molecule_smiles: the query molecule(s)
+    :param fpsubsim2_file: path to FPSubSim2 database
+    :param fingerprint: fingerprint to be used for similarity search
+    :param threshold: similarity threshold
+    :param cuda: whether to use GPU for similarity searches
+
+    :return: the data associated to dissimilar molecules
+    """
+    if not os.path.isfile(fpsubsim2_file):
+        raise ValueError(f'FPSubSim2 database does not exist: {fpsubsim2_file}')
+    fpss2 = FPSubSim2()
+    fpss2.load(fpsubsim2_file)
+    if str(fingerprint) not in fpss2.available_fingerprints.keys():
+        raise ValueError(f'FPSubSim2 database does not contain fingerprint {fingerprint.name}')
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_dissimilar(data, molecule_smiles, fpsubsim2_file, fingerprint, threshold, cuda)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    if isinstance(molecule_smiles, str):
+        molecule_smiles = [molecule_smiles]
+    # Obtain similar molecules
+    similarity_engine = fpss2.get_similarity_lib(cuda=cuda)
+    similar_mols = pd.concat([similarity_engine.similarity(smiles, threshold=threshold) for smiles in tqdm(molecule_smiles)], axis=0)
+    similar_mols = similar_mols.iloc[:, -2:]
+    filtered_data = data[~data['InChIKey'].isin(similar_mols['InChIKey'])]
+    return filtered_data
+
+
+def _chunked_keep_dissimilar(data: Union[PandasTextFileReader, Iterator], molecule_smiles: str, fpsubsim2_file: str, fingerprint: Fingerprint, threshold: float = 0.7, cuda: bool = False):
+    fpss2 = FPSubSim2()
+    fpss2.load(fpsubsim2_file)
+    if isinstance(molecule_smiles, str):
+        molecule_smiles = [molecule_smiles]
+    similarity_engine = fpss2.get_similarity_lib(cuda=cuda, fp_signature=fingerprint._hash)
+    similar_mols = pd.concat(
+        [similarity_engine.similarity(smiles, threshold=threshold) for smiles in tqdm(molecule_smiles)], axis=0)
+    similar_mols = similar_mols.iloc[:, -2:]
+    for chunk in data:
+        filtered_chunk = chunk[~chunk['InChIKey'].isin(similar_mols['InChIKey'])]
+        yield filtered_chunk
+
+
 def keep_substructure(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
     """Keep only data associated to molecular substructures of the query.
 
@@ -768,6 +864,7 @@ def keep_substructure(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
     filtered_data = data[data['InChIKey'].isin(substructure_mols['InChIKey'])]
     return filtered_data
 
+
 def _chunked_keep_substructure(data: Union[PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
@@ -778,6 +875,45 @@ def _chunked_keep_substructure(data: Union[PandasTextFileReader, Iterator], mole
     substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in tqdm(molecule_smiles)], axis=0)
     for chunk in data:
         filtered_chunk = chunk[chunk['InChIKey'].isin(substructure_mols['InChIKey'])]
+        yield filtered_chunk
+
+
+def keep_not_substructure(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
+    """Keep only data associated to molecular not substructures of the query.
+
+    :param data: the dataframe containing data to be filtered
+    :param molecule_smiles: the query molecule(s)
+    :param fpsubsim2_file: path to FPSubSim2 database
+
+    :return: the data associated to molecules not substructures of the query
+    """
+    if not os.path.isfile(fpsubsim2_file):
+        raise ValueError(f'FPSubSim2 database does not exist: {fpsubsim2_file}')
+    fpss2 = FPSubSim2()
+    fpss2.load(fpsubsim2_file)
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_not_substructure(data, molecule_smiles, fpsubsim2_file)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    if isinstance(molecule_smiles, str):
+        molecule_smiles = [molecule_smiles]
+    # Obtain similar molecules
+    substructure_engine = fpss2.get_substructure_lib()
+    substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in tqdm(molecule_smiles)], axis=0)
+    filtered_data = data[~data['InChIKey'].isin(substructure_mols['InChIKey'])]
+    return filtered_data
+
+def _chunked_keep_not_substructure(data: Union[PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
+    if isinstance(molecule_smiles, str):
+        molecule_smiles = [molecule_smiles]
+    fpss2 = FPSubSim2()
+    fpss2.load(fpsubsim2_file)
+    # Obtain similar molecules
+    substructure_engine = fpss2.get_substructure_lib()
+    substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in tqdm(molecule_smiles)], axis=0)
+    for chunk in data:
+        filtered_chunk = chunk[~chunk['InChIKey'].isin(substructure_mols['InChIKey'])]
         yield filtered_chunk
 
 

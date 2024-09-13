@@ -107,8 +107,14 @@ class PapyrusDataset:
     def contains(self, column: str, value: str, case: bool = True, regex: bool = False) -> PapyrusDataset:
         return self._filter.contains(column=column, value=value, case=case, regex=regex)
 
+    def not_contains(self, column: str, value: str, case: bool = True, regex: bool = False) -> PapyrusDataset:
+        return self._filter.not_contains(column=column, value=value, case=case, regex=regex)
+
     def isin(self, column: str, values: Union[Any, List[Any]]) -> PapyrusDataset:
         return self._filter.isin(column=column, values=values)
+
+    def not_isin(self, column: str, values: Union[Any, List[Any]]) -> PapyrusDataset:
+        return self._filter.not_isin(column=column, values=values)
 
     def keep_similar_molecules(self, smiles: Union[str, List[str]],
                                fingerprint: fingerprint.Fingerprint = fingerprint.MorganFingerprint(),
@@ -116,8 +122,17 @@ class PapyrusDataset:
         return self._fpsubsim2.keep_similar_molecules(smiles=smiles, fingerprint=fingerprint, threshold=threshold,
                                                       cuda=cuda)
 
+    def keep_dissimilar_molecules(self, smiles: Union[str, List[str]],
+                                  fingerprint: fingerprint.Fingerprint = fingerprint.MorganFingerprint(),
+                                  threshold: float = 0.7, cuda: bool = False) -> PapyrusDataset:
+        return self._fpsubsim2.keep_dissimilar_molecules(smiles=smiles, fingerprint=fingerprint, threshold=threshold,
+                                                         cuda=cuda)
+
     def keep_substructure_molecules(self, smiles: Union[str, List[str]]) -> PapyrusDataset:
         return self._fpsubsim2.keep_substructure_molecules(smiles=smiles)
+
+    def keep_not_substructure_molecules(self, smiles: Union[str, List[str]]) -> PapyrusDataset:
+        return self._fpsubsim2.keep_not_substructure_molecules(smiles=smiles)
 
     def aggregate(self, progress: bool = True) -> pd.DataFrame:
         total = (-(-self.papyrus_params['num_rows'] // self.papyrus_params['chunksize'])
@@ -173,6 +188,29 @@ class PapyrusDataset:
                                                                 source_path=self.papyrus_params['source_path'])
             self.papyrus_protein_data = reader.read_protein_set(source_path=self.papyrus_params['source_path'],
                                                                 version=self.papyrus_params['version'])
+        return self._can_reset
+
+    @staticmethod
+    def remove(version: str,
+               remove_papyruspp: bool,
+               remove_bioactivities: bool,
+               remove_proteins: bool,
+               remove_nostereo: bool,
+               remove_stereo: bool,
+               remove_structures: bool,
+               remove_descriptors: Union[str, List[str]],
+               remove_other_files: bool,
+               remove_version_root: bool,
+               remove_papyrus_root: bool,
+               force: bool = False,
+               progress: bool = True,
+               source_path: Optional[str] = None) -> None:
+        download.remove_papyrus(outdir=source_path, version=version, papyruspp=remove_papyruspp,
+                                bioactivities=remove_bioactivities, proteins=remove_proteins,
+                                nostereo=remove_nostereo, stereo=remove_stereo, structures=remove_structures,
+                                descriptors=remove_descriptors, other_files=remove_other_files,
+                                version_root=remove_version_root, papyrus_root=remove_papyrus_root,
+                                force=force, progress=progress)
 
 class PapyrusDataFilter:
     """Collection of filters to be applied on a PapyrusDataset instance."""
@@ -248,10 +286,24 @@ class PapyrusDataFilter:
             papyrus_protein_data=self.papyrus_protein_data,
             papyrus_params=self.papyrus_params)
 
+    def not_contains(self, column: str, value: str, case: bool = True, regex: bool = False) -> PapyrusDataset:
+        return PapyrusDataset._from_data(
+            papyrus_bioactivity_data=preprocess.keep_not_contains(data=self.papyrus_bioactivity_data, column=column,
+                                                                  value=value, case=case, regex=regex),
+            papyrus_protein_data=self.papyrus_protein_data,
+            papyrus_params=self.papyrus_params)
+
     def isin(self, column: str, values: Union[Any, List[Any]]) -> PapyrusDataset:
         return PapyrusDataset._from_data(
             papyrus_bioactivity_data=preprocess.keep_match(data=self.papyrus_bioactivity_data, column=column,
                                                            values=values),
+            papyrus_protein_data=self.papyrus_protein_data,
+            papyrus_params=self.papyrus_params)
+
+    def not_isin(self, column: str, values: Union[Any, List[Any]]) -> PapyrusDataset:
+        return PapyrusDataset._from_data(
+            papyrus_bioactivity_data=preprocess.keep_not_match(data=self.papyrus_bioactivity_data, column=column,
+                                                               values=values),
             papyrus_protein_data=self.papyrus_protein_data,
             papyrus_params=self.papyrus_params)
 
@@ -332,11 +384,32 @@ class FPSubSim2Engine:
             papyrus_protein_data=self.papyrus_protein_data,
             papyrus_params=self.papyrus_params)
 
+    def keep_dissimilar_molecules(self, smiles: Union[str, List[str]],
+                                  fingerprint: fingerprint.Fingerprint = fingerprint.MorganFingerprint(),
+                                  threshold: float = 0.7, cuda: bool = False) -> PapyrusDataset:
+        return PapyrusDataset._from_data(
+            papyrus_bioactivity_data=preprocess.keep_dissimilar(data=self.papyrus_bioactivity_data,
+                                                                molecule_smiles=smiles,
+                                                                fpsubsim2_file=self.path,
+                                                                fingerprint=fingerprint,
+                                                                threshold=threshold,
+                                                                cuda=cuda),
+            papyrus_protein_data=self.papyrus_protein_data,
+            papyrus_params=self.papyrus_params)
+
     def keep_substructure_molecules(self, smiles: Union[str, List[str]]) -> PapyrusDataset:
         return PapyrusDataset._from_data(
             papyrus_bioactivity_data=preprocess.keep_substructure(data=self.papyrus_bioactivity_data,
                                                                   molecule_smiles=smiles,
                                                                   fpsubsim2_file=self.path),
+            papyrus_protein_data=self.papyrus_protein_data,
+            papyrus_params=self.papyrus_params)
+
+    def keep_not_substructure_molecules(self, smiles: Union[str, List[str]]) -> PapyrusDataset:
+        return PapyrusDataset._from_data(
+            papyrus_bioactivity_data=preprocess.keep_not_substructure(data=self.papyrus_bioactivity_data,
+                                                                      molecule_smiles=smiles,
+                                                                      fpsubsim2_file=self.path),
             papyrus_protein_data=self.papyrus_protein_data,
             papyrus_params=self.papyrus_params)
 
