@@ -150,7 +150,7 @@ def model_metrics(model, y_true, x_test) -> dict:
             values['F1'] = 2 * values['Sensitivity'] * values['PPV'] / (values['Sensitivity'] + values['PPV']) \
                 if (values['Sensitivity'] + values['PPV']) != 0 \
                 else 0
-            if hasattr(model, "predict_proba"):  # able to predict probability
+            if hasattr(model, "predict_proba"): # able to predict probability
                 y_probas = model.predict_proba(x_test)
                 if y_probas.shape[1] == 1:
                     y_proba = y_probas.ravel()
@@ -191,7 +191,7 @@ def model_metrics(model, y_true, x_test) -> dict:
                      if (values['%s|Sensitivity' % model.classes_[i]] + values['%s|PPV' % model.classes_[i]]) != 0 \
                      else 0
                 i += 1
-            if hasattr(model, "predict_proba"):  # able to predict probability
+            if hasattr(model, "predict_proba"): # able to predict probability
                 y_probas = model.predict_proba(x_test)
                 try:
                     values['AUC 1 vs 1'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovo")
@@ -238,7 +238,7 @@ def crossvalidate_model(data: pd.DataFrame,
     # Organize result in a dataframe
     performance = pd.DataFrame(performance)
     performance.index = [f'Fold {i + 1}' for i in range(folds.n_splits)]
-    # Add average and sd of  performance
+    # Add average and sd of performance
     performance.loc['Mean'] = [np.mean(performance[col]) if ':' not in col else '-' for col in performance]
     performance.loc['SD'] = [np.std(performance[col]) if ':' not in col else '-' for col in performance]
     # Fit model on the entire dataset
@@ -349,7 +349,7 @@ def qsar(data: pd.DataFrame,
     :return: both:
     - a dataframe of the cross-validation results where each line is a fold of QSAR modelling of an accession
     - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
-    the data splitter for cross-validation,  and for each accession in the data:
+    the data splitter for cross-validation, and for each accession in the data:
     the fitted models on each cross-validation fold and the model fitted on the complete training set.
     """
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
@@ -710,7 +710,7 @@ def pcm(data: pd.DataFrame,
     """
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', "
-                         "'custom-cluster',  'custom'}")
+                         "'custom-cluster', 'custom'}")
     if not isinstance(model, (RegressorMixin, ClassifierMixin)):
         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
     warnings.filterwarnings("ignore", category=RuntimeWarning)

@@ -21,10 +21,10 @@ from .subsim_search import FPSubSim2
 
 def equalize_cell_size_in_row(row, cols=None, fill_mode='internal', fill_value: object = ''):
     """Equalize the number of values in each list-containing cell of a pandas dataframe.
-    
+
 Slightly adapted from user nphaibk:
 https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-multiple-list-columns-in-a-pandas-dataframe
-    
+
     :param row: pandas row the function should be applied to
     :param cols: columns for which equalization must be performed
     :param fill_mode: 'internal' to repeat the only/last value of a cell as much as needed
@@ -64,7 +64,7 @@ https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-mul
 def keep_quality(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
                  min_quality: str = 'high') -> Union[pd.DataFrame, Iterator]:
     """Keep only the data with the minimum defined quality
-    
+
     :param data: the dataframe, chunked or not into a pandas TextFileReader, containing data to be filtered
                  or an Iterator of data chunks
     :param min_quality: minimal quality {'high', 'medium', 'low'} to be kept
@@ -132,7 +132,7 @@ def process_groups(groups, additional_columns: Optional[List[str]] = None):
 def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], source: Union[List[str], str] = 'all',
                 njobs: int = 1, verbose: bool = False) -> pd.DataFrame:
     """Keep only the data from the defined source(s).
-    
+
     :param data: the dataframe containing data to be filtered
     :param source: source(s) to be kept, 'all' or ''any' to keep all data
     :param njobs: number of cores on which multiple processes are spawned to speed up filtering
@@ -154,11 +154,16 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
     if isinstance(source, str):
         source = [source]
     source = list(map(str.lower, source))
+    # Set pattern for regex matching of sources
+    sources_pattern = '|'.join(f'^{x}|{x}$' for x in source)
+    # Sources matching patterns
+    source_matches = pd.Series(list(sources)).str.match(sources_pattern)
+    source_adatped = pd.Series(list(sources)).where(source_matches).dropna().tolist()
     # Keep all data if source is a list containing 'any', 'all' or all accepted values
     if 'any' in source or 'all' in source or len(set(source).intersection(sources)) == len(sources):
         return data
     # Source not defined
-    elif set(source).difference(sources):
+    elif set(source_adatped).difference(sources):
         # Supplied source not in data sources
         return data[data.source == 'SOURCE UNAVAILABLE']  # Ensures an empty dataframe with colnames is returned
     # Sources are defined
@@ -174,11 +179,11 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
         # Keep trace of order of columns
         ordered_columns = data.columns.tolist()
         # Keep binary data associated to source
-        preserved_binary = data[~data['Activity_class'].isna() & data['source'].str.lower().isin(source)]
+        preserved_binary = data[~data['Activity_class'].isna() & data['source'].str.lower().isin(source_adatped)]
         # Separate data with multiple sources
         binary_data = data[
-            ~data['Activity_class'].isna() & data['source'].str.contains(';') & data['source'].str.contains(
-                '|'.join(source), case=False)]
+            ~data['Activity_class'].isna() & data['source'].str.contains(';') &
+            data['source'].str.lower().str.contains('|'.join(source_adatped), case=False)]
         data = data[data['Activity_class'].isna()]
         if not binary_data.empty:
             # Keep columns and index
@@ -196,16 +201,16 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
                 .apply(pd.Series.explode)  # Unnest the data
                 .reset_index())  # Recover Activity_ID
             # Filter by sources
-            binary_included = binary_included[binary_included['source'].str.lower().isin(source)]
+            binary_included = binary_included[binary_included['source'].str.lower().isin(source_adatped)]
             # Join back with remove columns
             binary_data = binary_included.merge(binary_excluded, how='inner', on='Activity_ID')[ordered_columns]
             del binary_included, binary_excluded
         # Separate records not needing any processing
-        preserved = data[data['source'].str.lower().isin(source)]
+        preserved = data[data['source'].str.lower().isin(source_adatped)]
         # Remove records with non-matching non-unique source
         data = data[
-            ~data['source'].str.lower().isin(source) & data['source'].str.contains(';') & data['source'].str.contains(
-                '|'.join(source), case=False)]
+            ~data['source'].str.lower().isin(source_adatped) & data['source'].str.contains(';') &
+            data['source'].str.lower().str.contains('|'.join(source_adatped), case=False)]
         if not data.empty:
             # Keep columns and index
             included = data[[x for x in data.columns if x in cols2split + ['Activity_ID']]]
@@ -220,15 +225,19 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
                         .apply(pd.Series.explode)  # Unnest the data
                         .reset_index())  # Recover Activity_ID
             # Filter by sources
-            included = included[included['source'].str.lower().isin(source)]
+            included = included[included['source'].str.lower().isin(source_adatped)]
             # Aggregate data on Activity_ID
-            _, grouped = list(zip(*included.swifter.progress_bar(verbose).apply(pd.to_numeric, errors='ignore').groupby(
-                'Activity_ID')))
+            _, grouped = list(zip(*(included.swifter
+                                            .progress_bar(verbose)
+                                            .apply(pd.to_numeric, errors='ignore')
+                                            .groupby('Activity_ID')
+                                    )))
             del included
             # Use joblib to speed up the aggregation process
             filtered = pd.concat(Parallel(n_jobs=njobs, backend='loky', verbose=int(verbose))(
-                delayed(process_groups)(grouped[i:i + 1000]) for i in range(0, len(grouped), 1000))).reset_index(
-                drop=True)
+                delayed(process_groups)(grouped[i:i + 1000])
+                for i in range(0, len(grouped), 1000)
+            )).reset_index(drop=True)
             del grouped
             # Join back with remove columns
             data = filtered.fillna(0).merge(excluded, how='inner', on='Activity_ID')[ordered_columns]
@@ -249,7 +258,7 @@ def _chunked_keep_source(data: Union[PandasTextFileReader, Iterator], source: Un
 
 def is_activity_type(row, activity_types: List[str]):
     """Check if the row matches one of the activity types
-    
+
     :param row: pandas row the function should be applied to
     :param activity_types: activity types the row should partially match
     """
@@ -259,7 +268,7 @@ def is_activity_type(row, activity_types: List[str]):
 
 def is_multiple_types(row, activity_types: List[str]):
     """Check if the row matches one of the activity types and if they contain multiple values
-    
+
     :param row: pandas row the function should be applied to
     :param activity_types: activity types with multiple values the row should partially match
     """
@@ -269,7 +278,7 @@ def is_multiple_types(row, activity_types: List[str]):
 def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activity_types: Union[List[str], str] = 'ic50',
               njobs: int = 1, verbose: bool = False):
     """Keep only the data matching desired activity types
-    
+
     :param data: the dataframe containing data to be filtered
     :param activity_types: type of activity to keep: {'IC50', 'EC50', 'KD', 'Ki', 'all'}
     :param njobs: number of cores on which multiple processes are spawned to speed up filtering
@@ -620,7 +629,7 @@ def keep_organism(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], pro
                            for x in organism])
                  )].index.tolist()
     else:
-        query = '(' + ' or '.join([f'Organism == "{x}"' for x in organism]) + ')'
+        query = '(' + ' or '.join([f'Organism.str.lower() == "{x.lower()}"' for x in organism]) + ')'
         indices = protein_data.query(query).index.tolist()
     # Obtain targets from filtered indices
     targets = protein_data.loc[indices, 'target_id']
@@ -660,9 +669,33 @@ def _chunked_keep_match(data: Union[PandasTextFileReader, Iterator], column: str
         filtered_chunk = keep_match(chunk, column, values)
         yield filtered_chunk
 
+def keep_not_match(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], column: str, values: Union[Any, List[Any]]):
+    """Keep only the data where specified columns do not match specified values (equivalent to *~isin*).
+
+    :param data: the dataframe containing data to be filtered
+    :param column: column to be filtered
+    :param values: values to be unmatched
+
+    :return: the data which columns do not match the specified values
+    """
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_not_match(data, column, values)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    if not isinstance(values, list):
+        values = [values]
+    return data[~data[column].isin(values)]
+
+
+def _chunked_keep_not_match(data: Union[PandasTextFileReader, Iterator], column: str, values: Union[Any, List[Any]]):
+    for chunk in data:
+        filtered_chunk = keep_not_match(chunk, column, values)
+        yield filtered_chunk
+
 
 def keep_contains(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
-    """Keep only the data matching desired columns containing desired values.
+    """Keep only the data for which the desired column contain the desired value.
 
     :param data: the dataframe containing data to be filtered
     :param column: column to be filtered
@@ -683,6 +716,31 @@ def keep_contains(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], col
 def _chunked_keep_contains(data: Union[PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
     for chunk in data:
         filtered_chunk = keep_contains(chunk, column, value, case, regex)
+        yield filtered_chunk
+
+
+def keep_not_contains(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
+    """Keep the data for which the specified column does not contain the specified value.
+
+    :param data: the dataframe containing data to be filtered
+    :param column: column to be filtered
+    :param value: value to be removed
+    :param case: whether value is case-sensitive
+    :param regex: whether to interpret value as a regular expression
+
+    :return: the data not containing desired values
+    """
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_not_contains(data, column, value, case, regex)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    return data[~data[column].str.contains(value, case=case, regex=regex)]
+
+
+def _chunked_keep_not_contains(data: Union[PandasTextFileReader, Iterator], column: str, value: str, case: bool = True, regex: bool = False):
+    for chunk in data:
+        filtered_chunk = keep_not_contains(chunk, column, value, case, regex)
         yield filtered_chunk
 
 
@@ -733,6 +791,53 @@ def _chunked_keep_similar(data: Union[PandasTextFileReader, Iterator], molecule_
         yield filtered_chunk
 
 
+def keep_dissimilar(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str, fingerprint: Fingerprint = MorganFingerprint(), threshold: float = 0.7, cuda: bool = False):
+    """Keep only data associated to molecules not similar to the query.
+
+    :param data: the dataframe containing data to be filtered
+    :param molecule_smiles: the query molecule(s)
+    :param fpsubsim2_file: path to FPSubSim2 database
+    :param fingerprint: fingerprint to be used for similarity search
+    :param threshold: similarity threshold
+    :param cuda: whether to use GPU for similarity searches
+
+    :return: the data associated to dissimilar molecules
+    """
+    if not os.path.isfile(fpsubsim2_file):
+        raise ValueError(f'FPSubSim2 database does not exist: {fpsubsim2_file}')
+    fpss2 = FPSubSim2()
+    fpss2.load(fpsubsim2_file)
+    if str(fingerprint) not in fpss2.available_fingerprints.keys():
+        raise ValueError(f'FPSubSim2 database does not contain fingerprint {fingerprint.name}')
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_dissimilar(data, molecule_smiles, fpsubsim2_file, fingerprint, threshold, cuda)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    if isinstance(molecule_smiles, str):
+        molecule_smiles = [molecule_smiles]
+    # Obtain similar molecules
+    similarity_engine = fpss2.get_similarity_lib(cuda=cuda)
+    similar_mols = pd.concat([similarity_engine.similarity(smiles, threshold=threshold) for smiles in tqdm(molecule_smiles)], axis=0)
+    similar_mols = similar_mols.iloc[:, -2:]
+    filtered_data = data[~data['InChIKey'].isin(similar_mols['InChIKey'])]
+    return filtered_data
+
+
+def _chunked_keep_dissimilar(data: Union[PandasTextFileReader, Iterator], molecule_smiles: str, fpsubsim2_file: str, fingerprint: Fingerprint, threshold: float = 0.7, cuda: bool = False):
+    fpss2 = FPSubSim2()
+    fpss2.load(fpsubsim2_file)
+    if isinstance(molecule_smiles, str):
+        molecule_smiles = [molecule_smiles]
+    similarity_engine = fpss2.get_similarity_lib(cuda=cuda, fp_signature=fingerprint._hash)
+    similar_mols = pd.concat(
+        [similarity_engine.similarity(smiles, threshold=threshold) for smiles in tqdm(molecule_smiles)], axis=0)
+    similar_mols = similar_mols.iloc[:, -2:]
+    for chunk in data:
+        filtered_chunk = chunk[~chunk['InChIKey'].isin(similar_mols['InChIKey'])]
+        yield filtered_chunk
+
+
 def keep_substructure(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
     """Keep only data associated to molecular substructures of the query.
 
@@ -759,6 +864,7 @@ def keep_substructure(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
     filtered_data = data[data['InChIKey'].isin(substructure_mols['InChIKey'])]
     return filtered_data
 
+
 def _chunked_keep_substructure(data: Union[PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
@@ -769,6 +875,45 @@ def _chunked_keep_substructure(data: Union[PandasTextFileReader, Iterator], mole
     substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in tqdm(molecule_smiles)], axis=0)
     for chunk in data:
         filtered_chunk = chunk[chunk['InChIKey'].isin(substructure_mols['InChIKey'])]
+        yield filtered_chunk
+
+
+def keep_not_substructure(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
+    """Keep only data associated to molecular not substructures of the query.
+
+    :param data: the dataframe containing data to be filtered
+    :param molecule_smiles: the query molecule(s)
+    :param fpsubsim2_file: path to FPSubSim2 database
+
+    :return: the data associated to molecules not substructures of the query
+    """
+    if not os.path.isfile(fpsubsim2_file):
+        raise ValueError(f'FPSubSim2 database does not exist: {fpsubsim2_file}')
+    fpss2 = FPSubSim2()
+    fpss2.load(fpsubsim2_file)
+    if isinstance(data, (PandasTextFileReader, Iterator)):
+        return _chunked_keep_not_substructure(data, molecule_smiles, fpsubsim2_file)
+    # Raise error if not correct type
+    elif not isinstance(data, pd.DataFrame):
+        raise ValueError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
+    if isinstance(molecule_smiles, str):
+        molecule_smiles = [molecule_smiles]
+    # Obtain similar molecules
+    substructure_engine = fpss2.get_substructure_lib()
+    substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in tqdm(molecule_smiles)], axis=0)
+    filtered_data = data[~data['InChIKey'].isin(substructure_mols['InChIKey'])]
+    return filtered_data
+
+def _chunked_keep_not_substructure(data: Union[PandasTextFileReader, Iterator], molecule_smiles: Union[str, List[str]], fpsubsim2_file: str):
+    if isinstance(molecule_smiles, str):
+        molecule_smiles = [molecule_smiles]
+    fpss2 = FPSubSim2()
+    fpss2.load(fpsubsim2_file)
+    # Obtain similar molecules
+    substructure_engine = fpss2.get_substructure_lib()
+    substructure_mols = pd.concat([substructure_engine.substructure(smiles) for smiles in tqdm(molecule_smiles)], axis=0)
+    for chunk in data:
+        filtered_chunk = chunk[~chunk['InChIKey'].isin(substructure_mols['InChIKey'])]
         yield filtered_chunk
 
 

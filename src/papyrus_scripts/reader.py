@@ -16,8 +16,7 @@ from .utils.mol_reader import MolSupplier
 from .utils.IO import locate_file, process_data_version, TypeDecoder
 
 
-def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = True, chunksize: Optional[int] = None, source_path: Optional[str] = None) -> Union[
-    Iterator[pd.DataFrame], pd.DataFrame]:
+def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = True, chunksize: Optional[int] = None, source_path: Optional[str] = None) -> Union[Iterator[pd.DataFrame], pd.DataFrame]:
     """Read the Papyrus dataset.
 
     :param is3d: whether to consider stereochemistry or not (default: False)
@@ -27,6 +26,9 @@ def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = T
     :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
     :return: the Papyrus activity dataset
     """
+    # Papyrus++ with stereo does not exist
+    if is3d and plusplus:
+        raise ValueError('Papyrus++ is only available without stereochemistry.')
     # Determine default paths
     if source_path is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
