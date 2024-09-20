@@ -2,7 +2,7 @@
 
 Collection of scripts to interact with the Papyrus bioactivity dataset.
 
-![alt text](figures/papyrus_workflow.svg)
+![alt text](https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/refs/heads/master/figures/papyrus_workflow.svg)
 
 <br/>
 
@@ -169,9 +169,9 @@ remove_papyrus(papyrus_root=True)
 ## Easy handling of the dataset
 
 Once installed the Papyrus-scripts allow for the easy filtering of the data.<br/>
-- Simple examples can be found in the <a href="notebook_examples/simple_examples.ipynb">simple_examples.ipynb</a> notebook. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/OlivierBeq/Papyrus-scripts/blob/master/notebook_examples/simple_examples.ipynb)
-- An example on matching data with the Protein Data Bank can be found in the <a href="notebook_examples/matchRCSB.ipynb">simple_examples.ipynb</a> notebook. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/OlivierBeq/Papyrus-scripts/blob/master/notebook_examples/matchRCSB.ipynb)
-- More advanced examples will be added to the <a href="notebook_examples/advanced_querying.ipynb">advanced_querying.ipynb</a> notebook.
+- Simple examples can be found in the <a href="https://github.com/OlivierBeq/Papyrus-scripts/blob/master/notebook_examples/simple_examples.ipynb">simple_examples.ipynb</a> notebook. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/OlivierBeq/Papyrus-scripts/blob/master/notebook_examples/simple_examples.ipynb)
+- An example on matching data with the Protein Data Bank can be found in the <a href="https://github.com/OlivierBeq/Papyrus-scripts/blob/master/notebook_examples/matchRCSB.ipynb">simple_examples.ipynb</a> notebook. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/OlivierBeq/Papyrus-scripts/blob/master/notebook_examples/matchRCSB.ipynb)
+- More advanced examples will be added to the <a href="https://github.com/OlivierBeq/Papyrus-scripts/blob/master/notebook_examples/advanced_querying.ipynb">advanced_querying.ipynb</a> notebook.
 ## Reproducing results of the pre-print
 
 The scripts used to extract subsets, generate models and obtain visualizations can be found <a href="https://github.com/OlivierBeq/Papyrus-modelling">here</a>.
@@ -192,15 +192,15 @@ The scripts used to extract subsets, generate models and obtain visualizations c
 
 ## Logos
 
-Logos can be found under <a href="figures/logo">**figures/logo**</a>
+Logos can be found under <a href="https://github.com/OlivierBeq/Papyrus-scripts/tree/master/figures/logo">**figures/logo**</a>
 Two version exist depending on the background used.
 
 :warning: GitHub does not render the white logo properly in the table below but should not deter you from using it! 
 
 <div class="colored-table">
 
-|                                                              On white background                                                              |                     On colored background                     |
-|:---------------------------------------------------------------------------------------------------------------------------------------------:|:-------------------------------------------------------------:|
-|                                            <img src="figures/logo/Papyrus_trnsp-bg.svg" width=200>                                            | <img src="figures/logo/Papyrus_trnsp-bg-white.svg" width=200> |
+|                                                          On white background                                                           |                                                             On colored background                                                            |
+|:--------------------------------------------------------------------------------------------------------------------------------------:|:--------------------------------------------------------------------------------------------------------------------------------------------:|
+| <img src="https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/refs/heads/master/figures/logo/Papyrus_trnsp-bg.svg" width=200> | <img src="https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/refs/heads/master/figures/logo/Papyrus_trnsp-bg-white.svg" width=200> |
 
 </div>
