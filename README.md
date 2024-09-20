@@ -48,27 +48,38 @@ Additional dependencies can be installed to allow:
     conda install pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch
     ```
 
-## Donwload the dataset
+## Getting started
 
-The Papyrus data can be donwload in three different ways.<br/>
-**The use of the command line interface is strongly recommended to download the data.**
+### The new application programming interface (API)
+This new object-oriented API is available since version 2.0.0.
 
-### - Using the command line interface (CLI)
+It allows for easier filtering of the Papyrus data and ensures that any data being queried is downloaded.
 
-Once the library is installed (see [*Installation*](https://github.com/OlivierBeq/Papyrus-scripts#installation)),
-one can easily download the data.
+```python
+from papyrus_scripts import PapyrusDataset
 
-- The following command will download the Papyrus++ bioactivities and protein targets (high-quality Ki and KD data as well as IC50 and EC50 of reproducible assays) for the latest version.
+data = (PapyrusDataset(version='05.7', plusplus=True) # Downloads the data if needed
+        .keep_source(['chembl', 'sharma']) # Keep specific sources
+        .keep_quality('high')
+        .proteins() # Get the corresponding protein targets
+        )
+```
+
+### Functional API (legacy)
+
+The functional API requires the data to be downloaded beforehand.<br/>
+One can donwload the dataset either with the functional API itself or the command line interface (CLI).
+
+#### Donwloading with the command line interface (CLI)
+The following command will download the Papyrus++ bioactivities and protein targets (high-quality Ki and KD data as well as IC50 and EC50 of reproducible assays) for the latest version.
 ```bash
 papyrus download -V latest
 ```
-
-- The following command will donwload the entire set of high-, medium-, and low-quality bioactivities and protein targets along with all precomputed molecular and protein descriptors for version 05.5.
+The following command will donwload the entire set of high-, medium-, and low-quality bioactivities and protein targets along with all precomputed molecular and protein descriptors for version 05.5.
 ```bash
 papyrus download -V 05.5 --more --d all 
 ```
-
-- The following command will download Papyrus++ bioactivities, protein targets and compound structures for both version 05.4 and 05.5.
+The following command will download Papyrus++ bioactivities, protein targets and compound structures for both version 05.4 and 05.5.
 ```bash
 papyrus download -V 05.5 -V 05.4 -S 
 ```
@@ -81,7 +92,7 @@ papyrus download --help
 By default, the data is downloaded to [pystow](https://github.com/cthoyt/pystow)'s default directory.<br/>
 One can override the folder path by specifying the `-o` switch in the above commands.
 
-### - Using the application programming interface (API)
+#### Donwloading with the functional API
 
 ```python
 
@@ -91,16 +102,37 @@ from papyrus_scripts import download_papyrus
 download_papyrus(version='latest', only_pp=False, structures=True, descriptors='all')
 ```
 
-### - Directly from online archives 
+#### Querying with the functional API
+
+The query detailed above using the object-oriented API is reproduced below using the functional API.
+
+```python
+from papyrus_scripts import (read_papyrus, read_protein_set,
+                             keep_quality, keep_source, keep_type,
+                             keep_organism, keep_accession, keep_protein_class,
+                             keep_match, keep_contains,
+                             consume_chunks)
+
+chunk_reader = read_papyrus(version='05.7', plusplus=True, is3d=False, chunksize=1_000_000)
+protein_data = read_protein_set(version='05.7')
+filter1 = keep_source(data=chunk_reader, source=['chembl', 'sharma'])
+filter2 = keep_quality(data=filter1, min_quality='high')
+data = consume_chunks(filter2, progress=False)
+
+protein_data = protein_data.set_index('target_id').loc[data.target_id.unique()].reset_index()
+```
+
+## Versions of the Papyrus dataset
 
 Different online servers host the Papyrus data based on release and ChEMBL version (table below).
 
  
-| Papyrus version | ChEMBL version |                                Zenodo                                |                            4TU                            |                                                Google Drive                                                 |
-|:---------------:|:--------------:|:--------------------------------------------------------------------:|:---------------------------------------------------------:|:-----------------------------------------------------------------------------------------------------------:|
-|      05.4       |       29       |                                 :x:                                  | [:heavy_check_mark:](https://doi.org/10.4121/16896406.v2) | [:heavy_check_mark:](https://drive.google.com/drive/folders/1Lhw5G6gu_nLzHQoGmnl02uhFsmOgEZ5a?usp=sharing)  | 
-|      05.5       |       30       | [:heavy_check_mark:](https://zenodo.org/record/7019874#.Y2lECL3MKUk) |                            :x:                            | [:heavy_check_mark:](https://drive.google.com/drive/folders/1BrCx0lN1YVvjgXOOaJZHJ7DBrLqFAbWV?usp=sharing)  |
-|      05.6       |       31       | [:heavy_check_mark:](https://zenodo.org/record/7377161#.Y5BvrHbMKUk) |                            :x:                            |                                                     :x:                                                     |
+| Papyrus version | ChEMBL version |                          Zenodo                           |                            4TU                            |
+|:---------------:|:--------------:|:---------------------------------------------------------:|:---------------------------------------------------------:|
+|      05.4       |       29       | [:heavy_check_mark:](https://zenodo.org/records/10944245) | [:heavy_check_mark:](https://doi.org/10.4121/16896406.v2) | 
+|      05.5       |       30       | [:heavy_check_mark:](https://zenodo.org/records/10943207) |                            :x:                            |
+|      05.6       |       31       | [:heavy_check_mark:](https://zenodo.org/records/7821775)  |                            :x:                            |
+|      05.7       |       34       | [:heavy_check_mark:](https://zenodo.org/records/13787634) |                            :x:                            |
 
 Precomputed molecular and protein descriptors along with molecular structures (2D for default set and 3D for low quality set with stereochemistry) are not available for version 05.4 from 4TU but are from Google Drive.
 
@@ -172,5 +204,3 @@ Two version exist depending on the background used.
 |                                            <img src="figures/logo/Papyrus_trnsp-bg.svg" width=200>                                            | <img src="figures/logo/Papyrus_trnsp-bg-white.svg" width=200> |
 
 </div>
-
-
