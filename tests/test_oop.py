@@ -36,7 +36,7 @@ def parametrized_testclass_name_func(cls, _, params_dict):
     list(product(
         [True, False],
         ['05.4', '05.5', '05.6'],
-        [True,],#, False]
+        [True, False]
     )), class_name_func=parametrized_testclass_name_func)
 class TestPapyrusDataset(unittest.TestCase):
 
@@ -165,7 +165,7 @@ class TestPapyrusDataset(unittest.TestCase):
         # Aggregate the data
         fn_data_agg = preprocess.consume_chunks(fn_filter5, progress=(not self.plusplus))
         # 2) Obtain data through the object-oriented API
-        oop_data_agg = (PapyrusDataset(is3d=False, version=self.version, plusplus=self.plusplus,
+        oop_data_agg = (PapyrusDataset(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
                                    chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
                         .keep_source('chembl')
                         .keep_organism('Mus musculus (Mouse)')
@@ -183,7 +183,7 @@ class TestPapyrusDataset(unittest.TestCase):
         self.assertTrue(oop_data_agg.type_EC50.dropna().astype(int).unique().item() == 0)
         self.assertTrue(oop_data_agg.type_other.replace({'NA': np.NaN, 'NaN': np.NaN, 'nan': np.NaN})
                         .dropna().empty or (oop_data_agg.type_other.replace({'NA': np.NaN, 'NaN': np.NaN, 'nan': np.NaN})
-                        .dropna().astype(int).unique().item() == 0).all())
+                        .dropna().astype(int).unique().item() == 0))
         self.assertEqual((oop_data_agg[['type_KD', 'type_Ki']]
                           .astype(int).
                           drop_duplicates()
@@ -222,7 +222,7 @@ class TestPapyrusDataset(unittest.TestCase):
         # Aggregate the data
         fn_data_agg = preprocess.consume_chunks(fn_filter5, progress=(not self.plusplus))
         # 2) Obtain data through the object-oriented API
-        oop_data_agg = (PapyrusDataset(is3d=False, version=self.version, plusplus=self.plusplus,
+        oop_data_agg = (PapyrusDataset(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
                                    chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
                         .keep_accession('P00533')
                         .isin('target_id', ['P00533_L858R', 'P00533_L861Q'])
