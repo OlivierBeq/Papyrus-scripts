@@ -16,6 +16,7 @@ from .modelling import qsar, pcm
 
 from .utils.mol_reader import MolSupplier
 from .utils import IO, UniprotMatch
+from .utils.IO import PapyrusVersion
 
 from .oop import PapyrusDataset
 

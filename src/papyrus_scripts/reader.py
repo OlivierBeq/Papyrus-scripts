@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """Reading capacities of the Papyrus-scripts."""
+from __future__ import annotations
 
 import json
 import os
@@ -13,10 +14,11 @@ from tqdm.auto import tqdm
 from prodec import Descriptor, Transform
 
 from .utils.mol_reader import MolSupplier
-from .utils.IO import locate_file, process_data_version, TypeDecoder
+from .utils.IO import locate_file, process_data_version, TypeDecoder, PapyrusVersion
 
 
 def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = True, chunksize: Optional[int] = None, source_path: Optional[str] = None) -> Union[Iterator[pd.DataFrame], pd.DataFrame]:
+
     """Read the Papyrus dataset.
 
     :param is3d: whether to consider stereochemistry or not (default: False)
@@ -33,7 +35,7 @@ def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = T
     if source_path is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
     version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version)
+    source_path = pystow.module('papyrus', version.version_old_fmt)
     # Load data types
     dtype_file = source_path.join(name='data_types.json').as_posix()
     with open(dtype_file, 'r') as jsonfile:
@@ -45,7 +47,7 @@ def read_papyrus(is3d: bool = False, version: str = 'latest', plusplus: bool = T
     return pd.read_csv(filenames[0], sep='\t', chunksize=chunksize, dtype=dtypes, low_memory=True)
 
 
-def read_protein_set(source_path: Optional[str] = None, version: str = 'latest') -> pd.DataFrame:
+def read_protein_set(source_path: Optional[str] = None, version: str | PapyrusVersion = 'latest') -> pd.DataFrame:
     """Read the protein targets of the Papyrus dataset.
 
         :param source_path: folder containing the molecular descriptor datasets
@@ -56,14 +58,14 @@ def read_protein_set(source_path: Optional[str] = None, version: str = 'latest')
     # Determine default paths
     if source_path is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    source_path = pystow.module('papyrus', version)
+    source_path = pystow.module('papyrus', version.version_old_fmt)
     # Find the file
     filenames = locate_file(source_path.base.as_posix(), r'\d+\.\d+_combined_set_protein_targets\.tsv.*')
     return pd.read_csv(filenames[0], sep='\t', keep_default_na=False)
 
 
 def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
-                               version: str = 'latest', chunksize: Optional[int] = None,
+                               version: str | PapyrusVersion = 'latest', chunksize: Optional[int] = None,
                                source_path: Optional[str] = None,
                                ids: Optional[List[str]] = None, verbose: bool = True):
     """Get molecular descriptors
@@ -84,7 +86,7 @@ def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
     if source_path is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
     version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version)
+    source_path = pystow.module('papyrus', version.version_old_fmt)
     # Load data types
     dtype_file = source_path.join(name='data_types.json').as_posix()
     with open(dtype_file, 'r') as jsonfile:
@@ -198,7 +200,7 @@ def _iterate_filter_descriptors(data: Iterator, ids: Optional[List[str]], id_nam
 
 
 def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'unirep',
-                             version: str = 'latest', chunksize: Optional[int] = None,
+                             version: str | PapyrusVersion = 'latest', chunksize: Optional[int] = None,
                              source_path: Optional[str] = None,
                              ids: Optional[List[str]] = None, verbose: bool = True,
                              **kwargs):
@@ -225,7 +227,7 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
         if source_path is not None:
             os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
         version = process_data_version(version=version, root_folder=source_path)
-        source_path = pystow.module('papyrus', version)
+        source_path = pystow.module('papyrus', version.version_old_fmt)
         if not isinstance(desc_type, (Descriptor, Transform)):
             # Load data types
             dtype_file = source_path.join(name='data_types.json').as_posix()
@@ -306,7 +308,7 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
                               ]).rename(columns={'TARGET_NAME': 'target_id'})
 
 
-def read_molecular_structures(is3d: bool = False, version: str = 'latest',
+def read_molecular_structures(is3d: bool = False, version: str | PapyrusVersion = 'latest',
                               chunksize: Optional[int] = None, source_path: Optional[str] = None,
                               ids: Optional[List[str]] = None, verbose: bool = True):
     """Get molecular structures
@@ -324,7 +326,7 @@ def read_molecular_structures(is3d: bool = False, version: str = 'latest',
     if source_path is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
     version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version)
+    source_path = pystow.module('papyrus', version.version_old_fmt)
     # Find the files
     sd_files = locate_file(source_path.join('structures').as_posix(),
                               rf'\d+\.\d+_combined_{3 if is3d else 2}D_set_with{"" if is3d else "out"}_stereochemistry.sd.*')

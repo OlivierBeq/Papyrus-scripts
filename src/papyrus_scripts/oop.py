@@ -23,9 +23,10 @@ from .matchRCSB import get_matches as get_pdb_matches
 class PapyrusDataset:
     """Papyrus dataset to facilitate data access and filtering."""
 
-    def __init__(self, is3d: bool = False, version: str = 'latest', plusplus: bool = True,
+    def __init__(self, version: str | IO.PapyrusVersion = 'latest', is3d: bool = False, plusplus: bool = True,
                  chunksize: Optional[int] = 1_000_000, source_path: Optional[str] = None,
                  download_progress: bool = False):
+        version = IO.PapyrusVersion(version=version)
         self.papyrus_params = dict(is3d=is3d, version=version, plusplus=plusplus,
                                    chunksize=chunksize, source_path=source_path,
                                    num_rows=IO.get_num_rows_in_file(filetype='bioactivities', is3D=is3d,

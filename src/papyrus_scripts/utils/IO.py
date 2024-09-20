@@ -2,6 +2,8 @@
 
 """IO functions."""
 
+from __future__ import annotations
+
 import glob
 import hashlib
 import importlib
@@ -90,7 +92,7 @@ def enough_disk_space(destination: str,
                       required: int,
                       margin: float = 0.10):
     """Check disk has enough space.
-    
+
     :param destination: folder to check
     :param required: space required in bytes
     :param margin: percent of free disk space once file is written
@@ -169,7 +171,7 @@ def get_online_versions() -> List[str]:
     return sorted(papyrus_links.keys(), key=lambda s: [int(u) for u in s.split('.')]) + ['latest']
 
 
-def process_data_version(version: str, root_folder: str = None):
+def process_data_version(version: str | PapyrusVersion, root_folder: str = None):
     """Confirm the version is available, downloaded and convert synonyms.
 
     :param version: version to be confirmed and/or converted.
@@ -177,14 +179,17 @@ def process_data_version(version: str, root_folder: str = None):
     :return: version number
     :raises: IOError is the version is not available
     """
+    # Check if aliases
+    if not isinstance(version, PapyrusVersion):
+        version = PapyrusVersion(version=version)
     # Handle exceptions
     available_versions = get_downloaded_versions(root_folder)
     if len(available_versions) == 0:
         raise IOError('Papyrus data not available (did you download it first?)')
     else:
         available_versions += ['latest']
-    if version not in available_versions:
-        raise ValueError(f'version can only be one of [{", ".join(available_versions)}]')
+    if version.version_old_fmt not in available_versions:
+        raise ValueError(f'version can only be one of [{", ".join(available_versions)}] not {version.version_old_fmt}')
     elif version == 'latest':
         version = get_latest_downloaded_version(root_folder)
     return version
@@ -218,11 +223,12 @@ def locate_file(dirpath: str, regex_pattern: str):
     # Handle WSL ZoneIdentifier files
     filenames = [fname for fname in filenames if not fname.endswith(':ZoneIdentifier')]
     if len(filenames) == 0:
-        raise FileNotFoundError(f'Could not locate a file in in {dirpath} matching {regex_pattern}')
+        raise FileNotFoundError(f'Could not locate a file in {dirpath} matching {regex_pattern}')
     return filenames
 
 
-def get_num_rows_in_file(filetype: str, is3D: bool, descriptor_name: Optional[str] = None, version: str = 'latest',
+def get_num_rows_in_file(filetype: str, is3D: bool, descriptor_name: Optional[str] = None,
+                         version: str | PapyrusVersion = 'latest',
                          plusplus: bool = True, root_folder: Optional[str] = None) -> int:
     """Get the number of rows a Papyrus file has.
 
@@ -246,7 +252,7 @@ def get_num_rows_in_file(filetype: str, is3D: bool, descriptor_name: Optional[st
     version = process_data_version(version=version, root_folder=root_folder)
     if root_folder is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
-    json_file = pystow.join('papyrus', version, name='data_size.json').as_posix()
+    json_file = pystow.join('papyrus', version.version_old_fmt, name='data_size.json').as_posix()
     # Obtain file sizes (number of lines)
     sizes = read_jsonfile(json_file)
     if filetype == 'bioactivities':
@@ -290,6 +296,30 @@ def get_papyrus_links(offline: bool = False):
             pass
     with open(local_file) as fh:
         data = json.load(fh)
+    return data
+
+
+def get_papyrus_aliases(offline: bool = False):
+    """Obtain the latest aliases of the Papyrus versions from GitHub.
+
+    If the connection to the GitHub server is made, the
+    local version of the file is updated.
+    Otherwise, defaults ot the local version of the file.
+
+    :param offline: do not attempt to download the latest file from GitHub
+    """
+    local_file = os.path.join(os.path.dirname(__file__), 'aliases.json')
+    if not offline:
+        url = "https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/db-links/aliases.json"
+        session = requests.session()
+        try:
+            res = session.get(url, verify=True)
+            with open(local_file, 'w') as oh:
+                oh.write(res.text)
+        except requests.exceptions.ConnectionError as e:
+            pass
+    data = pd.read_json(local_file, orient='split', dtype={'version': 'str', 'alias': 'str',
+                                                           'revision': 'str', 'chembl_version': 'str'})
     return data
 
 
@@ -360,3 +390,75 @@ def convert_gz_to_xz(input_file: str, output_file: str,
             written = oh.write(chunk)
             if progress:
                 pbar.update(written)
+
+
+class PapyrusVersion:
+
+    aliases = get_papyrus_aliases(offline=True)
+
+    def __init__(self, version: Optional[str] = None, chembl_version: Optional[int] = None,
+                 chembl: Optional[bool] = None, excape: Optional[bool] = None,
+                 sharma: Optional[bool] = None, christmann: Optional[bool] = None,
+                 klaeger: Optional[bool] = None, merget: Optional[bool] = None,
+                 pickett: Optional[bool] = None):
+        """Determine the Papyrus version based on provided information.
+
+        :param version: Version number (either older '05.4', or new format '2022.04')
+        :param chembl_version: Version of ChEMBL to select the Papyrus version from
+        :param chembl: Whether ChEMBL is included in the Papyrus version to select
+        :param excape: Whether ExCAPED-DB is included in the Papyrus version to select
+        :param sharma: Whether the Sharma et al. dataset is included in the Papyrus version to select
+        :param christmann: Whether the Christmann-Franck et al. dataset is included in the Papyrus version to select
+        :param klaeger: Whether the Klaeger et al. dataset is included in the Papyrus version to select
+        :param merget: Whether the Merget et al. dataset is included in the Papyrus version to select
+        :param pickett: Whether the Pickett et al. dataset is included in the Papyrus version to select
+        """
+        # Determine version from the given version name
+        if version is not None:
+            if version.lower() == 'latest':
+                query = 'alias == alias.max()'
+            else:
+                query = f'version == "{version}" or alias == "{version.strip()}"'
+        else:
+            # Determine version from sources
+            query = []
+            if chembl:
+                query.append('chembl')
+            if excape:
+                query.append('excape')
+            if sharma:
+                query.append('sharma')
+            if christmann:
+                query.append('christmann')
+            if klaeger:
+                query.append('klaeger')
+            if merget:
+                query.append('merget')
+            if pickett:
+                query.append('pickett')
+            if chembl_version:
+                query.append(f'chembl_version == "{chembl_version}"')
+            query = " and ".join(query)
+        # Identify the aliases matching the query
+        if len(query):
+            subset = self.aliases.query(query)
+        else:
+            subset = self.aliases
+        if subset.empty:
+            raise ValueError('None of the Papyrus versions match the provided information.')
+        elif len(subset) > 1:
+            raise ValueError(f'The provided information match multiple versions:\n\n' +
+                             str(subset.set_index('version')) +
+                             '\n\nChoose the version that matches your requirements.')
+        else:
+            params = subset.squeeze().to_dict()
+            for key, value in params.items():
+                if key == 'version':
+                    setattr(self, 'version_old_fmt', value)
+                elif key == 'alias':
+                    setattr(self, 'version', value)
+                else:
+                    setattr(self, key, value)
+
+    def __repr__(self):
+        return f'<PapyrusVersion version={self.version} / {self.version_old_fmt}, revision={self.revision}>'
