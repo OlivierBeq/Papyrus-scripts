@@ -134,7 +134,7 @@ class PapyrusDataset:
     def keep_not_substructure_molecules(self, smiles: Union[str, List[str]]) -> PapyrusDataset:
         return self._fpsubsim2.keep_not_substructure_molecules(smiles=smiles)
 
-    def aggregate(self, progress: bool = True) -> pd.DataFrame:
+    def aggregate(self, progress: bool = False) -> pd.DataFrame:
         total = (-(-self.papyrus_params['num_rows'] // self.papyrus_params['chunksize'])
                  if self.papyrus_params['chunksize'] is not None
                  else None)
@@ -143,13 +143,13 @@ class PapyrusDataset:
         return preprocess.consume_chunks(generator=self.papyrus_bioactivity_data,
                                          progress=progress, total=total)
 
-    def agg(self, progress: bool = True) -> pd.DataFrame:
+    def agg(self, progress: bool = False) -> pd.DataFrame:
         return self.aggregate(progress=progress)
 
-    def consume_chunks(self, progress: bool = True) -> pd.DataFrame:
+    def consume_chunks(self, progress: bool = False) -> pd.DataFrame:
         return self.aggregate(progress=progress)
 
-    def to_dataframe(self, progress: bool = True) -> pd.DataFrame:
+    def to_dataframe(self, progress: bool = False) -> pd.DataFrame:
         return self.aggregate(progress=progress)
 
     def molecules(self, chunksize: Optional[int] = 1_000_000, progress: bool = False) -> PapyrusMoleculeSet:
@@ -463,10 +463,10 @@ class PapyrusMoleculeSet:
         return preprocess.consume_chunks(generator=self.data,
                                          progress=progress, total=total)
 
-    def agg(self, progress: bool = True) -> pd.DataFrame:
+    def agg(self, progress: bool = False) -> pd.DataFrame:
         return self.aggregate(progress=progress)
 
-    def consume_chunks(self, progress: bool = True) -> pd.DataFrame:
+    def consume_chunks(self, progress: bool = False) -> pd.DataFrame:
         return self.aggregate(progress=progress)
 
 class PapyrusProteinSet:
@@ -491,10 +491,10 @@ class PapyrusProteinSet:
     def aggregate(self, progress: bool = False) -> pd.DataFrame:
         return self.to_dataframe(progress)
 
-    def agg(self, progress: bool = True) -> pd.DataFrame:
+    def agg(self, progress: bool = False) -> pd.DataFrame:
         return self.to_dataframe(progress=progress)
 
-    def consume_chunks(self, progress: bool = True) -> pd.DataFrame:
+    def consume_chunks(self, progress: bool = False) -> pd.DataFrame:
         return self.to_dataframe(progress=progress)
 
 class PapyrusPDBProteinSet:
@@ -504,7 +504,7 @@ class PapyrusPDBProteinSet:
         self.papyrus_params = papyrus_params
         self.num_rows = num_proteins
 
-    def to_dataframe(self, progress: bool = True) -> pd.DataFrame:
+    def to_dataframe(self, progress: bool = False) -> pd.DataFrame:
         if isinstance(self.data, Iterator):
             total = (-(-self.num_rows // self.papyrus_params['chunksize'])
                      if self.papyrus_params['chunksize'] is not None
@@ -539,11 +539,11 @@ class PapyrusPDBProteinSet:
                                       disk_margin=0.0)
             return self.protein_descriptors(desc_type, progress)
 
-    def aggregate(self, progress: bool = True) -> pd.DataFrame:
+    def aggregate(self, progress: bool = False) -> pd.DataFrame:
         return self.to_dataframe(progress)
 
-    def agg(self, progress: bool = True) -> pd.DataFrame:
+    def agg(self, progress: bool = False) -> pd.DataFrame:
         return self.to_dataframe(progress=progress)
 
-    def consume_chunks(self, progress: bool = True) -> pd.DataFrame:
+    def consume_chunks(self, progress: bool = False) -> pd.DataFrame:
         return self.to_dataframe(progress=progress)
