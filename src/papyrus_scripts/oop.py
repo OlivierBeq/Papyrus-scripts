@@ -27,16 +27,16 @@ class PapyrusDataset:
                  chunksize: Optional[int] = 1_000_000, source_path: Optional[str] = None,
                  download_progress: bool = False):
         version = IO.PapyrusVersion(version=version)
+        if not IO.is_local_version_available(version=version.version_old_fmt, root_folder=source_path):
+            download.download_papyrus(outdir=source_path, version=version.version_old_fmt, nostereo=True, stereo=True,
+                                      only_pp=False, structures=True, descriptors='all', progress=download_progress,
+                                      disk_margin=0.0)
         self.papyrus_params = dict(is3d=is3d, version=version, plusplus=plusplus,
                                    chunksize=chunksize, source_path=source_path,
                                    num_rows=IO.get_num_rows_in_file(filetype='bioactivities', is3D=is3d,
                                                                     version=version, plusplus=plusplus,
                                                                     root_folder=source_path),
                                    download_progress=download_progress)
-        if not IO.is_local_version_available(version=version, root_folder=source_path):
-            download.download_papyrus(outdir=source_path, version=version, nostereo=not is3d, stereo=is3d,
-                                      only_pp=plusplus, structures=True, descriptors=None, progress=download_progress,
-                                      disk_margin=0.0)
         self.papyrus_bioactivity_data = reader.read_papyrus(is3d=is3d, version=version, plusplus=plusplus,
                                                             chunksize=chunksize, source_path=source_path)
         self.papyrus_protein_data = reader.read_protein_set(source_path=source_path, version=version)

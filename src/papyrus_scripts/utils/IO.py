@@ -205,7 +205,7 @@ def is_local_version_available(version: str, root_folder: str = None):
     try:
         _ = process_data_version(version=version, root_folder=root_folder)
         return True
-    except IOError:
+    except (IOError, ValueError):
         return False
 
 def locate_file(dirpath: str, regex_pattern: str):
