@@ -108,7 +108,7 @@
   "05.5": {
       "readme": {
       "name": "README.txt",
-      "url": "https://zenodo.org/record/7019874/files/README.txt?download=1",
+      "url": "https://zenodo.org/record/10943207/files/README.txt?download=1",
       "size": 11092,
       "sha256": "0af036c1d02b150f6402a53960a6e995611e66ee7724b61a21f58d3366ec8eda"
   },
@@ -138,73 +138,73 @@
     },
     "2D_papyrus": {
       "name": "05.5_combined_set_without_stereochemistry.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_set_without_stereochemistry.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_set_without_stereochemistry.tsv.xz?download=1",
       "size": 718601992,
       "sha256": "04ecaea97c09d02dbde809ad99ea2127fc3997a4e3b200b56dee85c30801890a"
     },
     "2D_structures": {
       "name": "05.5_combined_2D_set_without_stereochemistry.sd.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_2D_set_without_stereochemistry.sd.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_2D_set_without_stereochemistry.sd.xz?download=1",
       "size": 399767580,
       "sha256": "2e088ca662c5c33c5fc018c42c9c21e918ec167f1129a0a11fbf9c72888e8be6"
     },
     "3D_papyrus": {
       "name": "05.5_combined_set_with_stereochemistry.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_set_with_stereochemistry.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_set_with_stereochemistry.tsv.xz?download=1",
       "size": 690498416,
       "sha256": "822aca70ccf4c19879ae45dfa16de5fc29c3ee08b25739e7a087899652af7dd9"
     },
     "3D_structures": {
       "name": "05.5_combined_3D_set_with_stereochemistry.sd.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_3D_set_with_stereochemistry.sd.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_3D_set_with_stereochemistry.sd.xz?download=1",
       "size": 492426264,
       "sha256": "a4a5355ffc56de8d914c2ad281d10c227171c27e4d6c250daad14a16280cf136"
     },
     "2D_fingerprint": {
       "name": "05.5_combined_2D_moldescs_ECFP6.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_2D_moldescs_ECFP6.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_2D_moldescs_ECFP6.tsv.xz?download=1",
       "size": 97818228,
       "sha256": "3d626b4295cfbe73877157d8eea84b911a3cb60bf9571165d88c00cc0b0880d2"
     },
     "3D_fingerprint": {
       "name": "05.5_combined_3D_moldescs_E3FP.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_3D_moldescs_E3FP.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_3D_moldescs_E3FP.tsv.xz?download=1",
       "size": 114052016,
       "sha256": "446fe36d50487f29a2d7402a53cc661097e884dc0df8ffd278646dba6708cb65"
     },
     "2D_mordred": {
       "name": "05.5_combined_2D_moldescs_mordred2D.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_2D_moldescs_mordred2D.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_2D_moldescs_mordred2D.tsv.xz?download=1",
       "size": 2936434876,
       "sha256": "bcef94b1c04a1e7d8f9da11ad87e598e19932548a8ea4f00029c2f3a89672ff4"
     },
     "3D_mordred": {
       "name": "05.5_combined_3D_moldescs_mordred3D.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_3D_moldescs_mordred3D.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_3D_moldescs_mordred3D.tsv.xz?download=1",
       "size": 3206020732,
       "sha256": "e6ffd0858f85217b57c4a88619e5f41d7f6bae16a9948612872162e54d3231dc"
     },
     "2D_cddd": {
       "name": "05.5_combined_2D_moldescs_CDDDs.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_2D_moldescs_CDDDs.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_2D_moldescs_CDDDs.tsv.xz?download=1",
       "size": 3775676256,
       "sha256": "8421d973b4eb119f0739506a0b20ba9508356df97d4673e1c170e871cd134983"
     },
     "2D_mold2": {
       "name": "05.5_combined_2D_moldescs_mold2.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_2D_moldescs_mold2.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_2D_moldescs_mold2.tsv.xz?download=1",
       "size": 1553510028,
       "sha256": "0fd1c2b3869c5fa749c21ddd70c5dff621974eccafb8e04fd6f95f3b37242058"
     },
     "proteins": {
       "name": "05.5_combined_set_protein_targets.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_set_protein_targets.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_set_protein_targets.tsv.xz?download=1",
       "size": 1710756,
       "sha256": "d8f2cbee8b9849f7c3664fe7e8165c5abf785d374c36a8f151a6ec38fd582d80"
     },
     "proteins_unirep": {
       "name": "05.5_combined_prot_embeddings_unirep.tsv.xz",
-      "url": "https://zenodo.org/record/7019874/files/05.5_combined_prot_embeddings_unirep.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/10943207/files/05.5_combined_prot_embeddings_unirep.tsv.xz?download=1",
       "size": 128869632,
       "sha256": "9f1fce00e77563481eafc44405f9dc8188d5669ed93cafaee256c0208ca135b8"
     }
@@ -212,97 +212,97 @@
   "05.6": {
     "readme": {
       "name": "README.txt",
-      "url": "https://zenodo.org/record/7377161/files/README.txt?download=1",
+      "url": "https://zenodo.org/record/13817795/files/README.txt?download=1",
       "size": 12170,
       "sha256": "b6a1977aed99e84c4ab560a04006a86264c9ff83ca67ed14e395e855c2543613"
     },
     "requirements": {
       "name": "05.6_additional_files.zip",
-      "url": "https://zenodo.org/record/7377161/files/05.6_additional_files.zip?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_additional_files.zip?download=1",
       "size": 51310,
       "sha256": "c1d8df814ba54e17619f3740ff82577898a85a07acd220822403874159e26d8a"
     },
     "papyrus++": {
       "name": "05.6++_combined_set_without_stereochemistry.tsv.xz",
-      "url": "https://zenodo.org/records/7821775/files/05.6++_combined_set_without_stereochemistry.tsv.xz?download=1",
+      "url": "https://zenodo.org/records/13817795/files/05.6++_combined_set_without_stereochemistry.tsv.xz?download=1",
       "size": 31085780,
       "sha256": "7518019c3ba287cd4cd0ff29425fe9da8a4760d891d22ed1abb33da4920cf96a"
     },
     "2D_papyrus": {
       "name": "05.6_combined_set_without_stereochemistry.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_set_without_stereochemistry.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_set_without_stereochemistry.tsv.xz?download=1",
       "size": 744449364,
       "sha256": "82a36ed7bb2f80846bb46e4c3e38905895bd1a2cfddd471d32091cb59dcf9437"
     },
     "2D_structures": {
       "name": "05.6_combined_2D_set_without_stereochemistry.sd.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_2D_set_without_stereochemistry.sd.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_2D_set_without_stereochemistry.sd.xz?download=1",
       "size": 439758444,
       "sha256": "1ec001964aca301494ea05fc24529120f01bc6952dcf4276dcd03625dfec460d"
     },
     "3D_papyrus": {
       "name": "05.6_combined_set_with_stereochemistry.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_set_with_stereochemistry.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_set_with_stereochemistry.tsv.xz?download=1",
       "size": 711529352,
       "sha256": "62068d500986b78fc90fe82b9e224555f8ca85319cd19f9df8bc73549e8a3e31"
     },
     "3D_structures": {
       "name": "05.6_combined_3D_set_with_stereochemistry.sd.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_3D_set_with_stereochemistry.sd.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_3D_set_with_stereochemistry.sd.xz?download=1",
       "size": 500108592,
       "sha256": "38e39963cd79845b4adca9dea871ffba18576ea742677471fc46a73a7dabbf38"
     },
     "2D_fingerprint": {
       "name": "05.6_combined_2D_moldescs_ECFP6.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_2D_moldescs_ECFP6.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_2D_moldescs_ECFP6.tsv.xz?download=1",
       "size": 96612972,
       "sha256": "01c7366ee2ca7353d3a9f76601702b6d2eb312e71f02ea8ef48e2f90870c266c"
     },
     "3D_fingerprint": {
       "name": "05.6_combined_3D_moldescs_E3FP.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_3D_moldescs_E3FP.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_3D_moldescs_E3FP.tsv.xz?download=1",
       "size": 117065432,
       "sha256": "0d15baa4a9425daf63a0066511e9e96cbd5d7dab223bdaf48803536ab2484dc2"
     },
     "2D_mordred": {
       "name": "05.6_combined_2D_moldescs_mordred2D.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_2D_moldescs_mordred2D.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_2D_moldescs_mordred2D.tsv.xz?download=1",
       "size": 3055443236,
       "sha256": "c497db85e97542f59b5252e2b1d3bdd93604e5c4d2ea131088a87d79ea6954c3"
     },
     "3D_mordred": {
       "name": "05.6_combined_3D_moldescs_mordred3D.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_3D_moldescs_mordred3D.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_3D_moldescs_mordred3D.tsv.xz?download=1",
       "size": 3324119256,
       "sha256": "6b022acb6a0bec8bfc1ae7585014ae0b812a12ddcbed7be4ac7ec073c662192f"
     },
     "2D_cddd": {
       "name": "05.6_combined_2D_moldescs_CDDDs.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_2D_moldescs_CDDDs.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_2D_moldescs_CDDDs.tsv.xz?download=1",
       "size": 2103289016,
       "sha256": "fbb54e5ca9a28ff022dc5baddf87cb6601169a2d86f3b55db4d183fd3885642a"
     },
     "2D_mold2": {
       "name": "05.6_combined_2D_moldescs_mold2.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_2D_moldescs_mold2.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_2D_moldescs_mold2.tsv.xz?download=1",
       "size": 1487710808,
       "sha256": "cd46ce9841a1f956840b4fe7c56310eaa32c5e957a6ffaca62fbc55f820aad99"
     },
     "proteins": {
       "name": "05.6_combined_set_protein_targets.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_set_protein_targets.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_set_protein_targets.tsv.xz?download=1",
       "size": 1850764,
       "sha256": "f443a2f8c74b8eb3f2c9d1bd7bfbddc86cbcc3fd5e8e505b7057b78a4ad17ee1"
     },
     "proteins_unirep": {
       "name": "05.6_combined_protdescs_unirep.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_protdescs_unirep.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_protdescs_unirep.tsv.xz?download=1",
       "size": 207122632,
       "sha256": "47f37c1f1efcb9d6f002d5a096853975c27ddcc767d7903a8af12bac0439181c"
     },
     "proteins_prodec": {
       "name": "05.6_combined_protdescs_ProDEC.tsv.xz",
-      "url": "https://zenodo.org/record/7377161/files/05.6_combined_protdescs_ProDEC.tsv.xz?download=1",
+      "url": "https://zenodo.org/record/13817795/files/05.6_combined_protdescs_ProDEC.tsv.xz?download=1",
       "size": 447818916,
       "sha256": "3211a62f18ccb7ccc13f885374c1462efeb83ab0e98ed62d2645723f7dc9f1a1"
     }
