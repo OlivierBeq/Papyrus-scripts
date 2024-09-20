@@ -214,7 +214,7 @@
       "name": "README.txt",
       "url": "https://zenodo.org/record/7377161/files/README.txt?download=1",
       "size": 12170,
-      "sha256": "b6a1977aed99e84c4ab560a04006a86264c9ff83ca67ed14e395e855c2543613"
+      "sha256": "c60b7146a295ddbd7d1cc0d7815ffa9389d5e93deb0e2a577b1065abcb468e03"
     },
     "requirements": {
       "name": "05.6_additional_files.zip",
@@ -311,8 +311,8 @@
     "readme": {
       "name": "README.txt",
       "url": "https://zenodo.org/records/13787634/files/README.txt?download=1",
-      "size": 0,
-      "sha256": ""
+      "size": 12813,
+      "sha256": "2b1cf1f011fd0f944c3aea2034f00938d5ef0baca01dc6ca46193f4498c6b093"
     },
     "requirements": {
       "name": "05.7_additional_files.zip",
