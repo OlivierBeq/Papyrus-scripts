@@ -153,7 +153,7 @@ class PapyrusDataset:
         return self.aggregate(progress=progress)
 
     def molecules(self, chunksize: Optional[int] = 1_000_000, progress: bool = False) -> PapyrusMoleculeSet:
-        ids = self.aggregate(progress=progress)['connectivity' if self.papyrus_params['is3d'] else 'InChIKey'].unique()
+        ids = self.aggregate(progress=progress)['connectivity' if not self.papyrus_params['is3d'] else 'InChIKey'].unique()
         molecules = reader.read_molecular_structures(is3d=self.papyrus_params['is3d'],
                                                      version=self.papyrus_params['version'],
                                                      chunksize=chunksize,
