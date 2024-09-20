@@ -23,9 +23,10 @@ def download_papyrus(outdir: Optional[str] = None,
                      structures: bool = False,
                      descriptors: Optional[Union[str, List[str]]] = 'all',
                      progress: bool = True,
-                     disk_margin: float = 0.10) -> None:
+                     disk_margin: float = 0.10,
+                     update_links: bool = True) -> None:
     """Download the Papyrus data.
-    
+
     :param outdir: directory where Papyrus data is stored (default: pystow's directory)
     :param version: version of the dataset to be downloaded
     :param nostereo: should 2D data be downloaded
@@ -35,13 +36,14 @@ def download_papyrus(outdir: Optional[str] = None,
     :param descriptors: should molecular and protein descriptors be downloaded
     :param progress: should progress be displayed
     :param disk_margin: percent of free disk space to keep
+    :param update_links: Should links be updated (allows new versions to be fetched)
     """
 
     # Determine download parameters
     CHUNKSIZE = 1048576  # 1 MB
     RETRIES = 3
     # Obtain links to files
-    files = get_papyrus_links()
+    files = get_papyrus_links(offline=not update_links)
     available_versions = list(files.keys())
     if isinstance(version, list):
         for _version in version:
