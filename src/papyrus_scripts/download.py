@@ -76,6 +76,7 @@ def download_papyrus(outdir: Optional[str] = None,
         papyrus_version_root = pystow.module('papyrus', _version)
         # Prepare files to be downloaded
         downloads = set()
+        downloads.add('readme')
         downloads.add('requirements')
         downloads.add('proteins')
         if nostereo:
