@@ -129,10 +129,10 @@ Different online servers host the Papyrus data based on release and ChEMBL versi
  
 | Papyrus version | ChEMBL version |                          Zenodo                           |                            4TU                            |
 |:---------------:|:--------------:|:---------------------------------------------------------:|:---------------------------------------------------------:|
-|      05.4       |       29       | [:heavy_check_mark:](https://zenodo.org/records/10944245) | [:heavy_check_mark:](https://doi.org/10.4121/16896406.v2) | 
-|      05.5       |       30       | [:heavy_check_mark:](https://zenodo.org/records/10943207) |                            :x:                            |
-|      05.6       |       31       | [:heavy_check_mark:](https://zenodo.org/records/7821775)  |                            :x:                            |
-|      05.7       |       34       | [:heavy_check_mark:](https://zenodo.org/records/13787634) |                            :x:                            |
+|      05.4       |       29       | [:heavy_check_mark:](https://zenodo.org/records/10943992) | [:heavy_check_mark:](https://doi.org/10.4121/16896406.v2) | 
+|      05.5       |       30       | [:heavy_check_mark:](https://zenodo.org/records/7019873)  |                            :x:                            |
+|      05.6       |       31       | [:heavy_check_mark:](https://zenodo.org/records/7373213)  |                            :x:                            |
+|      05.7       |       34       | [:heavy_check_mark:](https://zenodo.org/records/13787633) |                            :x:                            |
 
 Precomputed molecular and protein descriptors along with molecular structures (2D for default set and 3D for low quality set with stereochemistry) are not available for version 05.4 from 4TU but are from Google Drive.
 
