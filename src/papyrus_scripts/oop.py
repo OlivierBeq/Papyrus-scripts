@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from abc import ABC
 from typing import Any, Dict, Iterator, List, Union, Optional
 
 import pystow
@@ -470,7 +471,41 @@ class PapyrusMoleculeSet:
     def consume_chunks(self, progress: bool = False) -> pd.DataFrame:
         return self.aggregate(progress=progress)
 
-class PapyrusProteinSet:
+
+class ProteinSet(ABC):
+    """Abstract class."""
+
+    def protein_descriptors(self,
+                            desc_type: Union[str, prodec.Descriptor, prodec.Transform],
+                            progress: bool = False
+                            ) -> pd.DataFrame:
+        """Obtain the protein descriptors of the protein targets in the current PapyrusPDBProteinSet.
+
+        :param desc_type: type of protein descriptor to be obtained. Either 'unirep' or a `ProDEC.Descriptor` or `ProDEC.Transform`.
+        :param progress: should aggregation progress be shown
+        :return: a pandas DataFrame of the protein descriptors.
+        """
+        self.data = self.aggregate(progress)
+        ids = self.data['target_id'].unique()
+        try:
+            return reader.read_protein_descriptors(desc_type=desc_type,
+                                                   is3d=self.papyrus_params['is3d'],
+                                                   version=self.papyrus_params['version'],
+                                                   chunksize=self.papyrus_params['chunksize'],
+                                                   source_path=self.papyrus_params['source_path'],
+                                                   ids=ids,
+                                                   verbose=progress)
+        except FileNotFoundError:
+            download.download_papyrus(outdir=self.papyrus_params['source_path'],
+                                      version=self.papyrus_params['version'],
+                                      nostereo=not self.papyrus_params['is3d'], stereo=self.papyrus_params['is3d'],
+                                      only_pp=self.papyrus_params['plusplus'], structures=False,
+                                      descriptors=desc_type, progress=self.papyrus_params['download_progress'],
+                                      disk_margin=0.0)
+            return self.protein_descriptors(desc_type, progress)
+
+
+class PapyrusProteinSet(ProteinSet):
     def __init__(self, df: Union[pd.DataFrame, Iterator], papyrus_params: Dict, num_proteins: int):
         self.data = df
         self.papyrus_params = papyrus_params
@@ -498,7 +533,8 @@ class PapyrusProteinSet:
     def consume_chunks(self, progress: bool = False) -> pd.DataFrame:
         return self.to_dataframe(progress=progress)
 
-class PapyrusPDBProteinSet:
+
+class PapyrusPDBProteinSet(ProteinSet):
 
     def __init__(self, df: Union[pd.DataFrame, Iterator], papyrus_params: Dict, num_proteins: int):
         self.data = df
@@ -518,27 +554,6 @@ class PapyrusPDBProteinSet:
             return f'{type(self).__name__}<iterator of proteins structures>'
         return f'{type(self).__name__}<{len(self.data)} proteins structures>'
 
-    def protein_descriptors(self,
-                            desc_type: Union[str, prodec.Descriptor, prodec.Transform],
-                            progress: bool = False
-                            ) -> pd.DataFrame:
-        ids = self.aggregate(progress)['target_id'].unique()
-        try:
-            return reader.read_protein_descriptors(desc_type=desc_type,
-                                                   is3d=self.papyrus_params['is3d'],
-                                                   version=self.papyrus_params['version'],
-                                                   chunksize=self.papyrus_params['chunksize'],
-                                                   source_path=self.papyrus_params['source_path'],
-                                                   ids=ids,
-                                                   verbose=progress)
-        except FileNotFoundError:
-            download.download_papyrus(outdir=self.papyrus_params['source_path'],
-                                      version=self.papyrus_params['version'],
-                                      nostereo=not self.papyrus_params['is3d'], stereo=self.papyrus_params['is3d'],
-                                      only_pp=self.papyrus_params['plusplus'], structures=False,
-                                      descriptors=desc_type, progress=self.papyrus_params['download_progress'],
-                                      disk_margin=0.0)
-            return self.protein_descriptors(desc_type, progress)
 
     def aggregate(self, progress: bool = False) -> pd.DataFrame:
         return self.to_dataframe(progress)
