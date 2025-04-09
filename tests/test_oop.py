@@ -181,8 +181,8 @@ class TestPapyrusDataset(unittest.TestCase):
         self.assertTrue(oop_data_agg.source.unique().item().lower().startswith('chembl'))
         self.assertTrue(oop_data_agg.type_IC50.dropna().astype(int).unique().item() == 0)
         self.assertTrue(oop_data_agg.type_EC50.dropna().astype(int).unique().item() == 0)
-        self.assertTrue(oop_data_agg.type_other.replace({'NA': np.NaN, 'NaN': np.NaN, 'nan': np.NaN})
-                        .dropna().empty or (oop_data_agg.type_other.replace({'NA': np.NaN, 'NaN': np.NaN, 'nan': np.NaN})
+        self.assertTrue(oop_data_agg.type_other.replace({'NA': np.nan, 'NaN': np.nan, 'nan': np.nan})
+                        .dropna().empty or (oop_data_agg.type_other.replace({'NA': np.nan, 'NaN': np.nan, 'nan': np.nan})
                         .dropna().astype(int).unique().item() == 0))
         self.assertEqual((oop_data_agg[['type_KD', 'type_Ki']]
                           .astype(int).

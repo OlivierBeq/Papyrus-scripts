@@ -58,7 +58,8 @@ class PapyrusDataset:
                        is3d: bool, version: str,
                        plusplus: bool = True,
                        source_path: Optional[str] = None,
-                       download_progress: bool = False
+                       download_progress: bool = False,
+                       chunksize: int = None
                        ) -> PapyrusDataset:
         """Create a PapyrusDataset from a pandas DataFrame.
 
@@ -74,7 +75,7 @@ class PapyrusDataset:
         dataset.papyrus_bioactivity_data = df
         dataset.papyrus_protein_data = reader.read_protein_set(source_path=source_path, version=version)
         dataset.papyrus_params = dict(is3d=is3d, version=version, plusplus=plusplus,
-                                      chunksize=len(df), source_path=source_path, num_rows=len(df),
+                                      chunksize=chunksize, source_path=source_path, num_rows=len(df),
                                       download_progress=download_progress)
         dataset._can_reset = False
         return dataset
@@ -357,6 +358,32 @@ class PapyrusDataset:
                                 version_root=remove_version_root, papyrus_root=remove_papyrus_root,
                                 force=force, progress=progress)
 
+    def molecular_descriptors(self, desc_type: str, progress: bool = False) -> pd.DataFrame | Iterator[pd.DataFrame]:
+        """Obtain the molecular descriptors of the molecules in the current PapyrusMoleculeSet.
+
+        :param desc_type: type of descriptor to be obtained. One of {'mold2', 'mordred', 'cddd', 'fingerprint', 'moe', 'all'}
+        :param progress: should aggregation progress be shown
+        :return: a pandas DataFrame of the molecular descriptors.
+        """
+        ids = self.aggregate(progress)['connectivity' if not self.papyrus_params['is3d'] else 'InChIKey'].unique()
+        # Handle descriptors not yet downloaded
+        try:
+            return reader.read_molecular_descriptors(desc_type=desc_type,
+                                                     is3d=self.papyrus_params['is3d'],
+                                                     version=self.papyrus_params['version'],
+                                                     chunksize=self.papyrus_params['chunksize'],
+                                                     source_path=self.papyrus_params['source_path'],
+                                                     ids=ids,
+                                                     verbose=progress)
+        except FileNotFoundError:
+            download.download_papyrus(outdir=self.papyrus_params['source_path'],
+                                      version=self.papyrus_params['version'],
+                                      nostereo=not self.papyrus_params['is3d'], stereo=self.papyrus_params['is3d'],
+                                      only_pp=self.papyrus_params['plusplus'], structures=False,
+                                      descriptors=desc_type, progress=self.papyrus_params['download_progress'],
+                                      disk_margin=0.0)
+            return self.molecular_descriptors(desc_type, progress)
+
 class PapyrusDataFilter:
     """Collection of filters to be applied on a PapyrusDataset instance."""
 
@@ -584,14 +611,14 @@ class PapyrusMoleculeSet:
             return f'{type(self).__name__}<iterator of molecules>'
         return f'{type(self).__name__}<{len(self.data)} molecules>'
 
-    def molecular_descriptors(self, desc_type: str, progress: bool = False) -> pd.DataFrame:
+    def molecular_descriptors(self, desc_type: str, progress: bool = False) -> pd.DataFrame | Iterator[pd.DataFrame]:
         """Obtain the molecular descriptors of the molecules in the current PapyrusMoleculeSet.
 
         :param desc_type: type of descriptor to be obtained. One of {'mold2', 'mordred', 'cddd', 'fingerprint', 'moe', 'all'}
         :param progress: should aggregation progress be shown
         :return: a pandas DataFrame of the molecular descriptors.
         """
-        ids = self.aggregate(progress)['connectivity' if self.papyrus_params['is3d'] else 'InChIKey'].unique()
+        ids = self.aggregate(progress)['connectivity' if not self.papyrus_params['is3d'] else 'InChIKey'].unique()
         # Handle descriptors not yet downloaded
         try:
             return reader.read_molecular_descriptors(desc_type=desc_type,

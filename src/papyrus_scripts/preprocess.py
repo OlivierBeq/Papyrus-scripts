@@ -94,11 +94,11 @@ def process_group(group, additional_columns: Optional[List[str]] = None):
     """Aggregate data from one group accordingly"""
     if (group.values[0] == group.values).all():  # If all values are equal, return first record
         group['pchembl_value_Mean'] = group['pchembl_value']
-        group['pchembl_value_StdDev'] = np.NaN
-        group['pchembl_value_SEM'] = np.NaN
+        group['pchembl_value_StdDev'] = np.nan
+        group['pchembl_value_SEM'] = np.nan
         group['pchembl_value_N'] = 1
         group['pchembl_value_Median'] = group['pchembl_value']
-        group['pchembl_value_MAD'] = np.NaN
+        group['pchembl_value_MAD'] = np.nan
         return group.iloc[:1, :]
     # Lambda: Return one value if all are the same
     listvals = lambda x: ';'.join(set(str(y) for y in x)) if (x.values[0] == x.values).all() else ';'.join(
@@ -174,8 +174,8 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
         # Allow processing of Papyrus++
         papyruspp = 'Activity_class' not in data.columns
         if papyruspp:
-            data['Activity_class'] = np.NaN
-            data['type_other'] = np.NaN
+            data['Activity_class'] = np.nan
+            data['type_other'] = np.nan
         # Keep trace of order of columns
         ordered_columns = data.columns.tolist()
         # Keep binary data associated to source
@@ -307,8 +307,8 @@ def keep_type(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], activit
         # Allow processing of Papyrus++
         papyruspp = 'Activity_class' not in data.columns
         if papyruspp:
-            data['Activity_class'] = np.NaN
-            data['type_other'] = np.NaN
+            data['Activity_class'] = np.nan
+            data['type_other'] = np.nan
         # Transform activity_types to column names
         activity_types = [f"type_{types[i]}" for i in range(len(types)) if types_[i] in activity_types]
         # Columns with optional multiple values

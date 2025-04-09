@@ -20,4 +20,4 @@ from .utils.IO import PapyrusVersion
 
 from .oop import PapyrusDataset
 
-__version__ = '2.1.1'
+__version__ = '2.1.2'
