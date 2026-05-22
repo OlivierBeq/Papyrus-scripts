@@ -1,384 +1,484 @@
 # -*- coding: utf-8 -*-
 
-"""Reading capacities of the Papyrus-scripts."""
+"""Reading functions for the Papyrus dataset."""
+
 from __future__ import annotations
 
 import json
 import os
-from typing import Optional, Union, Iterator, List
-from functools import partial
+from pathlib import Path
+from typing import Generator, Iterator, List, Optional, Union
 
-import pystow
 import pandas as pd
-from tqdm.auto import tqdm
+import pystow
 from prodec import Descriptor, Transform
+from tqdm.auto import tqdm
 
+from .utils.IO import (
+    PapyrusVersion,
+    TypeDecoder,
+    locate_file,
+    papyrus_version_module,
+    process_data_version,
+)
 from .utils.mol_reader import MolSupplier
-from .utils.IO import locate_file, process_data_version, TypeDecoder, PapyrusVersion
 
 
-def read_papyrus(is3d: bool = False, version: str | PapyrusVersion = 'latest', plusplus: bool = True,
-                 chunksize: Optional[int] = None, source_path: Optional[str] = None
-                 ) -> Union[Iterator[pd.DataFrame], pd.DataFrame]:
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
 
-    """Read the Papyrus dataset.
+#: A single DataFrame or a lazy generator of DataFrame chunks.
+DataOrChunks = Union[pd.DataFrame, Generator[pd.DataFrame, None, None]]
 
-    :param is3d: whether to consider stereochemistry or not (default: False)
-    :param version: version of the dataset to be read
-    :param plusplus: read the Papyrus++ curated subset of very high quality
-    :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
-    :return: the Papyrus activity dataset
+#: Anything accepted as a ``version`` argument.
+VersionArg = Union[str, PapyrusVersion]
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _set_pystow_home(source_path: Optional[Union[str, Path]]) -> None:
+    """Point pystow at *source_path* when it is not None."""
+    if source_path is not None:
+        os.environ['PYSTOW_HOME'] = os.path.abspath(
+            source_path if isinstance(source_path, str) else str(source_path)
+        )
+
+
+def _resolve_version(
+    version: VersionArg,
+    source_path: Optional[Union[str, Path]],
+) -> PapyrusVersion:
+    """Set pystow home and validate *version* against local data in one step.
+
+    :param version: raw version argument from the caller
+    :param source_path: optional root directory for Papyrus data
+    :returns: validated :class:`~utils.IO.PapyrusVersion` instance
     """
-    # Papyrus++ with stereo does not exist
+    _set_pystow_home(source_path)
+    # process_data_version is now the single, canonical resolver; it lives in
+    # IO.py and is re-exported from there.  reader.py no longer needs its own
+    # copy of the logic.
+    return process_data_version(version=version, root_folder=source_path)
+
+
+def _load_dtypes(source_module: pystow.Module) -> dict:
+    """Read and return the ``data_types.json`` type-map for *source_module*."""
+    dtype_file = source_module.join(name='data_types.json').as_posix()
+    with open(dtype_file, 'r') as fh:
+        return json.load(fh, cls=TypeDecoder)
+
+
+def _maybe_tqdm(
+    iterable,
+    verbose: bool,
+    desc: str,
+    total: Optional[int] = None,
+):
+    """Wrap *iterable* in a tqdm progress bar when *verbose* is True.
+
+    Unlike ``partial(tqdm, ...)``, this helper is only applied to iterators
+    (chunked readers), never to plain DataFrames.
+    """
+    return tqdm(iterable, desc=desc, total=total) if verbose else iterable
+
+
+# ---------------------------------------------------------------------------
+# Molecular-descriptor helpers
+# ---------------------------------------------------------------------------
+
+_MOL_DESC_REGISTRY = {
+    'mold2':       (r'\d+\.\d+_combined_{dim}D_moldescs_mold2\.tsv.*',             'mold2'),
+    'mordred':     (r'\d+\.\d+_combined_{dim}D_moldescs_mordred{dim_int}D\.tsv.*', 'mordred_{dim_int}D'),
+    'cddd':        (r'\d+\.\d+_combined_{dim}D_moldescs_CDDDs\.tsv.*',             'CDDD'),
+    'fingerprint': (r'\d+\.\d+_combined_{dim}D_moldescs_{fp}\.tsv.*',              '{fp}'),
+    'moe':         (r'\d+\.\d+_combined_{dim}D_moldescs_MOE\.tsv.*',               None),
+}
+
+_VALID_DESC_TYPES = frozenset(_MOL_DESC_REGISTRY) | {'all'}
+
+
+def _resolve_mol_desc_pattern(key: str, is3d: bool):
+    pattern_tmpl, dtype_key_tmpl = _MOL_DESC_REGISTRY[key]
+    dim     = '3' if is3d else '2'
+    dim_int = 3   if is3d else 2
+    fp      = 'E3FP' if is3d else 'ECFP6'
+    pattern   = pattern_tmpl.format(dim=dim, dim_int=dim_int, fp=fp)
+    dtype_key = (
+        dtype_key_tmpl.format(dim=dim, dim_int=dim_int, fp=fp)
+        if dtype_key_tmpl is not None else None
+    )
+    return pattern, dtype_key
+
+
+def _read_one_mol_descriptor(
+    key: str,
+    is3d: bool,
+    desc_dir: str,
+    dtypes: dict,
+    chunksize: Optional[int],
+    ids: Optional[List[str]],
+    id_col: str,
+) -> DataOrChunks:
+    pattern, dtype_key = _resolve_mol_desc_pattern(key, is3d)
+    files = locate_file(desc_dir, pattern)
+    dtype = dtypes.get(dtype_key) if dtype_key is not None else None
+    read_kw = dict(sep='\t', low_memory=True, chunksize=chunksize)
+    if dtype is not None:
+        read_kw['dtype'] = dtype
+    raw = pd.read_csv(files[0], **read_kw)
+    return _filter_descriptors(raw, ids, id_col, chunksize is not None)
+
+
+def _filter_descriptors(
+    data: Union[pd.DataFrame, 'pd.io.parsers.TextFileReader'],
+    ids: Optional[List[str]],
+    id_col: str,
+    chunked: bool,
+) -> DataOrChunks:
+    if not chunked:
+        return data if ids is None else data[data[id_col].isin(ids)]
+
+    def _gen():
+        for chunk in data:
+            yield chunk if ids is None else chunk[chunk[id_col].isin(ids)]
+
+    return _gen()
+
+
+def _join_descriptor_chunks(
+    *iters: Iterator[pd.DataFrame],
+    on: str,
+) -> Generator[pd.DataFrame, None, None]:
+    """Zip-join multiple descriptor chunk iterators on a common key column."""
+    for chunks in zip(*iters):
+        indexed = [chunk.set_index(on) for chunk in chunks]
+        merged  = pd.concat(indexed, axis=1)
+        merged.reset_index(inplace=True)
+        yield merged
+
+
+# ---------------------------------------------------------------------------
+# Public readers
+# ---------------------------------------------------------------------------
+
+def read_papyrus(
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    plusplus: bool = True,
+    chunksize: Optional[int] = None,
+    source_path: Optional[str] = None,
+) -> DataOrChunks:
+    """Read the Papyrus bioactivity dataset.
+
+    :param is3d: load the stereochemistry-aware (3D) variant (default: False)
+    :param version: dataset version to read
+    :param plusplus: load the high-quality Papyrus++ subset (default: True)
+    :param chunksize: rows per chunk; ``None`` loads everything at once
+    :param source_path: root directory for Papyrus data
+    :raises ValueError: if the 3D Papyrus++ combination is requested
+    """
     if is3d and plusplus:
         raise ValueError('Papyrus++ is only available without stereochemistry.')
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Load data types
-    dtype_file = source_path.join(name='data_types.json').as_posix()
-    with open(dtype_file, 'r') as jsonfile:
-        dtypes = json.load(jsonfile, cls=TypeDecoder)['papyrus']
-    # Find the file
-    filenames = locate_file(source_path.base.as_posix(),
-                            r'\d+\.\d+' + (r'\+\+' if plusplus else '') + '_combined_set_'
-                            f'with{"out" if not is3d else ""}' + r'_stereochemistry\.tsv.*')
+
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv)
+    dtypes     = _load_dtypes(source_mod)['papyrus']
+
+    stereo_tag = 'with' if is3d else 'without'
+    pp_tag     = r'\+\+' if plusplus else ''
+    pattern    = rf'\d+\.\d+{pp_tag}_combined_set_{stereo_tag}_stereochemistry\.tsv.*'
+
+    filenames = locate_file(source_mod.base.as_posix(), pattern)
     return pd.read_csv(filenames[0], sep='\t', chunksize=chunksize, dtype=dtypes, low_memory=True)
 
 
-def read_protein_set(source_path: Optional[str] = None, version: str | PapyrusVersion = 'latest') -> pd.DataFrame:
-    """Read the protein targets of the Papyrus dataset.
+def read_protein_set(
+    source_path: Optional[str] = None,
+    version: VersionArg = 'latest',
+) -> pd.DataFrame:
+    """Read the protein-target table of the Papyrus dataset.
 
-        :param source_path: folder containing the molecular descriptor datasets
-        :param version: version of the dataset to be read
-        :return: the set of protein targets in the Papyrus dataset
-        """
-    version = process_data_version(version=version, root_folder=source_path)
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Find the file
-    filenames = locate_file(source_path.base.as_posix(), r'\d+\.\d+_combined_set_protein_targets\.tsv.*')
+    :param source_path: root directory for Papyrus data
+    :param version: dataset version to read
+    """
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv)
+
+    filenames = locate_file(
+        source_mod.base.as_posix(),
+        r'\d+\.\d+_combined_set_protein_targets\.tsv.*',
+    )
     return pd.read_csv(filenames[0], sep='\t', keep_default_na=False)
 
 
-def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
-                               version: str | PapyrusVersion = 'latest', chunksize: Optional[int] = None,
-                               source_path: Optional[str] = None,
-                               ids: Optional[List[str]] = None, verbose: bool = True):
-    """Get molecular descriptors
+def read_molecular_descriptors(
+    desc_type: str = 'mold2',
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    chunksize: Optional[int] = None,
+    source_path: Optional[str] = None,
+    ids: Optional[List[str]] = None,
+    verbose: bool = True,
+) -> DataOrChunks:
+    """Read pre-computed molecular descriptors.
 
-    :param desc_type: type of descriptor {'mold2', 'mordred', 'cddd', 'fingerprint', 'moe', 'all'}
-    :param is3d: whether to load descriptors of the dataset containing stereochemistry
-    :param version: version of the dataset to be read
-    :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
-    :param ids: identifiers of the molecules which descriptors should be loaded
-                if is3d=True, then identifiers are InChIKeys, otherwise connectivities
-    :param verbose: whether to show progress
-    :return: the dataframe of molecular descriptors
+    :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
+        ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
+    :param is3d: load descriptors for the stereochemistry-aware variant
+    :param version: dataset version to read
+    :param chunksize: rows per chunk; ``None`` loads everything at once
+    :param source_path: root directory for Papyrus data
+    :param ids: molecule identifiers to retain; ``None`` keeps all
+    :param verbose: show a progress bar when reading chunks
+    :raises ValueError: if *desc_type* is not recognised
     """
-    if desc_type not in ['mold2', 'mordred', 'cddd', 'fingerprint', 'moe', 'all']:
-        raise ValueError("descriptor type not supported")
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Load data types
-    dtype_file = source_path.join(name='data_types.json').as_posix()
-    with open(dtype_file, 'r') as jsonfile:
-        dtypes = json.load(jsonfile, cls=TypeDecoder)
-    # Find the files
-    if desc_type in ['mold2', 'all']:
-        mold2_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_mold2\.tsv.*')
-    elif desc_type in ['mordred', 'all']:
-        mordd_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_mordred{3 if is3d else 2}D\.tsv.*')
-    elif desc_type in ['cddd', 'all']:
-        cddds_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_CDDDs.tsv.*')
-    elif desc_type in ['fingerprint', 'all']:
-        molfp_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_{"E3FP" if is3d else "ECFP6"}\.tsv.*')
-    elif desc_type in ['moe', 'all']:
-        moe_files = locate_file(source_path.join('descriptors').as_posix(),
-                                rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_MOE\.tsv.*')
+    if desc_type not in _VALID_DESC_TYPES:
+        raise ValueError(
+            f'desc_type must be one of {sorted(_VALID_DESC_TYPES)}, '
+            f'got {desc_type!r}'
+        )
+
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv)
+    dtypes     = _load_dtypes(source_mod)
+    desc_dir   = source_mod.join('descriptors').as_posix()
+    id_col     = 'InChIKey' if is3d else 'connectivity'
+    chunked    = chunksize is not None
+
+    if desc_type != 'all':
+        data = _read_one_mol_descriptor(desc_type, is3d, desc_dir, dtypes, chunksize, ids, id_col)
+        if chunked and verbose:
+            data = _maybe_tqdm(data, verbose=True, desc='Loading molecular descriptors')
+        return data
+
+    all_keys = [k for k in _MOL_DESC_REGISTRY if k != 'moe'] + ['moe']
+
+    if not chunked:
+        frames = [
+            _read_one_mol_descriptor(k, is3d, desc_dir, dtypes, None, ids, id_col).set_index(id_col)
+            for k in all_keys
+        ]
+        merged = pd.concat(frames, axis=1)
+        merged.reset_index(inplace=True)
+        return merged
+
+    iters  = [
+        _read_one_mol_descriptor(k, is3d, desc_dir, dtypes, chunksize, ids, id_col)
+        for k in all_keys
+    ]
+    joined = _join_descriptor_chunks(*iters, on=id_col)
     if verbose:
-        pbar = partial(tqdm, desc='Loading molecular descriptors')
-    else:
-        pbar = partial(iter)
-    if desc_type == 'mold2':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(mold2_files[0], sep='\t',
-                                                              dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'mordred':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(mordd_files[0], sep='\t',
-                                                              dtype=dtypes[f'mordred_{3 if is3d else 2}D'], low_memory=True,
-                                                              chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'cddd':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(cddds_files[0], sep='\t',
-                                                              dtype=dtypes['CDDD'], low_memory=True, chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'fingerprint':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(molfp_files[0], sep='\t',
-                                                              dtype=dtypes[f'{"E3FP" if is3d else "ECFP6"}'],
-                                                              low_memory=True, chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'moe':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(moe_files[0], sep='\t',
-                                                              low_memory=True, chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'all':
-        mold2 = _filter_molecular_descriptors(pd.read_csv(mold2_files[0], sep='\t',
-                                                          dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize),
-                                              ids, 'InChIKey' if is3d else 'connectivity')
-        mordd = _filter_molecular_descriptors(pd.read_csv(mordd_files[0], sep='\t',
-                                                          dtype=dtypes[f'mordred_{3 if is3d else 2}D'],
-                                                          low_memory=True, chunksize=chunksize),
-                                              ids, 'InChIKey' if is3d else 'connectivity')
-        cddds = _filter_molecular_descriptors(pd.read_csv(cddds_files[0], sep='\t', dtype=dtypes['CDDD'],
-                                                          low_memory=True, chunksize=chunksize),
-                                              ids, 'InChIKey' if is3d else 'connectivity')
-        molfp = _filter_molecular_descriptors(pd.read_csv(molfp_files[0], sep='\t',
-                                                          dtype=dtypes[f'{"E3FP" if is3d else "ECFP6"}'],
-                                                          low_memory=True, chunksize=chunksize),
-                                              ids, 'InChIKey' if is3d else 'connectivity')
-        moe = _filter_molecular_descriptors(pd.read_csv(moe_files[0], sep='\t', low_memory=True, chunksize=chunksize),
-                                            ids, 'InChIKey' if is3d else 'connectivity')
-        if chunksize is None:
-            mold2.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            mordd.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            molfp.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            cddds.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            moe.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            data = pd.concat([mold2, mordd, cddds, molfp, moe], axis=1)
-            del mold2, mordd, cddds, molfp, moe
-            data.reset_index(inplace=True)
-            return data
-        return _filter_molecular_descriptors(pbar(_join_molecular_descriptors(mold2, mordd, molfp, cddds, moe,
-                                                                              on='InChIKey' if is3d else 'connectivity')),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
+        joined = _maybe_tqdm(joined, verbose=True, desc='Loading molecular descriptors')
+    return joined
 
 
-def _join_molecular_descriptors(*descriptors: Iterator, on: str = 'connectivity') -> Iterator:
-    """Concatenate multiple types of molecular descriptors on the same identifier.
+def read_protein_descriptors(
+    desc_type: Union[str, Descriptor, Transform] = 'unirep',
+    version: VersionArg = 'latest',
+    chunksize: Optional[int] = None,
+    source_path: Optional[str] = None,
+    ids: Optional[List[str]] = None,
+    verbose: bool = True,
+    **kwargs,
+) -> pd.DataFrame:
+    """Read protein descriptors.
 
-    :param descriptors: the different iterators of descriptors to be joined
-    :param on: identifier to join the descriptors on
+    :param desc_type: ``'unirep'``, ``'custom'``, or a ProDEC
+        :class:`~prodec.Descriptor` / :class:`~prodec.Transform`
+    :param version: dataset version to read (ignored for ``'custom'``)
+    :param chunksize: rows per chunk (ignored for ProDEC)
+    :param source_path: for ``'unirep'``/ProDEC: root directory for Papyrus
+        data.  For ``'custom'``: path to a TSV file.
+    :param ids: target identifiers to retain; ``None`` keeps all
+    :param verbose: show a progress bar when reading chunks
+    :param kwargs: extra keyword arguments forwarded to ProDEC ``pandas_get``
     """
-    try:
-        while True:
-            values = [next(descriptor).set_index(on) for descriptor in descriptors]
-            data = pd.concat(values, axis=1)
-            data.reset_index(inplace=True)
-            yield data
-    except StopIteration:
-        raise StopIteration
-
-
-def _filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
-                                  ids: Optional[List[str]], id_name: str):
-    if isinstance(data, pd.DataFrame):
-        if ids is None:
-            return _iterate_filter_descriptors(data, None, None)
-        return data[data[id_name].isin(ids)]
-    else:
-        return _iterate_filter_descriptors(data, ids, id_name)
-
-
-def _iterate_filter_descriptors(data: Iterator, ids: Optional[List[str]], id_name: Optional[str]):
-    for chunk in data:
-        if ids is None:
-            yield chunk
-        else:
-            yield chunk[chunk[id_name].isin(ids)]
-
-
-def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'unirep',
-                             version: str | PapyrusVersion = 'latest', chunksize: Optional[int] = None,
-                             source_path: Optional[str] = None,
-                             ids: Optional[List[str]] = None, verbose: bool = True,
-                             **kwargs):
-    """Get protein descriptors
-
-   :param desc_type: type of descriptor {'unirep'} or a prodec instance of a Descriptor or Transform
-   :param version: version of the dataset to be read
-   :param chunksize: number of lines per chunk. To read without chunks, set to None
-   :param source_path: If desc_type is 'unirep', folder containing the protein descriptor datasets.
-   If desc_type is 'custom', the file path to a tab-separated dataframe containing target_id
-   as its first column and custom descriptors in the following ones.
-   If desc_type is a ProDEC Descriptor or Transform instance, folder containing the bioactivity dataset
-   (default: pystow's home folder)
-   :param ids: identifiers of the sequences which descriptors should be loaded (e.g. P30542_WT)
-   :param verbose: whether to show progress
-   :param kwargs: keyword arguments passed to the `pandas` method of the ProDEC Descriptor or Transform instance
-                  (is ignored if `desc_type` is not a ProDEC Descriptor or Transform instance)
-   :return: the dataframe of protein descriptors
-    """
-    if desc_type not in ['unirep', 'custom'] and not isinstance(desc_type, (Descriptor, Transform)):
-        raise ValueError("descriptor type not supported")
-    if desc_type != 'custom':
-        # Determine default paths
-        if source_path is not None:
-            os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-        version = process_data_version(version=version, root_folder=source_path)
-        source_path = pystow.module('papyrus', version.version_old_fmt)
-        if not isinstance(desc_type, (Descriptor, Transform)):
-            # Load data types
-            dtype_file = source_path.join(name='data_types.json').as_posix()
-            with open(dtype_file, 'r') as jsonfile:
-                dtypes = json.load(jsonfile, cls=TypeDecoder)
-            # Set verbose level
-            if verbose:
-                pbar = partial(tqdm, desc='Loading protein descriptors')
-            else:
-                pbar = partial(iter)
-            if desc_type == 'unirep':
-                unirep_files = locate_file(source_path.join('descriptors').as_posix(), r'(?:\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*)|(?:\d+\.\d+_combined_protdescs_unirep\.tsv.*)')
-                if len(unirep_files) == 0:
-                    raise ValueError('Could not find unirep descriptor file')
-                if desc_type == 'unirep':
-                    if chunksize is None and ids is None:
-                        return pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
-                    elif chunksize is None and ids is not None:
-                        descriptors = pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
-                        if 'target_id' in descriptors.columns:
-                            return descriptors[descriptors['target_id'].isin(ids)]
-                        return descriptors[descriptors['TARGET_NAME'].isin(ids)].rename(columns={'TARGET_NAME': 'target_id'})
-                    elif chunksize is not None and ids is None:
-                        return pd.concat([chunk
-                                          for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
-                                                                        low_memory=True, chunksize=chunksize))
-                                          ]).rename(columns={'TARGET_NAME': 'target_id'})
-                    return pd.concat([chunk[chunk['target_id'].isin(ids)]
-                                      if 'target_id' in chunk.columns
-                                      else chunk[chunk['TARGET_NAME'].isin(ids)]
-                                      for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
-                                                               low_memory=True, chunksize=chunksize))
-                                      ]).rename(columns={'TARGET_NAME': 'target_id'})
-        else:
-            # Calculate protein descriptors
-            protein_data = read_protein_set(pystow.module('').base.as_posix(), version=version)
-            protein_data.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
-            # Keep only selected proteins
-            if ids is not None:
-                protein_data = protein_data[protein_data['target_id'].isin(ids)]
-            # Filter out non-natural amino-acids
-            protein_data = protein_data.loc[protein_data['Sequence'].map(desc_type.Descriptor.is_sequence_valid), :]
-            # Obtain descriptors
-            descriptors = desc_type.pandas_get(protein_data['Sequence'].tolist(), protein_data['target_id'].tolist(),
-                                               **kwargs)
-            descriptors.rename(columns={'ID': 'target_id'}, inplace=True)
-            return descriptors
-    elif desc_type == 'custom':
-        # Check path exists
+    if desc_type == 'custom':
         if not os.path.isfile(source_path):
-            raise ValueError('source_path must point to an existing file if using a custom descriptor type')
-        # No chunksier, no filtering
-        if chunksize is None and ids is None:
-            return pd.read_csv(source_path, sep='\t', low_memory=True).rename(columns={'TARGET_NAME': 'target_id'})
-        # No chunksize but filtering
-        elif chunksize is None and ids is not None:
-            descriptors = pd.read_csv(source_path, sep='\t', low_memory=True)
-            descriptors.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
-            return descriptors[descriptors['target_id'].isin(ids)]
-        else:
-            # Set verbose level
-            if verbose:
-                pbar = partial(tqdm, desc='Loading custom protein descriptors')
-            else:
-                pbar = partial(iter)
-            # Chunksize but no filtering
-            if chunksize is not None and ids is None:
-                return pd.concat([chunk
-                                  for chunk in pbar(pd.read_csv(source_path, sep='\t',
-                                                                low_memory=True, chunksize=chunksize))
-                                  ]).rename(columns={'TARGET_NAME': 'target_id'})
-            # Both chunksize and filtering
-            return pd.concat([chunk[chunk['target_id'].isin(ids)]
-                              if 'target_id' in chunk.columns
-                              else chunk[chunk['TARGET_NAME'].isin(ids)]
-                              for chunk in pbar(pd.read_csv(source_path,
-                                                            sep='\t', low_memory=True, chunksize=chunksize))
-                              ]).rename(columns={'TARGET_NAME': 'target_id'})
+            raise ValueError(
+                'source_path must point to an existing file when desc_type="custom"'
+            )
+        return _read_custom_protein_descriptors(source_path, chunksize, ids, verbose)
+
+    if isinstance(desc_type, (Descriptor, Transform)):
+        pv = _resolve_version(version, source_path)
+        protein_data = read_protein_set(
+            source_path=papyrus_version_module(pv).base.as_posix(), version=pv,
+        )
+        protein_data.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
+        if ids is not None:
+            protein_data = protein_data[protein_data['target_id'].isin(ids)]
+        protein_data = protein_data.loc[
+            protein_data['Sequence'].map(desc_type.Descriptor.is_sequence_valid), :
+        ]
+        descriptors = desc_type.pandas_get(
+            protein_data['Sequence'].tolist(),
+            protein_data['target_id'].tolist(),
+            **kwargs,
+        )
+        descriptors.rename(columns={'ID': 'target_id'}, inplace=True)
+        return descriptors
+
+    if desc_type == 'unirep':
+        pv         = _resolve_version(version, source_path)
+        source_mod = papyrus_version_module(pv)
+        dtypes     = _load_dtypes(source_mod)
+        unirep_files = locate_file(
+            source_mod.join('descriptors').as_posix(),
+            r'(?:\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*)'
+            r'|(?:\d+\.\d+_combined_protdescs_unirep\.tsv.*)',
+        )
+        return _read_unirep(unirep_files[0], dtypes=dtypes, chunksize=chunksize, ids=ids, verbose=verbose)
+
+    raise ValueError(
+        f'desc_type must be "unirep", "custom", or a ProDEC Descriptor/Transform, '
+        f'got {desc_type!r}'
+    )
 
 
-def read_molecular_structures(is3d: bool = False, version: str | PapyrusVersion = 'latest',
-                              chunksize: Optional[int] = None, source_path: Optional[str] = None,
-                              ids: Optional[List[str]] = None, verbose: bool = True):
-    """Get molecular structures
+def read_molecular_structures(
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    chunksize: Optional[int] = None,
+    source_path: Optional[str] = None,
+    ids: Optional[List[str]] = None,
+    verbose: bool = True,
+) -> DataOrChunks:
+    """Read molecular structures from the Papyrus SD files.
 
-    :param is3d: whether to load descriptors of the dataset containing stereochemistry
-    :param version: version of the dataset to be read
-    :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
-    :param ids: identifiers of the molecules which descriptors should be loaded
-                if is3d=True, then identifiers are InChIKeys, otherwise connectivities
-    :param verbose: whether to show progress
-    :return: the dataframe of molecular structures
+    :param is3d: load the stereochemistry-aware (3D) SD file
+    :param version: dataset version to read
+    :param chunksize: molecules per chunk; ``None`` loads all at once
+    :param source_path: root directory for Papyrus data
+    :param ids: molecule identifiers to retain; ``None`` keeps all
+    :param verbose: show a progress bar
     """
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Find the files
-    sd_files = locate_file(source_path.join('structures').as_posix(),
-                              rf'\d+\.\d+_combined_{3 if is3d else 2}D_set_with{"" if is3d else "out"}_stereochemistry.sd.*')
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv)
+
+    stereo_tag = '' if is3d else 'out'
+    dim_tag    = 3  if is3d else 2
+    pattern    = rf'\d+\.\d+_combined_{dim_tag}D_set_with{stereo_tag}_stereochemistry\.sd.*'
+
+    sd_files = locate_file(source_mod.join('structures').as_posix(), pattern)
+    id_col   = 'InChIKey' if is3d else 'connectivity'
+
     if chunksize is None:
-        data = []
-        # Iterate through the file
-        with MolSupplier(sd_files[0], show_progress=True) as f_handle:
-            for _, mol in f_handle:
-                # Obtain SD molecular properties
-                props = mol.GetPropsAsDict()
-                # If IDs given and not in the list, skip
-                if ids is not None and props['InChIKey' if is3d else 'connectivity'] not in ids:
-                    continue
-                # Else add structure to the dict
-                # and add the dict to data
-                props['mol'] = mol
-                data.append(props)
-        # Return the list of dicts as a pandas DataFrame
-        return pd.DataFrame(data)
-    else:
-        # Process the data through an iterator
-        structure_iterator = _structures_iterator(sd_files[0], chunksize, ids, is3d, verbose)
-        return structure_iterator
+        return _read_structures_full(sd_files[0], ids, id_col, verbose)
+    return _read_structures_chunked(sd_files[0], chunksize, ids, id_col, verbose)
 
 
-def _structures_iterator(sd_file: str, chunksize: int,
-                         ids: Optional[List[str]] = None,
-                         is3d: bool = False, verbose: bool = True) -> Iterator[pd.DataFrame]:
-    if not isinstance(chunksize, int) or chunksize < 1:
-        raise ValueError('Chunksize must be a non-null positive integer.')
-    if verbose:
-        pbar = tqdm(desc='Loading molecular structures')
-    data = []
-    # Iterate through the file
-    with MolSupplier(sd_file) as f_handle:
-        for _, mol in f_handle:
-            # Obtain SD molecular properties
+# ---------------------------------------------------------------------------
+# Internal structure readers
+# ---------------------------------------------------------------------------
+
+def _read_structures_full(
+    sd_file: str,
+    ids: Optional[List[str]],
+    id_col: str,
+    verbose: bool,
+) -> pd.DataFrame:
+    rows = []
+    with MolSupplier(sd_file, show_progress=verbose) as supplier:
+        for _, mol in supplier:
             props = mol.GetPropsAsDict()
-            # If IDs given and not in the list, skip
-            id_ = props['InChIKey' if is3d else 'connectivity']
-            if (ids is not None) and (id_ not in ids):
+            if ids is not None and props[id_col] not in ids:
                 continue
             props['mol'] = mol
-            data.append(props)
-            # Chunk is complete
-            if len(data) == chunksize:
-                if verbose:
-                    pbar.update()
-                yield pd.DataFrame(data)
-                data = []
-        if verbose:
-            pbar.update()
-        yield pd.DataFrame(data)
+            rows.append(props)
+    return pd.DataFrame(rows)
+
+
+def _read_structures_chunked(
+    sd_file: str,
+    chunksize: int,
+    ids: Optional[List[str]],
+    id_col: str,
+    verbose: bool,
+) -> Generator[pd.DataFrame, None, None]:
+    if not isinstance(chunksize, int) or chunksize < 1:
+        raise ValueError('chunksize must be a positive integer.')
+
+    pbar_ctx = tqdm(desc='Loading molecular structures') if verbose else None
+
+    rows: list = []
+    try:
+        with MolSupplier(sd_file) as supplier:
+            for _, mol in supplier:
+                props = mol.GetPropsAsDict()
+                if ids is not None and props[id_col] not in ids:
+                    continue
+                props['mol'] = mol
+                rows.append(props)
+
+                if len(rows) == chunksize:
+                    if pbar_ctx is not None:
+                        pbar_ctx.update()
+                    yield pd.DataFrame(rows)
+                    rows = []
+
+            if pbar_ctx is not None:
+                pbar_ctx.update()
+            if rows:
+                yield pd.DataFrame(rows)
+    finally:
+        if pbar_ctx is not None:
+            pbar_ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# Internal protein-descriptor readers
+# ---------------------------------------------------------------------------
+
+def _normalise_target_id(df: pd.DataFrame) -> pd.DataFrame:
+    return df.rename(columns={'TARGET_NAME': 'target_id'})
+
+
+def _read_unirep(
+    filepath: str,
+    dtypes: dict,
+    chunksize: Optional[int],
+    ids: Optional[List[str]],
+    verbose: bool,
+) -> pd.DataFrame:
+    read_kw = dict(sep='\t', dtype=dtypes.get('unirep'), low_memory=True)
+    chunked = chunksize is not None
+
+    if not chunked:
+        df = _normalise_target_id(pd.read_csv(filepath, **read_kw))
+        return df if ids is None else df[df['target_id'].isin(ids)]
+
+    reader = pd.read_csv(filepath, chunksize=chunksize, **read_kw)
+    if verbose:
+        reader = _maybe_tqdm(reader, verbose=True, desc='Loading protein descriptors')
+    chunks = []
+    for chunk in reader:
+        chunk = _normalise_target_id(chunk)
+        chunks.append(chunk if ids is None else chunk[chunk['target_id'].isin(ids)])
+    return pd.concat(chunks, ignore_index=True)
+
+
+def _read_custom_protein_descriptors(
+    filepath: str,
+    chunksize: Optional[int],
+    ids: Optional[List[str]],
+    verbose: bool,
+) -> pd.DataFrame:
+    read_kw = dict(sep='\t', low_memory=True)
+    chunked = chunksize is not None
+
+    if not chunked:
+        df = _normalise_target_id(pd.read_csv(filepath, **read_kw))
+        return df if ids is None else df[df['target_id'].isin(ids)]
+
+    reader = pd.read_csv(filepath, chunksize=chunksize, **read_kw)
+    if verbose:
+        reader = _maybe_tqdm(reader, verbose=True, desc='Loading custom protein descriptors')
+    chunks = []
+    for chunk in reader:
+        chunk = _normalise_target_id(chunk)
+        chunks.append(chunk if ids is None else chunk[chunk['target_id'].isin(ids)])
+    return pd.concat(chunks, ignore_index=True)
