@@ -90,7 +90,7 @@ class FPSubSim2:
         # Determine default paths
         if root_folder is not None:
             os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
-        source_path = pystow.join('papyrus', self.version, 'structures')
+        source_path = pystow.join('papyrus', self.version.version_old_fmt, 'structures')
         # Find the file
         filenames = locate_file(source_path.as_posix(),
                                 rf'\d+\.\d+_combined_{3 if is3d else 2}D_set_'
