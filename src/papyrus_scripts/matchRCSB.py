@@ -4,17 +4,54 @@
 
 import os
 import time
+from pathlib import Path
 from typing import Iterator, Generator, Optional, Union
 
-import pystow
-from rdkit import Chem
-from rdkit import RDLogger
-from tqdm.auto import tqdm
 import pandas as pd
-from pandas.io.parsers import TextFileReader as PandasTextFileReader
+import pystow
 import requests
+from pandas.io.parsers import TextFileReader as PandasTextFileReader
+from rdkit import Chem, RDLogger
+from tqdm.auto import tqdm, trange
 
-from .utils import UniprotMatch
+from .utils import UniprotMatch, IO
+
+
+def papyrus_rcsb_data_root(root_folder: Optional[str | Path] = None) -> pystow.Module:
+    """Return the pystow :class:`~pystow.Module` for the RCSB on-disk folder.
+
+    :param root_folder: folder that will contain the RCSB Protein Data Bank data
+        (default: pystow's home folder)
+    """
+    IO._set_root_folder(root_folder)
+    return pystow.module('rcsb')
+
+
+def get_all_pdb_ids_with_ligands():
+    """Obtain all ligands from the RCSB PDB Search API."""
+    search_url = "https://search.rcsb.org/rcsbsearch/v2/query"
+    # Query for all structures where non-polymer entity count > 0
+    search_query = {
+        "query": {
+            "type": "terminal",
+            "service": "text",
+            "parameters": {
+                "attribute": "rcsb_entry_info.nonpolymer_entity_count",
+                "operator": "greater",
+                "value": 0
+            }
+        },
+        "return_type": "entry",
+        "request_options": {
+            "return_all_hits": True  # Ensures we get the whole archive, no pagination
+        }
+    }
+    response = requests.post(search_url, json=search_query)
+    response.raise_for_status()
+    # Parse the response to extract just the PDB IDs
+    data = response.json()
+    pdb_ids = [item["identifier"] for item in data.get("result_set", [])]
+    return pdb_ids
 
 
 def update_rcsb_data(root_folder: Optional[str] = None,
@@ -30,71 +67,125 @@ def update_rcsb_data(root_folder: Optional[str] = None,
     :return: The mapping between PDB and UniProt identifiers
     """
     # Define output path
-    if root_folder is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
-    root_folder = pystow.module('papyrus')
-    output_path = root_folder.join('rcsb', name='RCSB_data.tsv.xz')
+    path = papyrus_rcsb_data_root(root_folder)
+    output_path = path.join('rcsb', name='RCSB_data.tsv.xz')
     # Check if file is too recent
     if (os.path.isfile(output_path) and (time.time() - os.path.getmtime(output_path)) < 86400) and not overwrite:
         if verbose:
             print(f'RCSB data was obtained less than 24 hours ago: {output_path}\n'
-                  f'Set overwrite=True to force the fetching of data again.')
+                  f'Set overwrite=True to force the fetching of data again.'
+                  )
         return pd.read_csv(output_path, sep='\t')
-    # Obtain the mapping InChI to PDB ligand code
+    # Get all ligands
     if verbose:
-        print(f'Obtaining RCSB compound mappings from InChI to PDB ID')
-    base_url = 'http://ligand-expo.rcsb.org/dictionaries/{}'
-    request = requests.get(base_url.format('Components-inchi.ich'))
-    if request.status_code != 200:
-        raise IOError(f'resource could not be accessed: {request.url}')
-    inchi_data = pd.DataFrame([line.split('\t')[:2] for line in request.text.splitlines()],
-                              columns=['InChI', 'PDBID'])
-    # Process InChI for 2D data
+        print(f'Obtaining RCSB ligands codes')
+    pdb_ids = get_all_pdb_ids_with_ligands()
+    # Obtain the PDB structure code to PDB ligand code
+    url = "https://data.rcsb.org/graphql"
+    query = """
+        query ($pdbIds: [String!]!) {
+          entries(entry_ids: $pdbIds) {
+            rcsb_id
+            nonpolymer_entities {
+              nonpolymer_comp {
+                chem_comp {
+                  id
+                }
+                pdbx_chem_comp_descriptor {
+                  descriptor
+                  type
+                  program
+                }
+              }
+            }
+          }
+        }
+        """
+    results = []
+    chunk_size = 200  # Max entries per GraphQL query to prevent server timeouts
+    total_chunks = (len(pdb_ids) - 1) // chunk_size + 1
     if verbose:
-        pbar = tqdm(enumerate(inchi_data.InChI), total=inchi_data.shape[0], desc='Converting InChIs', ncols=100)
+        pbar = trange(0, len(pdb_ids), chunk_size, desc='Gather RCSB data', ncols=100)
     else:
-        pbar = enumerate(inchi_data.InChI)
+        pbar = range(0, len(pdb_ids), chunk_size)
+    # Disable RDKit wrnings due to InChI-fication
     RDLogger.DisableLog('rdApp.*')
-    for i, inchi in pbar:
-        mol = Chem.MolFromInchi(inchi)
-        if mol is not None:
-            Chem.RemoveStereochemistry(mol)
-            inchi_data.loc[i, 'InChI_2D'] = Chem.MolToInchi(mol)
+    # 2. Process the IDs in chunks
+    for i in pbar:
+        chunk = pdb_ids[i:i + chunk_size]
+        current_chunk = (i // chunk_size) + 1
+        # Make the GraphQL request for the current chunk
+        response = requests.post(
+            url,
+            json={"query": query, "variables": {"pdbIds": chunk}}
+        )
+        if response.status_code != 200:
+            message = f"WARNING:\tFailed to fetch batch {current_chunk}/{total_chunks}. Status Code: {response.status_code}"
+            if verbose:
+                pbar.write(message)
+            else:
+                print(message)
+            continue
+        data = response.json()
+        entries = data.get("data", {}).get("entries", [])
+        # 3. Parse the data
+        if entries:
+            for entry in entries:
+                protein_id = entry.get("rcsb_id")
+                nonpolymers = entry.get("nonpolymer_entities")
+                if not nonpolymers: continue
+                for entity in nonpolymers:
+                    comp = entity.get("nonpolymer_comp")
+                    if not comp: continue
+                    ligand_id = comp.get("chem_comp", {}).get("id")
+                    smiles_stereo = None
+                    descriptors = comp.get("pdbx_chem_comp_descriptor")
+                    if descriptors:
+                        for desc in descriptors:
+                            desc_type = desc.get("type")
+                            program = desc.get("program")
+                            if desc_type in ["SMILES_STEREO", "SMILES_CANONICAL"]:
+                                smiles_stereo = desc.get("descriptor")
+                                if program == "OpenEye OEToolkits" and desc_type == "SMILES_STEREO":
+                                    break
+                    if smiles_stereo:
+                        mol = Chem.MolFromSmiles(smiles_stereo)
+                        mol_2D = Chem.Mol(mol)
+                        Chem.RemoveStereochemistry(mol_2D)
+                        results.append({
+                            "InChI_3D": Chem.MolFromInchi(mol),
+                            # 2D InChI for 2D data
+                            "InChI_2D": Chem.MolFromInchi(mol_2D),
+                            "PDBID_ligand": ligand_id,
+                            "PDBID_protein": protein_id,
+                            "SMILES": smiles_stereo
+                        }
+                        )
+            # 4. Respect API rate limits (Wait 0.5 seconds between requests)
+            if len(pdb_ids) > chunk_size:
+                time.sleep(0.5)
+    pbar.close()
+    # To DataFrame
+    results = pd.DataFrame.from_records(results)
+    # Restore RDKit warnings
     RDLogger.EnableLog('rdApp.*')
-    # Obtain the mapping of PDB ids ligand to proteins structures
-    if verbose:
-        print(f'Obtaining RCSB compound mappings from ligand PDB ID to protein PDB ID')
-    request = requests.get(base_url.format('cc-to-pdb.tdd'))
-    if request.status_code != 200:
-        raise IOError(f'resource could not be accessed: {request.url}')
-    pdbid_data = pd.DataFrame([line.split('\t')[:2] for line in request.text.splitlines()],
-                              columns=['PDBIDlig', 'PDBIDprot'])
-    # Merge both dataframe
-    if verbose:
-        print(f'Combining the data')
-    pdb_data = inchi_data.merge(pdbid_data, left_on='PDBID', right_on='PDBIDlig')
-    # Unmerge the data per protein PDB ID
-    pdb_data.PDBIDprot = pdb_data.PDBIDprot.str.split()
-    pdb_data = pdb_data.explode('PDBIDprot')
     # Map PDBID prot to UniProt acessions
     if verbose:
         print(f'Obtaining mappings from protein PDB ID to UniProt accessions')
-    uniprot_mapping = UniprotMatch.uniprot_mappings(pdb_data.PDBIDprot.tolist(),
+    uniprot_mapping = UniprotMatch.uniprot_mappings(results.PDBID_protein.unique().tolist(),
                                                     map_from='PDB',
-                                                    map_to='UniProtKB_AC-ID')  # Forces the use of SIFTS
+                                                    map_to='UniProtKB_AC-ID'
+                                                    )  # Forces the use of SIFTS
     # Join on the RCSB data
     if verbose:
-        print(f'Combining the data')
-    pdb_data = pdb_data.merge(uniprot_mapping, left_on='PDBIDprot', right_on='PDB')
+        print(f'Combining RCSB and UniProt data')
+    pdb_data = results.merge(uniprot_mapping, left_on='PDBID_protein', right_on='PDB')
     # Rename columns
-    pdb_data = pdb_data.rename(columns={'InChI': 'InChI_3D',
-                                        'PDBIDlig': 'PDBID_ligand',
-                                        'PDBIDprot': 'PDBID_protein',
-                                        'UniProtKB_AC-ID': 'UniProt_accession'})
+    pdb_data = pdb_data.rename(columns={'UniProtKB_AC-ID': 'UniProt_accession'})
     # Drop duplicate information
-    pdb_data = pdb_data.drop(columns=['PDBID', 'PDB'])
+    pdb_data = pdb_data.drop(columns='PDB')
     # Reorder columns
-    pdb_data = pdb_data[['InChI_3D', 'InChI_2D', 'PDBID_ligand', 'PDBID_protein', 'UniProt_accession']]
+    pdb_data = pdb_data[['InChI_3D', 'InChI_2D', 'PDBID_ligand', 'SMILES', 'PDBID_protein', 'UniProt_accession']]
     # Write to disk and return
     if verbose:
         print(f'Writing results to disk')
@@ -137,14 +228,17 @@ def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
         rcsb_data_path = root_folder.join('rcsb', name='RCSB_data.tsv.xz')
         # Read the data mapping
         rcsb_data = pd.read_csv(rcsb_data_path, sep='\t')
+        if 'SMILES' in rcsb_data.columns:
+            rcsb_data = rcsb_data.drop(columns='SMILES')
         # Process InChI
         data = data[data['InChI'].isin(rcsb_data[identifier])]
         data = data.merge(rcsb_data, left_on=['InChI', 'accession'], right_on=[identifier, 'UniProt_accession'])
         data = data.drop(columns=['InChI_2D', 'InChI_3D', 'UniProt_accession'])
         data = data.groupby('Activity_ID').aggregate({column: ';'.join
-                                                      if column == 'PDBID_protein'
-                                                      else 'first'
-                                                      for column in data.columns})
+        if column == 'PDBID_protein'
+        else 'first'
+                                                      for column in data.columns}
+                                                     )
         return data
     else:
         raise TypeError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
