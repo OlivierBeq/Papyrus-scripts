@@ -39,7 +39,8 @@ def _set_pystow_home(outdir: Optional[Union[str, Path]]) -> None:
 def _resolve_versions(version: Union[str, List[str]], files: dict) -> List[PapyrusVersion]:
     """Normalise the *version* argument into a sorted, deduplicated list of :class:`PapyrusVersion` objects.
 
-    Accepts any combination of concrete version strings (``'05.6'``), ``'latest'``, and ``'all'``.
+    Accepts any combination of new-format canonical strings (``'2022.04.2'``),
+    new-format alias strings (``'2022.04'``), ``'latest'``, and ``'all'``.
 
     :param version: raw version argument passed by the caller
     :param files: the links dictionary returned by :func:`get_papyrus_links`,
@@ -58,13 +59,20 @@ def _resolve_versions(version: Union[str, List[str]], files: dict) -> List[Papyr
             resolved.append(latest_pv)
         elif v == 'all':
             resolved.extend(PapyrusVersion(version=av) for av in available_old_fmts)
-        elif v in available_old_fmts:
-            resolved.append(PapyrusVersion(version=v))
         else:
-            valid = ['latest', 'all'] + available_old_fmts
-            raise ValueError(
-                f'version must be one of [{", ".join(valid)}], got {v!r}'
-            )
+            try:
+                pv = PapyrusVersion(version=v)
+            except ValueError:
+                valid = ['latest', 'all'] + available_old_fmts
+                raise ValueError(
+                    f'version must be one of [{", ".join(valid)}], got {v!r}'
+                )
+            if pv.version_old_fmt not in available_old_fmts:
+                valid = ['latest', 'all'] + available_old_fmts
+                raise ValueError(
+                    f'version must be one of [{", ".join(valid)}], got {v!r}'
+                )
+            resolved.append(pv)
 
     # Deduplicate while preserving sort order (oldest first)
     seen: set = set()

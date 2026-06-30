@@ -100,7 +100,7 @@ class PapyrusDataset:
         if not IO.is_local_version_available(version=pv, root_folder=source_path):
             download.download_papyrus(
                 outdir=source_path,
-                version=pv.version_old_fmt,
+                version=pv.version,
                 nostereo=True, stereo=True, only_pp=False,
                 structures=True, descriptors='all',
                 progress=download_progress, disk_margin=0.0,
@@ -508,7 +508,7 @@ class PapyrusDataset:
         except FileNotFoundError:
             download.download_papyrus(
                 outdir=self.papyrus_params['source_path'],
-                version=self.papyrus_params['version'].version_old_fmt,
+                version=self.papyrus_params['version'].version,
                 nostereo=not self.papyrus_params['is3d'],
                 stereo=self.papyrus_params['is3d'],
                 only_pp=self.papyrus_params['plusplus'],
@@ -569,7 +569,7 @@ class PapyrusDataset:
         pv = _ensure_papyrus_version(version)
         download.remove_papyrus(
             outdir=source_path,
-            version=pv.version_old_fmt,
+            version=pv.version,
             papyruspp=remove_papyruspp,
             bioactivities=remove_bioactivities,
             proteins=remove_proteins,
@@ -974,7 +974,7 @@ class PapyrusMoleculeSet:
         except FileNotFoundError:
             download.download_papyrus(
                 outdir=self.papyrus_params['source_path'],
-                version=self.papyrus_params['version'].version_old_fmt,
+                version=self.papyrus_params['version'].version,
                 nostereo=not self.papyrus_params['is3d'],
                 stereo=self.papyrus_params['is3d'],
                 only_pp=self.papyrus_params['plusplus'],
@@ -1036,7 +1036,7 @@ class ProteinSet(ABC):
         except FileNotFoundError:
             download.download_papyrus(
                 outdir=self.papyrus_params['source_path'],
-                version=self.papyrus_params['version'].version_old_fmt,
+                version=self.papyrus_params['version'].version,
                 nostereo=not self.papyrus_params['is3d'],
                 stereo=self.papyrus_params['is3d'],
                 only_pp=self.papyrus_params['plusplus'],

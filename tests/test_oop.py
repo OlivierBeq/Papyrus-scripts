@@ -35,7 +35,7 @@ def parametrized_testclass_name_func(cls, _, params_dict):
     ('stereo', 'version', 'plusplus'),
     list(product(
         [True, False],
-        ['05.4', '05.5', '05.6'],
+        ['2022.04.2', '2022.08.3', '2022.11.4', '2024.09.2'],
         [True, False]
     )), class_name_func=parametrized_testclass_name_func)
 class TestPapyrusDataset(unittest.TestCase):

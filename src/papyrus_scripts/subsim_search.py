@@ -42,11 +42,13 @@ try:
     from FPSim2.io.chem import load_molecule
 except ImportError as e:
     FPSim2 = e
-    # Placeholders so class definitions below do not fail at import time.
-    BaseStorageBackend = object
-    BaseEngine = object
-    FPSim2Engine = object
-    FPSim2CudaEngine = object
+    # Stub classes so class definitions below do not fail at import time.
+    # Using dedicated stubs (not `object`) avoids MRO conflicts when these are
+    # mixed with other bases that already implicitly inherit from `object`.
+    class BaseStorageBackend: pass
+    class BaseEngine: pass
+    class FPSim2Engine: pass
+    class FPSim2CudaEngine: pass
 
 from .fingerprint import Fingerprint, MorganFingerprint, get_fp_from_name
 from .utils.IO import PapyrusVersion, get_num_rows_in_file, locate_file, process_data_version

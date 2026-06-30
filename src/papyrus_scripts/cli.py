@@ -33,7 +33,7 @@ def main():
               help="Directory where Papyrus data will be stored\n(default: pystow's home folder)."
               )
 @click.option('--version', '-V', 'version', required=False, default=['latest'], multiple=True,
-              metavar='XX.X', help='Version of the Papyrus data to be downloaded (can also be "all").'
+              metavar='YYYY.MM[.R]', help='Version of the Papyrus data to be downloaded (can also be "all").'
               )
 @click.option('--more', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Should other data than Papyrus++ be downloaded '
@@ -91,7 +91,7 @@ def download(output_directory, version, more, stereo, structs, descs, force):
               help="Directory where Papyrus data will be removed\n(default: pystow's home folder)."
               )
 @click.option('--version', '-V', 'version', required=False, default=['latest'], multiple=True,
-              metavar='XX.X', help='Version of the Papyrus data to be removed.'
+              metavar='YYYY.MM[.R]', help='Version of the Papyrus data to be removed.'
               )
 @click.option('--papyruspp', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Should Papyrus++ bioactivities be removed.'
@@ -164,7 +164,7 @@ def clean(output_directory, version, papyruspp, stereo, bioactivities, proteins,
               metavar='OUTFILE', help='Output file containing the PDB-matched Papyrus data.'
               )
 @click.option('--version', '-V', 'version', type=str, required=False, default='latest', nargs=1,
-              metavar='XX.X', help='Version of the Papyrus data to be mapped (default: latest).'
+              metavar='YYYY.MM[.R]', help='Version of the Papyrus data to be mapped (default: latest).'
               )
 @click.option('--more', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Should other data than Papyrus++ be included.'
@@ -246,7 +246,7 @@ class Mutex(click.Option):
               help='Output FPSubSim2 file.'
               )
 @click.option('--version', '-V', 'version', type=str, required=False, default=['latest'],
-              multiple=True, metavar='XX.X',
+              multiple=True, metavar='YYYY.MM[.R]',
               help='Version of the Papyrus data to be mapped (default: latest).'
               )
 @click.option('-3D', 'is3D', is_flag=True, required=False, default=False, nargs=1,
@@ -346,7 +346,7 @@ def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerp
               help="Directory where Papyrus data is stored\n(default: pystow's home folder)."
               )
 @click.option('-v', '--version', 'version', type=str, required=False, default='latest',
-              multiple=False, metavar='XX.X',
+              multiple=False, metavar='YYYY.MM[.R]',
               help='Version of the Papyrus data to be transformed (default: latest).'
               )
 @click.option('-f', '--format', 'format', type=click.Choice(['xz', 'gzip']),

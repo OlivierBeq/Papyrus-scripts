@@ -239,7 +239,15 @@ class PapyrusVersion:
         """
         if version is not None:
             if version.lower() == 'latest':
-                query = '(alias == alias.max()) and (revision == revision.max())'
+                # Two-step: find the highest alias, then the highest revision within it.
+                # A single query using revision.max() would compute the max over the
+                # full table (not the latest-alias subset) and fail when the latest
+                # alias does not have the globally highest revision number.
+                latest_alias = self.aliases['alias'].max()
+                latest_rev = (
+                    self.aliases[self.aliases['alias'] == latest_alias]['revision'].max()
+                )
+                query = f'alias == "{latest_alias}" and revision == "{latest_rev}"'
             elif version.count('.') == 2:
                 if revision is not None:
                     raise ValueError(
@@ -249,20 +257,27 @@ class PapyrusVersion:
                 parts = version.split('.')
                 split_version = '.'.join(parts[:2])
                 split_revision = parts[2]
+                # Revision is stored as a string column; quote the literal so the
+                # pandas query does a string comparison instead of int comparison.
                 query = (
                     f'(version == "{split_version}" or alias == "{split_version}") '
-                    f'and (revision == {split_revision})'
+                    f'and (revision == "{split_revision}")'
                 )
             elif revision is not None:
                 query = (
                     f'(version == "{version}" or alias == "{version}") '
-                    f'and (revision == {revision})'
+                    f'and (revision == "{revision}")'
                 )
             else:
                 warnings.warn('Revision number not provided; latest revision selected.')
+                latest_rev = (
+                    self.aliases[
+                        (self.aliases['version'] == version) | (self.aliases['alias'] == version)
+                    ]['revision'].max()
+                )
                 query = (
                     f'(version == "{version}" or alias == "{version}") '
-                    f'and (revision == revision.max())'
+                    f'and (revision == "{latest_rev}")'
                 )
         else:
             predicates: List[str] = []
@@ -319,6 +334,11 @@ class PapyrusVersion:
     def version(self) -> str:
         """Canonical version string ``'<alias>.<revision>'``, e.g. ``'2022.04.2'``."""
         return f'{self._version}.{self.revision}'
+
+    @property
+    def version_old_fmt(self) -> str:
+        """Old-style version string (e.g. ``'05.4'``); only used internally for pystow path construction."""
+        return self._version_old_fmt
 
     # ------------------------------------------------------------------
     # Class methods
@@ -407,7 +427,7 @@ def _set_root_folder(root_folder: Optional[str | Path] = None):
         os.environ['PYSTOW_HOME'] = os.path.abspath(
             root_folder if isinstance(root_folder, str) else root_folder.as_posix()
         )
-    elif os.environ.egt('PYSTOW_HOME') is not None:
+    elif os.environ.get('PYSTOW_HOME') is not None:
         del os.environ['PYSTOW_HOME']
 
 
