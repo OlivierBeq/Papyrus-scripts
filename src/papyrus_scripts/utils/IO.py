@@ -340,6 +340,13 @@ class PapyrusVersion:
         """Old-style version string (e.g. ``'05.4'``); only used internally for pystow path construction."""
         return self._version_old_fmt
 
+    @property
+    def is_latest(self) -> bool:
+        """Return True if this is the most recent version in the known releases table."""
+        latest_alias = self.aliases['alias'].max()
+        latest_rev = self.aliases[self.aliases['alias'] == latest_alias]['revision'].max()
+        return self._version == latest_alias and self.revision == latest_rev
+
     # ------------------------------------------------------------------
     # Class methods
     # ------------------------------------------------------------------
@@ -504,6 +511,17 @@ def process_data_version(
             f'Version {pv.version!r} is not available locally.\n'
             f'Either download it, or use an already downloaded version.\n'
             f'Downloaded versions: [{available}]'
+        )
+    if not pv.is_latest:
+        aliases = PapyrusVersion.aliases
+        latest_alias = aliases['alias'].max()
+        latest_rev = aliases[aliases['alias'] == latest_alias]['revision'].max()
+        warnings.warn(
+            f"Papyrus {pv.version!r} is not the latest release "
+            f"(latest: '{latest_alias}.{latest_rev}'). "
+            f"Consider upgrading to access the most recent data.",
+            FutureWarning,
+            stacklevel=2,
         )
     return pv
 

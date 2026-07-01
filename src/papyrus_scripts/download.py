@@ -67,7 +67,7 @@ def _resolve_versions(version: Union[str, List[str]], files: dict) -> List[Papyr
                 raise ValueError(
                     f'version must be one of [{", ".join(valid)}], got {v!r}'
                 )
-            if pv.version_old_fmt not in available_old_fmts:
+            if pv.version not in files and pv.version_old_fmt not in files:
                 valid = ['latest', 'all'] + available_old_fmts
                 raise ValueError(
                     f'version must be one of [{", ".join(valid)}], got {v!r}'
@@ -162,6 +162,40 @@ def _update_versions_json(
     write_jsonfile(updated, json_file)
 
 
+def _get_version_files(files: dict, pv: PapyrusVersion) -> dict:
+    """Return the file-metadata sub-dict for *pv* from the links dictionary.
+
+    Tries the canonical key (``pv.version``, e.g. ``'2022.04.2'``) first,
+    then falls back to the old-format key (``pv.version_old_fmt``, e.g.
+    ``'05.4'``) for transitional ``links.json`` files that still carry both
+    key styles.  Emits a :class:`DeprecationWarning` when the old-format key
+    is used or when the entry itself carries a ``'__deprecated__'`` field.
+
+    :param files: full links dict from :func:`~papyrus_scripts.utils.IO.get_papyrus_links`
+    :param pv: version whose file metadata to retrieve
+    :raises KeyError: if neither the canonical nor the old-format key is found
+    """
+    if pv.version in files:
+        entry = files[pv.version]
+    elif pv.version_old_fmt in files:
+        warnings.warn(
+            f"links.json uses the legacy key {pv.version_old_fmt!r}. "
+            f"Upgrade papyrus-scripts to use the new key {pv.version!r}.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        entry = files[pv.version_old_fmt]
+    else:
+        raise KeyError(
+            f"No download links found for version {pv.version!r} "
+            f"(also tried legacy key {pv.version_old_fmt!r})."
+        )
+    msg = entry.get('__deprecated__')
+    if msg:
+        warnings.warn(msg, DeprecationWarning, stacklevel=3)
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -203,7 +237,7 @@ def download_papyrus(outdir: Optional[str] = None,
 
     for pv in versions:
         old_fmt = pv.version_old_fmt
-        version_files = files[old_fmt]
+        version_files = _get_version_files(files, pv)
         papyrus_version_root = pystow.module('papyrus', old_fmt)
 
         # ------------------------------------------------------------------
@@ -419,7 +453,7 @@ def remove_papyrus(
 
     for pv in versions:
         old_fmt = pv.version_old_fmt
-        version_files = files[old_fmt]
+        version_files = _get_version_files(files, pv)
         papyrus_version_root = pystow.module('papyrus', old_fmt)
 
         # --------------------------------------------------------------
