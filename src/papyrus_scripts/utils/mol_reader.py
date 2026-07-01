@@ -8,8 +8,9 @@ import io
 import lzma
 import re
 import warnings
+from collections.abc import Callable, Generator, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from collections.abc import Callable, Iterable, Iterator
 
 from rdkit import Chem, RDLogger
 from rdkit.Chem import (
@@ -20,6 +21,16 @@ from rdkit.Chem import (
     SmilesMolSupplierFromText,
 )
 from tqdm.auto import tqdm
+
+
+@contextmanager
+def suppress_rdkit_log() -> Generator[None]:
+    """Temporarily silence RDKit's logger, always re-enabling it afterwards (even on error)."""
+    RDLogger.DisableLog('rdApp.*')
+    try:
+        yield
+    finally:
+        RDLogger.EnableLog('rdApp.*')
 
 
 # ---------------------------------------------------------------------------
@@ -308,18 +319,17 @@ class ForwardSmilesMolSupplier:
 
     def _parse_smiles_line(self, line: str) -> Chem.Mol | None:
         # Suppress RDKit log noise when there is no name column.
-        RDLogger.DisableLog('rdApp.*')
-        mol = next(
-            SmilesMolSupplierFromText(
-                line,
-                self.delimiter,
-                self.smilesColumn,
-                self.nameColumn,
-                False,       # titleLine=False — we already handled it
-                self.sanitize,
+        with suppress_rdkit_log():
+            mol = next(
+                SmilesMolSupplierFromText(
+                    line,
+                    self.delimiter,
+                    self.smilesColumn,
+                    self.nameColumn,
+                    False,       # titleLine=False — we already handled it
+                    self.sanitize,
+                )
             )
-        )
-        RDLogger.EnableLog('rdApp.*')
         return mol
 
     def __iter__(self) -> Iterator[Chem.Mol | None]:

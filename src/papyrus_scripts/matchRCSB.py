@@ -11,11 +11,12 @@ import pandas as pd
 import pystow
 import requests
 from pandas.io.parsers import TextFileReader as PandasTextFileReader
-from rdkit import Chem, RDLogger
+from rdkit import Chem
 from tqdm.auto import tqdm, trange
 
 from .utils import IO, UniprotMatch
 from .utils.IO import new_session
+from .utils.mol_reader import suppress_rdkit_log
 
 
 def papyrus_rcsb_data_root(root_folder: str | Path | None = None) -> pystow.Module:
@@ -115,67 +116,64 @@ def update_rcsb_data(root_folder: str | Path | None = None,
         pbar = trange(0, len(pdb_ids), chunk_size, desc='Gather RCSB data', ncols=100)
     else:
         pbar = range(0, len(pdb_ids), chunk_size)
-    # Disable RDKit wrnings due to InChI-fication
-    RDLogger.DisableLog('rdApp.*')
-    # 2. Process the IDs in chunks
-    for i in pbar:
-        chunk = pdb_ids[i:i + chunk_size]
-        current_chunk = (i // chunk_size) + 1
-        # Make the GraphQL request for the current chunk
-        response = session.post(
-            url,
-            json={"query": query, "variables": {"pdbIds": chunk}}
-        )
-        if response.status_code != 200:
-            message = f"WARNING:\tFailed to fetch batch {current_chunk}/{total_chunks}. Status Code: {response.status_code}"
-            if verbose:
-                pbar.write(message)
-            else:
-                print(message)
-            continue
-        data = response.json()
-        entries = data.get("data", {}).get("entries", [])
-        # 3. Parse the data
-        if entries:
-            for entry in entries:
-                protein_id = entry.get("rcsb_id")
-                nonpolymers = entry.get("nonpolymer_entities")
-                if not nonpolymers: continue
-                for entity in nonpolymers:
-                    comp = entity.get("nonpolymer_comp")
-                    if not comp: continue
-                    ligand_id = comp.get("chem_comp", {}).get("id")
-                    smiles_stereo = None
-                    descriptors = comp.get("pdbx_chem_comp_descriptor")
-                    if descriptors:
-                        for desc in descriptors:
-                            desc_type = desc.get("type")
-                            program = desc.get("program")
-                            if desc_type in ["SMILES_STEREO", "SMILES_CANONICAL"]:
-                                smiles_stereo = desc.get("descriptor")
-                                if program == "OpenEye OEToolkits" and desc_type == "SMILES_STEREO":
-                                    break
-                    if smiles_stereo:
-                        mol = Chem.MolFromSmiles(smiles_stereo)
-                        mol_2D = Chem.Mol(mol)
-                        Chem.RemoveStereochemistry(mol_2D)
-                        results.append({
-                            "InChI_3D": Chem.MolFromInchi(mol),
-                            # 2D InChI for 2D data
-                            "InChI_2D": Chem.MolFromInchi(mol_2D),
-                            "PDBID_ligand": ligand_id,
-                            "PDBID_protein": protein_id,
-                            "SMILES": smiles_stereo
-                        }
-                        )
-            # 4. Respect API rate limits (Wait 0.5 seconds between requests)
-            if len(pdb_ids) > chunk_size:
-                time.sleep(0.5)
-    pbar.close()
-    # To DataFrame
-    results = pd.DataFrame.from_records(results)
-    # Restore RDKit warnings
-    RDLogger.EnableLog('rdApp.*')
+    # 2. Process the IDs in chunks (RDKit warnings suppressed due to InChI-fication)
+    with suppress_rdkit_log():
+        for i in pbar:
+            chunk = pdb_ids[i:i + chunk_size]
+            current_chunk = (i // chunk_size) + 1
+            # Make the GraphQL request for the current chunk
+            response = session.post(
+                url,
+                json={"query": query, "variables": {"pdbIds": chunk}}
+            )
+            if response.status_code != 200:
+                message = f"WARNING:\tFailed to fetch batch {current_chunk}/{total_chunks}. Status Code: {response.status_code}"
+                if verbose:
+                    pbar.write(message)
+                else:
+                    print(message)
+                continue
+            data = response.json()
+            entries = data.get("data", {}).get("entries", [])
+            # 3. Parse the data
+            if entries:
+                for entry in entries:
+                    protein_id = entry.get("rcsb_id")
+                    nonpolymers = entry.get("nonpolymer_entities")
+                    if not nonpolymers: continue
+                    for entity in nonpolymers:
+                        comp = entity.get("nonpolymer_comp")
+                        if not comp: continue
+                        ligand_id = comp.get("chem_comp", {}).get("id")
+                        smiles_stereo = None
+                        descriptors = comp.get("pdbx_chem_comp_descriptor")
+                        if descriptors:
+                            for desc in descriptors:
+                                desc_type = desc.get("type")
+                                program = desc.get("program")
+                                if desc_type in ["SMILES_STEREO", "SMILES_CANONICAL"]:
+                                    smiles_stereo = desc.get("descriptor")
+                                    if program == "OpenEye OEToolkits" and desc_type == "SMILES_STEREO":
+                                        break
+                        if smiles_stereo:
+                            mol = Chem.MolFromSmiles(smiles_stereo)
+                            mol_2D = Chem.Mol(mol)
+                            Chem.RemoveStereochemistry(mol_2D)
+                            results.append({
+                                "InChI_3D": Chem.MolFromInchi(mol),
+                                # 2D InChI for 2D data
+                                "InChI_2D": Chem.MolFromInchi(mol_2D),
+                                "PDBID_ligand": ligand_id,
+                                "PDBID_protein": protein_id,
+                                "SMILES": smiles_stereo
+                            }
+                            )
+                # 4. Respect API rate limits (Wait 0.5 seconds between requests)
+                if len(pdb_ids) > chunk_size:
+                    time.sleep(0.5)
+        pbar.close()
+        # To DataFrame
+        results = pd.DataFrame.from_records(results)
     # Map PDBID prot to UniProt acessions
     if verbose:
         print(f'Obtaining mappings from protein PDB ID to UniProt accessions')
