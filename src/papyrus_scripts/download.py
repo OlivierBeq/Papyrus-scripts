@@ -305,6 +305,24 @@ def download_papyrus(outdir: Optional[str] = None,
     """
     _set_pystow_home(outdir)
 
+    # Warn if any data downloaded with the old versioning format exists on disk.
+    _versions_json = pystow.join('papyrus', name='versions.json').as_posix()
+    if os.path.isfile(_versions_json):
+        _old_fmt_keys = set(PapyrusVersion.aliases['version'].values)
+        _stale = [v for v in (read_jsonfile(_versions_json) or []) if v in _old_fmt_keys]
+        if _stale:
+            print(
+                '########## IMPORTANT NOTICE ##########\n'
+                'Papyrus-scripts now uses a new folder layout that includes the\n'
+                'revision number (e.g. 2022.04.2/ instead of 05.4/).\n'
+                'Existing data downloaded with the previous format was found:\n'
+                f'  {", ".join(_stale)}\n'
+                'Please remove those old folders before downloading new data:\n'
+                '  papyrus clean --version all\n'
+                '(or remove_papyrus(version="all") from Python)\n'
+                '######################################'
+            )
+
     files = get_papyrus_links(offline=not update_links)
     versions = _resolve_versions(version, files, all_revisions=all_revisions)
 
