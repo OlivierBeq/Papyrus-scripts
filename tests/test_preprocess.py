@@ -67,7 +67,7 @@ class TestKeepQuality(unittest.TestCase):
 
     def test_invalid_data_type_raises(self):
         # keep_quality does no input-type validation of its own (unlike the
-        # `_supports_lazy`-decorated filters below) - a non-DataFrame input
+        # filters below that call _validate_data_type) - a non-DataFrame input
         # fails naturally when `.filter` is called on it.
         with self.assertRaises(AttributeError):
             pp.keep_quality([1, 2, 3], 'high')
@@ -100,8 +100,8 @@ class TestKeepSource(unittest.TestCase):
         self.assertListEqual(list(result.columns), list(self.df.columns))
 
     def test_invalid_data_type_raises(self):
-        # keep_source is `_supports_lazy`-decorated: it validates its input
-        # itself and raises TypeError (not ValueError) for a bad type.
+        # keep_source calls _validate_data_type itself and raises TypeError
+        # (not ValueError) for a bad type.
         with self.assertRaises(TypeError):
             pp.keep_source([1, 2, 3], 'chembl')
 
@@ -291,6 +291,72 @@ class TestKeepProteinClass(unittest.TestCase):
             pp.keep_protein_class([1, 2, 3], self.protein_data)
 
 
+class TestLazyFrameSupport(unittest.TestCase):
+    """keep_source/keep_type/keep_organism/keep_protein_class must stay lazy:
+    passing a LazyFrame must return a LazyFrame (never silently collect), and
+    the collected result must exactly match the eager-input result.
+    """
+
+    def setUp(self):
+        self.df = make_bioactivity_df()
+        self.data = pl.DataFrame({'target_id': ['P1', 'P2', 'P3']})
+        self.protein_data = pl.DataFrame({
+            'target_id': ['P1', 'P2', 'P3'],
+            'Organism': ['Homo sapiens (Human)', 'Mus musculus (Mouse)', 'Homo sapiens (Human)'],
+            'Classification': [
+                'Enzyme->Kinase',
+                'Membrane receptor->Family A G protein-coupled receptor',
+                'Enzyme->Protease',
+            ],
+        })
+
+    def test_keep_source_stays_lazy_and_matches_eager(self):
+        eager = pp.keep_source(self.df, 'chembl')
+        lazy_out = pp.keep_source(self.df.lazy(), 'chembl')
+        self.assertIsInstance(lazy_out, pl.LazyFrame)
+        self.assertTrue(lazy_out.collect().equals(eager))
+
+    def test_keep_source_empty_result_stays_lazy(self):
+        lazy_out = pp.keep_source(self.df.lazy(), 'no_such_source')
+        self.assertIsInstance(lazy_out, pl.LazyFrame)
+        collected = lazy_out.collect()
+        self.assertTrue(collected.is_empty())
+        self.assertListEqual(list(collected.columns), list(self.df.columns))
+
+    def test_keep_type_stays_lazy_and_matches_eager(self):
+        eager = pp.keep_type(self.df, 'ic50')
+        lazy_out = pp.keep_type(self.df.lazy(), 'ic50')
+        self.assertIsInstance(lazy_out, pl.LazyFrame)
+        self.assertTrue(lazy_out.collect().equals(eager))
+
+    def test_keep_organism_stays_lazy_and_matches_eager(self):
+        eager = pp.keep_organism(self.data, self.protein_data, organism='Homo sapiens (Human)')
+        lazy_out = pp.keep_organism(self.data.lazy(), self.protein_data, organism='Homo sapiens (Human)')
+        self.assertIsInstance(lazy_out, pl.LazyFrame)
+        self.assertTrue(lazy_out.collect().equals(eager))
+
+    def test_keep_protein_class_stays_lazy_and_matches_eager(self):
+        eager = pp.keep_protein_class(self.data, self.protein_data, classes={'l2': 'Kinase'})
+        lazy_out = pp.keep_protein_class(self.data.lazy(), self.protein_data, classes={'l2': 'Kinase'})
+        self.assertIsInstance(lazy_out, pl.LazyFrame)
+        self.assertTrue(lazy_out.collect().equals(eager))
+
+    def test_keep_protein_class_none_classes_stays_lazy(self):
+        lazy_out = pp.keep_protein_class(self.data.lazy(), self.protein_data, classes=None)
+        self.assertIsInstance(lazy_out, pl.LazyFrame)
+        self.assertTrue(lazy_out.collect().equals(self.data))
+
+    def test_chained_filters_never_collect_until_explicit_collect(self):
+        # Chain keep_source -> keep_type -> keep_quality entirely on a LazyFrame.
+        # 'high' quality keeps only A1 out of the chembl+ic50 subset (A1, A2).
+        pipeline = pp.keep_source(self.df.lazy(), 'chembl')
+        pipeline = pp.keep_type(pipeline, 'ic50')
+        pipeline = pp.keep_quality(pipeline, 'high')
+        self.assertIsInstance(pipeline, pl.LazyFrame)
+        result = pipeline.collect()
+        self.assertEqual(result['Activity_ID'].to_list(), ['A1'])
+
+
 class TestConsumeChunks(unittest.TestCase):
 
     def test_consume_flat_chunks(self):
@@ -434,6 +500,22 @@ class TestKeepSimilarDissimilarSubstructure(unittest.TestCase):
             mock_fp_cls.return_value.__repr__ = lambda self: 'Morgan_2048bits_0x0'
             result = pp.keep_similar(data, 'CCO', 'fake.h5', fingerprint=mock_fp_cls.return_value)
         self.assertEqual(sorted(result['InChIKey']), ['KEY1', 'KEY2'])
+
+    @patch('src.papyrus_scripts.preprocess.Path.is_file', return_value=True)
+    @patch('src.papyrus_scripts.preprocess.FPSubSim2')
+    def test_keep_similar_stays_lazy_for_lazyframe_input(self, mock_fpss2_cls, _mock_isfile):
+        mock_fpss2 = MagicMock()
+        mock_fpss2.available_fingerprints = {'Morgan_2048bits_0x0': {}}
+        similar = pl.DataFrame({'InChIKey': ['KEY1', 'KEY2'], 'similarity': [0.9, 0.8]})
+        mock_fpss2.get_similarity_lib.return_value.similarity.return_value = similar
+        mock_fpss2_cls.return_value = mock_fpss2
+
+        data = pl.DataFrame({'InChIKey': ['KEY1', 'KEY2', 'KEY3']})
+        with patch('src.papyrus_scripts.preprocess.MorganFingerprint') as mock_fp_cls:
+            mock_fp_cls.return_value.__repr__ = lambda self: 'Morgan_2048bits_0x0'
+            lazy_out = pp.keep_similar(data.lazy(), 'CCO', 'fake.h5', fingerprint=mock_fp_cls.return_value)
+        self.assertIsInstance(lazy_out, pl.LazyFrame)
+        self.assertEqual(sorted(lazy_out.collect()['InChIKey']), ['KEY1', 'KEY2'])
 
     @patch('src.papyrus_scripts.preprocess.Path.is_file', return_value=True)
     @patch('src.papyrus_scripts.preprocess.FPSubSim2')

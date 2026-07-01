@@ -3,11 +3,9 @@
 """Filtering functions for the Papyrus dataset."""
 
 import re
-from functools import wraps
-from itertools import chain
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable, Iterator
 
 import numpy as np
 import polars as pl
@@ -28,51 +26,32 @@ DataOutput = pl.DataFrame | pl.LazyFrame
 
 
 # ---------------------------------------------------------------------------
-# Lazy-dispatch decorator
+# Input validation
 # ---------------------------------------------------------------------------
 
-def _supports_lazy(fn: Callable) -> Callable:
-    """Collect a :class:`~polars.LazyFrame` before passing it to *fn*.
-
-    When the first argument (*data*) is a :class:`~polars.LazyFrame` the
-    decorator collects it, calls the original function on the eager
-    :class:`~polars.DataFrame`, then re-lazifies the result so that callers
-    can keep chaining lazy operations.  For a plain
-    :class:`~polars.DataFrame` the function is called directly.
-
-    Simple filters that are expressed entirely as Polars expressions (e.g.
-    :func:`keep_quality`) do **not** need this decorator — their
-    :meth:`~polars.LazyFrame.filter` calls work on both types natively.
-    """
-
-    @wraps(fn)
-    def wrapper(data: DataInput, *args, **kwargs) -> DataOutput:
-        if isinstance(data, pl.LazyFrame):
-            result = fn(data.collect(), *args, **kwargs)
-            return result.lazy() if isinstance(result, pl.DataFrame) else result
-        if not isinstance(data, pl.DataFrame):
-            raise TypeError(
-                f'data must be a pl.DataFrame or pl.LazyFrame, '
-                f'got {type(data).__name__!r}.'
-            )
-        return fn(data, *args, **kwargs)
-
-    return wrapper
+def _validate_data_type(data: object) -> None:
+    """Raise ``TypeError`` early (without touching any data) for a bad *data* argument."""
+    if not isinstance(data, (pl.DataFrame, pl.LazyFrame)):
+        raise TypeError(
+            f'data must be a pl.DataFrame or pl.LazyFrame, '
+            f'got {type(data).__name__!r}.',
+        )
 
 
 # ---------------------------------------------------------------------------
 # Papyrus++ column-injection helper
 # ---------------------------------------------------------------------------
 
-def _with_papyruspp_columns(data: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
+def _with_papyruspp_columns(data: DataInput) -> tuple[DataInput, list[str]]:
     """Add ``Activity_class`` and ``type_other`` null columns when absent.
 
-    Returns the (possibly augmented) DataFrame and the list of column names
-    that were added, so callers can drop them afterwards.
+    Returns the (possibly augmented) DataFrame/LazyFrame and the list of
+    column names that were added, so callers can drop them afterwards.
     """
+    schema = data.collect_schema()
     added: list[str] = []
     for col in ('Activity_class', 'type_other'):
-        if col not in data.columns:
+        if col not in schema:
             data = data.with_columns(pl.lit(None).cast(pl.Utf8).alias(col))
             added.append(col)
     return data, added
@@ -183,65 +162,60 @@ _LISTVALS_COLS = [
 ]
 
 
-def _listvals(vals: list) -> str:
-    """Return the single value when all equal, else ';'-join all."""
-    strs = [str(v) for v in vals]
-    return strs[0] if len(set(strs)) == 1 else ';'.join(strs)
-
-
 def process_groups(
-    data: pl.DataFrame,
+    data: DataInput,
     additional_columns: list[str] | None = None,
-) -> pl.DataFrame:
+) -> DataOutput:
     """Aggregate duplicate activity records, grouping by ``Activity_ID``.
 
-    :param data: DataFrame whose rows share ``Activity_ID`` values to aggregate
+    Expressed entirely as a single ``group_by().agg()`` call so it stays
+    lazy end-to-end when *data* is a :class:`~polars.LazyFrame`.
+
+    :param data: DataFrame or LazyFrame whose rows share ``Activity_ID``
+        values to aggregate
     :param additional_columns: extra columns to include with ``listvals`` logic
-    :returns: aggregated DataFrame with ``pchembl_value_Mean``, ``_StdDev``,
-        ``_SEM``, ``_N``, ``_Median``, ``_MAD`` columns added
+    :returns: aggregated DataFrame/LazyFrame with ``pchembl_value_Mean``,
+        ``_StdDev``, ``_SEM``, ``_N``, ``_Median``, ``_MAD`` columns added
     """
-    listvals_cols = _LISTVALS_COLS + (additional_columns or [])
-    has_pchembl   = 'pchembl_value' in data.columns
-    cols          = data.columns
+    schema = data.collect_schema()
+    listvals_cols = [c for c in (_LISTVALS_COLS + (additional_columns or [])) if c in schema]
+    has_pchembl   = 'pchembl_value' in schema
 
-    rows: list[dict] = []
-    for (act_id,), grp in data.group_by(['Activity_ID'], maintain_order=True):
-        row: dict = {'Activity_ID': act_id}
+    agg_exprs = [
+        pl.when(pl.col(col).n_unique() == 1)
+        .then(pl.col(col).cast(pl.Utf8).first())
+        .otherwise(pl.col(col).cast(pl.Utf8).str.join(';'))
+        .alias(col)
+        for col in listvals_cols
+    ]
 
-        for col in listvals_cols:
-            if col in cols:
-                row[col] = _listvals(grp[col].to_list())
+    if has_pchembl:
+        pv     = pl.col('pchembl_value')
+        pv_num = pv.cast(pl.Float64)
+        median = pv_num.median()
+        n      = pv_num.drop_nulls().len()
+        std    = pv_num.std()
+        agg_exprs.extend([
+            pv.cast(pl.Utf8).str.join(';').alias('pchembl_value'),
+            pv_num.mean().alias('pchembl_value_Mean'),
+            std.alias('pchembl_value_StdDev'),
+            (std / n.sqrt()).alias('pchembl_value_SEM'),
+            n.cast(pl.Int64).alias('pchembl_value_N'),
+            median.alias('pchembl_value_Median'),
+            (pv_num - median).abs().median().alias('pchembl_value_MAD'),
+        ])
 
-        if has_pchembl:
-            pv_strs = grp['pchembl_value'].cast(pl.Utf8).to_list()
-            row['pchembl_value'] = ';'.join(pv_strs)
-
-            pv_num = grp['pchembl_value'].cast(pl.Float64).drop_nulls()
-            n      = len(pv_num)
-            mean   = float(pv_num.mean())   if n > 0 else None
-            std    = float(pv_num.std())    if n > 1 else None
-            med    = float(pv_num.median()) if n > 0 else None
-            mad    = float((pv_num - med).abs().median()) if (n > 0 and med is not None) else None
-            row['pchembl_value_Mean']   = mean
-            row['pchembl_value_StdDev'] = std
-            row['pchembl_value_SEM']    = (std / n ** 0.5) if (std is not None and n > 0) else None
-            row['pchembl_value_N']      = n
-            row['pchembl_value_Median'] = med
-            row['pchembl_value_MAD']    = mad
-
-        rows.append(row)
-
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    return data.group_by('Activity_ID', maintain_order=True).agg(agg_exprs)
 
 
 # Keep the single-group entry point for backward compatibility.
 def process_group(
-    group: pl.DataFrame,
+    group: DataInput,
     additional_columns: list[str] | None = None,
-) -> pl.DataFrame:
+) -> DataOutput:
     """Aggregate a single Activity-ID group.
 
-    :param group: sub-DataFrame sharing the same ``Activity_ID``
+    :param group: sub-DataFrame/LazyFrame sharing the same ``Activity_ID``
     :param additional_columns: extra columns to include in the aggregation
     """
     return process_groups(group, additional_columns)
@@ -277,22 +251,29 @@ def is_multiple_types(row: dict, activity_types: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 def _unnest_and_filter(
-        df: pl.DataFrame,
-        keep_mask: Callable[[pl.DataFrame], pl.Series],
+        df: DataInput,
+        keep_mask: Callable[[], pl.Expr],
         ordered_columns: list[str],
         aggregate: bool = True,
         additional_columns: list[str] | None = None,
-) -> pl.DataFrame:
+) -> DataOutput:
     """Split semicolon-joined columns, filter rows, and optionally re-aggregate.
 
+    Stays lazy end-to-end when *df* is a :class:`~polars.LazyFrame`: no row
+    count or emptiness is inspected, so the whole pipeline (explode, filter,
+    optional aggregation, join) is only ever evaluated once the caller
+    collects the final result.
+
     :param df: records with semicolon-separated multi-values to process
-    :param keep_mask: callable that takes a DataFrame and returns a bool Series
+    :param keep_mask: zero-argument callable returning the filter expression
+        (an :class:`~polars.Expr`, not a materialised mask) to apply after exploding
     :param ordered_columns: original column order to restore after merging
     :param aggregate: re-aggregate on ``Activity_ID`` after filtering
     :param additional_columns: forwarded to :func:`process_groups`
     """
-    split_cols = [c for c in _COLS_TO_SPLIT if c in df.columns]
-    excl_cols  = [c for c in df.columns
+    schema     = df.collect_schema()
+    split_cols = [c for c in _COLS_TO_SPLIT if c in schema]
+    excl_cols  = [c for c in schema.names()
                   if c not in split_cols and not c.startswith('pchembl_value_')]
 
     excluded = df.select(['Activity_ID'] + [c for c in excl_cols if c != 'Activity_ID'])
@@ -304,18 +285,17 @@ def _unnest_and_filter(
         .explode(split_cols)
     )
 
-    included = included.filter(keep_mask(included))
+    included = included.filter(keep_mask())
 
-    if not aggregate or included.is_empty():
-        return (
-            included
-            .join(excluded, on='Activity_ID', how='inner')
-            .select([c for c in ordered_columns if c in included.columns or c in excluded.columns])
-        )
+    if not aggregate:
+        result = included.join(excluded, on='Activity_ID', how='inner')
+        result_schema = result.collect_schema()
+        return result.select([c for c in ordered_columns if c in result_schema])
 
     aggregated = process_groups(included, additional_columns)
     result     = aggregated.join(excluded, on='Activity_ID', how='inner')
-    final_cols = [c for c in ordered_columns if c in result.columns]
+    result_schema = result.collect_schema()
+    final_cols = [c for c in ordered_columns if c in result_schema]
     return result.select(final_cols)
 
 
@@ -341,100 +321,105 @@ def keep_quality(
     return data.filter(pl.col('Quality').str.to_lowercase().is_in(qualities[threshold:]))
 
 
-@_supports_lazy
 def keep_source(
-        data: pl.DataFrame,
+        data: DataInput,
         source: list[str] | str = 'all',
-) -> pl.DataFrame:
+) -> DataOutput:
     """Keep only rows from the specified data source(s).
 
     Aggregated statistics (mean, median, SEM …) are recomputed to reflect
-    only the retained sources.
+    only the retained sources. Fully lazy: nothing is collected, so *data*
+    can be a :class:`~polars.LazyFrame` and this stays chainable with other
+    filters, evaluating only when the caller finally collects.
 
-    :param data: bioactivity DataFrame (or LazyFrame — collected automatically)
+    :param data: bioactivity DataFrame or LazyFrame
     :param source: source label(s) to retain; ``'all'`` or ``'any'`` keeps
         every source
     """
-    sources_ = set(chain.from_iterable(s.split(';') for s in data['source'].to_list()))
-    sources  = {s.lower() for s in sources_}
-
+    _validate_data_type(data)
     if isinstance(source, str):
         source = [source]
     source = [s.lower() for s in source]
 
-    if 'any' in source or 'all' in source or set(source) >= sources:
+    if 'any' in source or 'all' in source:
         return data
 
-    pattern       = '|'.join(f'^{re.escape(s)}$' for s in source)
-    source_adapted = [s for s in sources if re.search(pattern, s)]
-
-    if not source_adapted:
-        return data.filter(pl.lit(False))
-
-    ordered_columns = data.columns
+    ordered_columns = list(data.collect_schema())
     data, added     = _with_papyruspp_columns(data)
+    source_pattern  = '|'.join(map(re.escape, source))
 
     # Binary-class records with a single matching source — keep as-is.
     preserved_binary = data.filter(
         pl.col('Activity_class').is_not_null()
-        & pl.col('source').str.to_lowercase().is_in(source_adapted)
+        & pl.col('source').str.to_lowercase().is_in(source),
     )
     # Binary-class records with multiple sources — must be unnested first.
     multi_binary = data.filter(
         pl.col('Activity_class').is_not_null()
         & pl.col('source').str.contains(';')
-        & pl.col('source').str.to_lowercase().str.contains(
-            '|'.join(map(re.escape, source_adapted))
-        )
+        & pl.col('source').str.to_lowercase().str.contains(source_pattern),
     )
     # Continuous records.
     cont = data.filter(pl.col('Activity_class').is_null())
 
-    binary_data = pl.DataFrame()
-    if not multi_binary.is_empty():
-        binary_data = _unnest_and_filter(
-            multi_binary.drop(added),
-            keep_mask=lambda df: df['source'].str.to_lowercase().is_in(source_adapted),
-            ordered_columns=[c for c in ordered_columns if c not in added],
-            aggregate=False,
-        )
-
-    preserved = cont.filter(pl.col('source').str.to_lowercase().is_in(source_adapted))
-    multi_cont = cont.filter(
-        ~pl.col('source').str.to_lowercase().is_in(source_adapted)
-        & pl.col('source').str.contains(';')
-        & pl.col('source').str.to_lowercase().str.contains(
-            '|'.join(map(re.escape, source_adapted))
-        )
+    binary_data = _unnest_and_filter(
+        multi_binary.drop(added),
+        keep_mask=lambda: pl.col('source').str.to_lowercase().is_in(source),
+        ordered_columns=[c for c in ordered_columns if c not in added],
+        aggregate=False,
     )
 
-    filtered = pl.DataFrame()
-    if not multi_cont.is_empty():
-        filtered = _unnest_and_filter(
-            multi_cont.drop(added),
-            keep_mask=lambda df: df['source'].str.to_lowercase().is_in(source_adapted),
-            ordered_columns=[c for c in ordered_columns if c not in added],
-            aggregate=True,
-        )
+    preserved = cont.filter(pl.col('source').str.to_lowercase().is_in(source))
+    multi_cont = cont.filter(
+        ~pl.col('source').str.to_lowercase().is_in(source)
+        & pl.col('source').str.contains(';')
+        & pl.col('source').str.to_lowercase().str.contains(source_pattern),
+    )
 
-    parts = [df for df in (preserved.drop(added), filtered, preserved_binary.drop(added), binary_data) if not df.is_empty()]
-    return pl.concat(parts, how='diagonal') if parts else pl.DataFrame(schema={c: data.schema[c] for c in ordered_columns if c in data.schema})
+    filtered = _unnest_and_filter(
+        multi_cont.drop(added),
+        keep_mask=lambda: pl.col('source').str.to_lowercase().is_in(source),
+        ordered_columns=[c for c in ordered_columns if c not in added],
+        aggregate=True,
+    )
+
+    parts = [preserved.drop(added), filtered, preserved_binary.drop(added), binary_data]
+    return pl.concat(parts, how='diagonal')
 
 
-@_supports_lazy
+def _activity_type_expr(type_cols: list[str], schema) -> pl.Expr:
+    """Expression: exactly one of *type_cols* is ``'1'`` and none is multi-valued."""
+    cols = [c for c in type_cols if c in schema]
+    if not cols:
+        return pl.lit(False)
+    has_one  = pl.any_horizontal([pl.col(c).cast(pl.Utf8) == '1' for c in cols])
+    no_multi = pl.all_horizontal([~pl.col(c).cast(pl.Utf8).str.contains(';') for c in cols])
+    return has_one & no_multi
+
+
+def _multiple_types_expr(type_cols: list[str], schema) -> pl.Expr:
+    """Expression: any of *type_cols* holds a semicolon-separated multi-value."""
+    cols = [c for c in type_cols if c in schema]
+    if not cols:
+        return pl.lit(False)
+    return pl.any_horizontal([pl.col(c).cast(pl.Utf8).str.contains(';') for c in cols])
+
+
 def keep_type(
-        data: pl.DataFrame,
+        data: DataInput,
         activity_types: list[str] | str = 'ic50',
-) -> pl.DataFrame:
+) -> DataOutput:
     """Keep only rows matching the desired activity type(s).
 
     Aggregated statistics are recomputed to reflect only the retained types.
+    Fully lazy: see :func:`keep_source`.
 
-    :param data: bioactivity DataFrame (or LazyFrame — collected automatically)
+    :param data: bioactivity DataFrame or LazyFrame
     :param activity_types: type(s) to retain: ``'IC50'``, ``'EC50'``,
         ``'KD'``, ``'Ki'``, ``'other'``, ``'all'``, or ``'any'``
     :raises ValueError: if any supplied type is not recognised
     """
+    _validate_data_type(data)
     canonical = ['IC50', 'EC50', 'KD', 'Ki', 'other']
     lower_map = {t.lower(): t for t in canonical}
 
@@ -450,56 +435,39 @@ def keep_type(
         raise ValueError(f'Unrecognised activity type(s): {unknown}. Must be one of {canonical}')
 
     type_cols       = [f'type_{lower_map[t]}' for t in activity_types]
-    ordered_columns = data.columns
+    ordered_columns = list(data.collect_schema())
     data, added     = _with_papyruspp_columns(data)
+    schema          = data.collect_schema()
 
-    def _is_activity_type(df: pl.DataFrame) -> pl.Series:
-        has_one  = pl.Series([False] * len(df))
-        no_multi = pl.Series([True]  * len(df))
-        for col in type_cols:
-            if col in df.columns:
-                has_one  = has_one  | (df[col].cast(pl.Utf8) == '1')
-                no_multi = no_multi & ~df[col].cast(pl.Utf8).str.contains(';')
-        return has_one & no_multi
+    is_type  = _activity_type_expr(type_cols, schema)
+    is_multi = _multiple_types_expr(type_cols, schema)
 
-    def _is_multiple_types(df: pl.DataFrame) -> pl.Series:
-        result = pl.Series([False] * len(df))
-        for col in type_cols:
-            if col in df.columns:
-                result = result | df[col].cast(pl.Utf8).str.contains(';')
-        return result
+    activity_notnull = pl.col('Activity_class').is_not_null()
+    activity_isnull  = pl.col('Activity_class').is_null()
 
-    activity_notnull = data['Activity_class'].is_not_null()
-    activity_isnull  = data['Activity_class'].is_null()
-
-    preserved_binary = data.filter(activity_notnull & _is_activity_type(data))
-    multi_binary     = data.filter(activity_notnull & _is_multiple_types(data))
+    preserved_binary = data.filter(activity_notnull & is_type)
+    multi_binary     = data.filter(activity_notnull & is_multi)
     cont             = data.filter(activity_isnull)
 
-    binary_data = pl.DataFrame()
-    if not multi_binary.is_empty():
-        mb = multi_binary.drop(added)
-        binary_data = _unnest_and_filter(
-            mb,
-            keep_mask=_is_activity_type,
-            ordered_columns=[c for c in ordered_columns if c not in added],
-            aggregate=False,
-        )
+    binary_data = _unnest_and_filter(
+        multi_binary.drop(added),
+        keep_mask=lambda: _activity_type_expr(type_cols, schema),
+        ordered_columns=[c for c in ordered_columns if c not in added],
+        aggregate=False,
+    )
 
-    preserved  = cont.filter(_is_activity_type(cont))
-    multi_cont = cont.filter(_is_multiple_types(cont))
+    preserved  = cont.filter(is_type)
+    multi_cont = cont.filter(is_multi)
 
-    filtered = pl.DataFrame()
-    if not multi_cont.is_empty():
-        filtered = _unnest_and_filter(
-            multi_cont.drop(added),
-            keep_mask=_is_activity_type,
-            ordered_columns=[c for c in ordered_columns if c not in added],
-            aggregate=True,
-        )
+    filtered = _unnest_and_filter(
+        multi_cont.drop(added),
+        keep_mask=lambda: _activity_type_expr(type_cols, schema),
+        ordered_columns=[c for c in ordered_columns if c not in added],
+        aggregate=True,
+    )
 
-    parts = [df for df in (preserved.drop(added), filtered, preserved_binary.drop(added), binary_data) if not df.is_empty()]
-    return pl.concat(parts, how='diagonal') if parts else pl.DataFrame(schema={c: data.schema[c] for c in ordered_columns if c in data.schema})
+    parts = [preserved.drop(added), filtered, preserved_binary.drop(added), binary_data]
+    return pl.concat(parts, how='diagonal')
 
 
 def keep_accession(
@@ -518,16 +486,19 @@ def keep_accession(
     return data.filter(pl.col('target_id').str.to_lowercase().str.contains(pattern.lower()))
 
 
-@_supports_lazy
 def keep_protein_class(
-        data: pl.DataFrame,
+        data: DataInput,
         protein_data: pl.DataFrame,
         classes: dict | list[dict] | None = None,
         generic_regex: bool = False,
-) -> pl.DataFrame:
+) -> DataOutput:
     """Keep only rows whose target belongs to the desired protein class(es).
 
-    :param data: bioactivity DataFrame (or LazyFrame — collected automatically)
+    Fully lazy with respect to *data* (never collected): only *protein_data*,
+    which is always a small, already-materialised reference table, is
+    processed eagerly to build the set of matching target IDs.
+
+    :param data: bioactivity DataFrame or LazyFrame
     :param protein_data: Papyrus protein-target DataFrame
     :param classes: protein class filter(s).
 
@@ -545,6 +516,7 @@ def keep_protein_class(
     :raises ValueError: if an unrecognised level key is supplied or if a
         ``'l?'`` dict contains more than one key
     """
+    _validate_data_type(data)
     if classes is None:
         return data
     if isinstance(classes, dict):
@@ -565,7 +537,7 @@ def keep_protein_class(
 
     # Build a (targets × classification-levels) DataFrame from the protein table.
     classifications = equalize_cell_size_in_column(
-        protein_data['Classification'].str.split(';').to_list(), 'external', ''
+        protein_data['Classification'].str.split(';').to_list(), 'external', '',
     )
     if isinstance(classifications, pl.Series):
         classifications = classifications.to_list()
@@ -622,25 +594,31 @@ def keep_protein_class(
         'target_id':      targets,
         'Classification': classification_col,
     })
+    # A LazyFrame can only be joined against another LazyFrame.
+    if isinstance(data, pl.LazyFrame):
+        target_df = target_df.lazy()
     return data.filter(pl.col('target_id').is_in(targets)).join(target_df, on='target_id')
 
 
-@_supports_lazy
 def keep_organism(
-        data: pl.DataFrame,
+        data: DataInput,
         protein_data: pl.DataFrame,
         organism: str | list[str] | None = 'Homo sapiens (Human)',
         generic_regex: bool = False,
-) -> pl.DataFrame:
+) -> DataOutput:
     """Keep only rows whose target comes from the specified organism(s).
 
-    :param data: bioactivity DataFrame (or LazyFrame — collected automatically)
+    Fully lazy with respect to *data* (never collected): see
+    :func:`keep_protein_class`.
+
+    :param data: bioactivity DataFrame or LazyFrame
     :param protein_data: Papyrus protein-target DataFrame
     :param organism: organism name(s) to retain (case-insensitive).
         ``None`` returns *data* unfiltered.
     :param generic_regex: when True, names are matched as regular expressions
         (partial match); when False, exact match only
     """
+    _validate_data_type(data)
     if organism is None:
         return data
     if isinstance(organism, str):
@@ -654,15 +632,19 @@ def keep_organism(
     else:
         mask = org_col.is_in([o.lower() for o in organism])
 
-    matched_indices = [i for i, m in enumerate(mask.to_list()) if m]
-    targets         = protein_data['Organism'].gather(matched_indices)
+    matched_indices     = [i for i, m in enumerate(mask.to_list()) if m]
+    matched_target_ids  = protein_data['target_id'].gather(matched_indices)
+    matched_organisms   = protein_data['Organism'].gather(matched_indices)
 
     organism_df = pl.DataFrame({
-        'target_id': protein_data['target_id'].gather(matched_indices),
-        'Organism':  targets,
+        'target_id': matched_target_ids,
+        'Organism':  matched_organisms,
     })
+    # A LazyFrame can only be joined against another LazyFrame.
+    if isinstance(data, pl.LazyFrame):
+        organism_df = organism_df.lazy()
     return data.filter(
-        pl.col('target_id').is_in(organism_df['target_id'])
+        pl.col('target_id').is_in(matched_target_ids),
     ).join(organism_df, on='target_id')
 
 
@@ -761,7 +743,7 @@ def _load_fpsubsim2(fpsubsim2_file: str | Path, fingerprint: Fingerprint | None)
     if fingerprint is not None and repr(fingerprint) not in fpss2.available_fingerprints:
         raise ValueError(
             f'FPSubSim2 database does not contain fingerprint {fingerprint.name!r}. '
-            f'Available: {list(fpss2.available_fingerprints)}'
+            f'Available: {list(fpss2.available_fingerprints)}',
         )
     return fpss2
 
@@ -813,9 +795,13 @@ def keep_similar(
     fpss2        = _load_fpsubsim2(fpsubsim2_file, fingerprint)
     similar_mols = _collect_similar_molecules(fpss2, molecule_smiles, fingerprint, threshold, cuda)
     score_col    = similar_mols.columns[-1]
+    scores       = similar_mols.select(['InChIKey', score_col])
+    # A LazyFrame can only be joined against another LazyFrame.
+    if isinstance(data, pl.LazyFrame):
+        scores = scores.lazy()
     return (
         data.filter(pl.col('InChIKey').is_in(similar_mols['InChIKey']))
-        .join(similar_mols.select(['InChIKey', score_col]), on='InChIKey')
+        .join(scores, on='InChIKey')
     )
 
 
