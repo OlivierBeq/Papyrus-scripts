@@ -15,7 +15,7 @@ from io import BytesIO
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pystow
 import rdkit
 from rdkit import Chem
@@ -122,21 +122,24 @@ def _derive_connectivity(props: dict, rdmol: Chem.Mol) -> Tuple[str, str]:
     return connectivity, inchikey
 
 
-def _decode_bytes_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Decode any ``object``-typed column that contains bytes values to ``str``."""
-    for col, dtype in df.dtypes.items():
-        if dtype == object:
-            df[col] = df[col].apply(
-                lambda x: x.decode('utf-8') if isinstance(x, bytes) else x
-            )
-    return df
+def _decode_bytes_df(df: pl.DataFrame) -> pl.DataFrame:
+    """Decode any ``Object``-typed column that contains bytes values to ``str``."""
+    cast_exprs = [
+        pl.col(c).map_elements(
+            lambda x: x.decode('utf-8') if isinstance(x, bytes) else x,
+            return_dtype=pl.Utf8,
+        )
+        if df.schema[c] == pl.Object else pl.col(c)
+        for c in df.columns
+    ]
+    return df.select(cast_exprs)
 
 
 def _build_result_df(
         raw_results,
         get_mapping,
         score_col: str,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Convert raw FPSim2 ``(id, score)`` pairs into a labelled DataFrame.
 
     :param raw_results: iterable of ``(mol_id, score)`` tuples returned by
@@ -149,11 +152,13 @@ def _build_result_df(
     """
     pairs = list(zip(*raw_results)) if raw_results else []
     if not pairs:
-        return pd.DataFrame(columns=['idnumber', 'connectivity', 'InChIKey', score_col])
+        return pl.DataFrame(schema={
+            'idnumber': pl.Int64, 'connectivity': pl.Utf8,
+            'InChIKey': pl.Utf8, score_col: pl.Float32,
+        })
     ids, scores = list(pairs[0]), list(pairs[1])
     df = get_mapping(ids)
-    df[score_col] = scores
-    return _decode_bytes_columns(df)
+    return df.with_columns(pl.Series(score_col, scores))
 
 
 def sort_db_file(filename: str, verbose: bool = False) -> None:
@@ -298,7 +303,7 @@ class FPSubSim2:
             os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
 
         structure_dir = pystow.join(
-            'papyrus', self.version.version_old_fmt, 'structures'
+            'papyrus', self.version.pystow_path_key, 'structures'
         )
         filenames = locate_file(
             structure_dir.as_posix(),
@@ -380,7 +385,7 @@ class FPSubSim2:
             config = h5file.create_vlarray(h5file.root, 'config', atom=tb.ObjectAtom())
             config.append([
                 rdkit.__version__,
-                self.version.version_old_fmt if self.version is not None else '',
+                self.version.pystow_path_key if self.version is not None else '',
                 dim_tag,
             ]
             )
@@ -991,7 +996,7 @@ class _MappingMixin:
 
     fp_filename: str  # supplied by concrete subclass
 
-    def _get_mapping(self, ids: Union[List[int], int]) -> pd.DataFrame:
+    def _get_mapping(self, ids: Union[List[int], int]) -> pl.DataFrame:
         """Return a DataFrame with Papyrus identifiers for the given integer *ids*.
 
         :param ids: one or more molecule IDs from the similarity/substructure result
@@ -1016,8 +1021,8 @@ class _MappingMixin:
                 except StopIteration:
                     raise ValueError(f'Index {i} not found in the database.')
 
-        df = pd.DataFrame.from_records(rows, columns=colnames)
-        return _decode_bytes_columns(df)
+        rows_as_dicts = [dict(zip(colnames, r)) for r in rows]
+        return _decode_bytes_df(pl.DataFrame(rows_as_dicts))
 
 
 # ---------------------------------------------------------------------------
@@ -1081,7 +1086,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
     def _score_col(self, metric: str, threshold: float) -> str:
         return f'{metric} > {threshold} ({self.storage._current_fp})'
 
-    def similarity(self, query_string: str, threshold: float, n_workers: int = 1) -> pd.DataFrame:
+    def similarity(self, query_string: str, threshold: float, n_workers: int = 1) -> pl.DataFrame:
         """In-memory Tanimoto similarity search."""
         raw = FPSim2Engine.similarity(self, query_string, threshold, n_workers)
         return _build_result_df(raw, self._get_mapping, self._score_col('Tanimoto', threshold))
@@ -1089,7 +1094,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
     def on_disk_similarity(
             self, query_string: str, threshold: float,
             n_workers: int = 1, chunk_size: int = 0,
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """On-disk Tanimoto similarity search."""
         raw = FPSim2Engine.on_disk_similarity(self, query_string, threshold, n_workers, chunk_size)
         return _build_result_df(raw, self._get_mapping, self._score_col('Tanimoto', threshold))
@@ -1097,7 +1102,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
     def tversky(
             self, query_string: str, threshold: float,
             a: float, b: float, n_workers: int = 1,
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """In-memory Tversky similarity search."""
         raw = FPSim2Engine.tversky(self, query_string, threshold, a, b, n_workers)
         return _build_result_df(raw, self._get_mapping, self._score_col('Tversky', threshold))
@@ -1106,7 +1111,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
             self, query_string: str, threshold: float,
             a: float, b: float,
             n_workers: int = 1, chunk_size: Optional[int] = None,
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """On-disk Tversky similarity search."""
         raw = FPSim2Engine.on_disk_tversky(self, query_string, threshold, a, b, n_workers, chunk_size)
         return _build_result_df(raw, self._get_mapping, self._score_col('Tversky', threshold))
@@ -1166,12 +1171,20 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
                 reduce_dims=False,
             )
 
-    def similarity(self, query_string: str, threshold: float) -> pd.DataFrame:
+    def similarity(self, query_string: str, threshold: float) -> pl.DataFrame:
         """GPU Tanimoto similarity search."""
         raw = FPSim2CudaEngine.similarity(self, query_string, threshold)
         return _build_result_df(
             raw, self._get_mapping,
             f'Tanimoto > {threshold} ({self.storage._current_fp})',
+        )
+
+    def tversky(self, query_string: str, threshold: float, a: float, b: float) -> pl.DataFrame:
+        """GPU Tversky similarity search."""
+        raw = FPSim2CudaEngine.tversky(self, query_string, threshold, a, b)
+        return _build_result_df(
+            raw, self._get_mapping,
+            f'Tversky > {threshold} ({self.storage._current_fp})',
         )
 
 
@@ -1203,7 +1216,7 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
             useQueryQueryMatches: bool = False,
             numThreads: int = -1,
             maxResults: int = -1,
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """Find all molecules matching *query* and return their Papyrus identifiers.
 
         :param query: a SMILES string or an RDKit :class:`~rdkit.Chem.Mol` query
@@ -1221,9 +1234,11 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
         )
         )
         if not ids:
-            return pd.DataFrame(columns=['idnumber', 'connectivity', 'InChIKey'])
+            return pl.DataFrame(schema={
+                'idnumber': pl.Int64, 'connectivity': pl.Utf8, 'InChIKey': pl.Utf8,
+            })
         return self._get_mapping(ids)
 
-    def substructure(self, query: Union[str, Chem.Mol]) -> pd.DataFrame:
+    def substructure(self, query: Union[str, Chem.Mol]) -> pl.DataFrame:
         """Alias for :meth:`GetMatches` with default parameters."""
         return self.GetMatches(query)

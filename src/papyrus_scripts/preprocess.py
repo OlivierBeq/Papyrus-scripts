@@ -6,18 +6,13 @@ from __future__ import annotations
 
 import os
 import re
-from contextlib import contextmanager
 from functools import wraps
 from itertools import chain
 from typing import Any, Callable, Generator, Iterator, List, Optional, Union
 
 import numpy as np
-import pandas as pd
-import swifter  # noqa: F401 — registers the .swifter accessor
-from joblib import Parallel, delayed
-from pandas.io.parsers import TextFileReader as PandasTextFileReader
-from scipy.stats import median_abs_deviation as MAD
-from sklearn.utils import shuffle
+import polars as pl
+from sklearn.utils import shuffle as sk_shuffle
 from tqdm.auto import tqdm
 
 from .fingerprint import Fingerprint, MorganFingerprint
@@ -27,35 +22,38 @@ from .subsim_search import FPSubSim2
 # Type aliases
 # ---------------------------------------------------------------------------
 
-#: Any of the three input forms accepted by every public filter.
-DataInput = Union[pd.DataFrame, PandasTextFileReader, Iterator]
+#: Any of the two input forms accepted by every public filter.
+DataInput = Union[pl.DataFrame, pl.LazyFrame]
 #: The corresponding output form.
-DataOutput = Union[pd.DataFrame, Generator[pd.DataFrame, None, None]]
+DataOutput = Union[pl.DataFrame, pl.LazyFrame]
 
 
 # ---------------------------------------------------------------------------
-# Chunk-dispatch decorator
+# Lazy-dispatch decorator
 # ---------------------------------------------------------------------------
 
-def _supports_chunks(fn: Callable) -> Callable:
-    """Transparently iterate *fn* over chunked input.
+def _supports_lazy(fn: Callable) -> Callable:
+    """Collect a :class:`~polars.LazyFrame` before passing it to *fn*.
 
-    When the first argument (*data*) is a :class:`~pandas.io.parsers.TextFileReader`
-    or any other :class:`~typing.Iterator`, the decorated function returns a
-    generator that applies the original function to each chunk.  For a plain
-    :class:`~pandas.DataFrame` the function is called directly.
+    When the first argument (*data*) is a :class:`~polars.LazyFrame` the
+    decorator collects it, calls the original function on the eager
+    :class:`~polars.DataFrame`, then re-lazifies the result so that callers
+    can keep chaining lazy operations.  For a plain
+    :class:`~polars.DataFrame` the function is called directly.
 
-    This eliminates all ``_chunked_*`` private wrappers and the repetitive
-    ``isinstance`` guard at the top of every public filter.
+    Simple filters that are expressed entirely as Polars expressions (e.g.
+    :func:`keep_quality`) do **not** need this decorator — their
+    :meth:`~polars.LazyFrame.filter` calls work on both types natively.
     """
 
     @wraps(fn)
     def wrapper(data: DataInput, *args, **kwargs) -> DataOutput:
-        if isinstance(data, (PandasTextFileReader, Iterator)):
-            return (fn(chunk, *args, **kwargs) for chunk in data)
-        if not isinstance(data, pd.DataFrame):
+        if isinstance(data, pl.LazyFrame):
+            result = fn(data.collect(), *args, **kwargs)
+            return result.lazy() if isinstance(result, pl.DataFrame) else result
+        if not isinstance(data, pl.DataFrame):
             raise TypeError(
-                f'data must be a pd.DataFrame, TextFileReader or Iterator, '
+                f'data must be a pl.DataFrame or pl.LazyFrame, '
                 f'got {type(data).__name__!r}.'
             )
         return fn(data, *args, **kwargs)
@@ -64,197 +62,113 @@ def _supports_chunks(fn: Callable) -> Callable:
 
 
 # ---------------------------------------------------------------------------
-# Papyrus++ column-injection context manager
+# Papyrus++ column-injection helper
 # ---------------------------------------------------------------------------
 
-@contextmanager
-def _papyruspp_columns(data: pd.DataFrame):
-    """Temporarily inject columns absent in the Papyrus++ subset.
+def _with_papyruspp_columns(data: pl.DataFrame) -> tuple[pl.DataFrame, List[str]]:
+    """Add ``Activity_class`` and ``type_other`` null columns when absent.
 
-    Papyrus++ lacks ``Activity_class`` and ``type_other``.  Many filters rely
-    on those columns to distinguish binary-class data from continuous data.
-    This context manager injects them as ``NaN`` columns when missing and
-    removes them on exit — even if an exception is raised — so callers never
-    have to clean up manually.
-
-    :param data: the DataFrame to patch in-place
+    Returns the (possibly augmented) DataFrame and the list of column names
+    that were added, so callers can drop them afterwards.
     """
     added: List[str] = []
     for col in ('Activity_class', 'type_other'):
         if col not in data.columns:
-            data[col] = np.nan
+            data = data.with_columns(pl.lit(None).cast(pl.Utf8).alias(col))
             added.append(col)
-    try:
-        yield data
-    finally:
-        if added:
-            data.drop(columns=added, inplace=True, errors='ignore')
+    return data, added
 
 
 # ---------------------------------------------------------------------------
-# Cell-size equalisation helpers  (unchanged logic, kept as-is)
+# Cell-size equalisation helpers
 # ---------------------------------------------------------------------------
 
-def equalize_cell_size_in_row(row, cols=None, fill_mode: str = 'internal', fill_value: object = ''):
+def equalize_cell_size_in_row(
+    row: List,
+    cols: Optional[List[int]] = None,
+    fill_mode: str = 'internal',
+    fill_value: object = '',
+) -> List:
     """Equalise the number of values in each list-containing cell of a row.
 
-    Slightly adapted from user *nphaibk*:
-    https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-multiple-list-columns-in-a-pandas-dataframe
+    Operates on a plain Python list (one element per column).
 
-    :param row: pandas Series (a DataFrame row) to equalise
-    :param cols: columns to equalise; defaults to all columns
+    :param row: list of cell values where list-typed entries are equalised
+    :param cols: column indices to equalise; defaults to all columns
     :param fill_mode: ``'internal'`` repeats the last value, ``'external'``
         repeats *fill_value*, ``'trim'`` truncates to the shortest list
     :param fill_value: value used when *fill_mode* is ``'external'``
     :raises ValueError: if *fill_mode* is not recognised
     """
-    if not cols:
-        cols = row.index
-    jcols = [j for j, v in enumerate(row.index) if v in cols]
-    if not jcols:
-        jcols = range(len(row.index))
-    lengths = [len(x) for x in row.values]
-    if lengths[:-1] == lengths[1:]:  # all equal → nothing to do
+    if cols is None:
+        jcols = list(range(len(row)))
+    else:
+        jcols = list(cols)
+
+    lengths = [len(x) if isinstance(x, list) else 1 for x in row]
+    if len(set(lengths)) == 1:
         return row
-    vals = [v if isinstance(v, list) else [v] for v in row.values]
+
+    vals = [v if isinstance(v, list) else [v] for v in row]
     max_len = max(lengths)
+    min_len = min(lengths)
+
     if fill_mode == 'external':
         vals = [
-            [e] + [fill_value] * (max_len - 1)
-            if (j not in jcols and isinstance(row.values[j], list))
-            else e + [fill_value] * (max_len - len(e))
+            e + [fill_value] * (max_len - len(e)) if j in jcols
+            else [e[0]] + [fill_value] * (max_len - 1)
             for j, e in enumerate(vals)
         ]
     elif fill_mode == 'internal':
         vals = [
-            [e] + [e] * (max_len - 1)
-            if (j not in jcols and isinstance(row.values[j], list))
-            else e + [e[-1]] * (max_len - len(e))
+            e + [e[-1]] * (max_len - len(e)) if j in jcols
+            else [e[0]] * max_len
             for j, e in enumerate(vals)
         ]
     elif fill_mode == 'trim':
-        min_len = min(lengths)
         vals = [e[:min_len] for e in vals]
     else:
         raise ValueError("fill_mode must be one of ['internal', 'external', 'trim']")
-    return pd.Series(vals, index=row.index.tolist())
+    return vals
 
 
-def equalize_cell_size_in_column(col: pd.Series, fill_mode: str = 'internal', fill_value: object = '') -> pd.Series:
+def equalize_cell_size_in_column(
+    col: Union[pl.Series, List],
+    fill_mode: str = 'internal',
+    fill_value: object = '',
+) -> pl.Series:
     """Equalise the number of values in each list-containing cell of a column.
 
-    Adapted from user *nphaibk*:
-    https://stackoverflow.com/questions/45846765/efficient-way-to-unnest-explode-multiple-list-columns-in-a-pandas-dataframe
-
-    :param col: pandas Series whose cells are lists
+    :param col: a :class:`~polars.Series` or list whose elements are lists
     :param fill_mode: ``'internal'`` repeats the last value, ``'external'``
         repeats *fill_value*, ``'trim'`` truncates to the shortest list
     :param fill_value: value used when *fill_mode* is ``'external'``
     :raises ValueError: if *fill_mode* is not recognised
     """
-    lengths = [len(x) for x in col.values]
-    if lengths[:-1] == lengths[1:]:
-        return col
-    vals = [v if isinstance(v, list) else [v] for v in col.values]
-    max_len, min_len = max(lengths), min(lengths)
+    values = col.to_list() if isinstance(col, pl.Series) else list(col)
+    lengths = [len(x) if isinstance(x, list) else 1 for x in values]
+
+    if len(set(lengths)) == 1:
+        return pl.Series(values) if isinstance(col, pl.Series) else values
+
+    vals = [v if isinstance(v, list) else [v] for v in values]
+    max_len = max(lengths)
+    min_len = min(lengths)
+
     if fill_mode == 'external':
-        vals = [e + [fill_value] * (max_len - len(e)) for e in vals]
+        result = [e + [fill_value] * (max_len - len(e)) for e in vals]
     elif fill_mode == 'internal':
-        vals = [e + [e[-1]] * (max_len - len(e)) for e in vals]
+        result = [e + [e[-1]] * (max_len - len(e)) for e in vals]
     elif fill_mode == 'trim':
-        vals = [e[:min_len] for e in vals]
+        result = [e[:min_len] for e in vals]
     else:
         raise ValueError("fill_mode must be one of ['internal', 'external', 'trim']")
-    return pd.Series(vals, index=col.index.tolist())
+
+    return pl.Series(result) if isinstance(col, pl.Series) else result
 
 
 # ---------------------------------------------------------------------------
 # Activity-aggregation helpers
-# ---------------------------------------------------------------------------
-
-def process_group(group: pd.DataFrame, additional_columns: Optional[List[str]] = None) -> pd.DataFrame:
-    """Aggregate duplicate activity records within one Activity-ID group.
-
-    :param group: a sub-DataFrame sharing the same ``Activity_ID``
-    :param additional_columns: extra columns to include in the aggregation
-    :returns: a single-row (or small) aggregated DataFrame with derived
-        ``pchembl_value_Mean``, ``_StdDev``, ``_SEM``, ``_N``, ``_Median``,
-        ``_MAD`` columns
-    """
-    if (group.values[0] == group.values).all():
-        group['pchembl_value_Mean'] = group['pchembl_value']
-        group['pchembl_value_StdDev'] = np.nan
-        group['pchembl_value_SEM'] = np.nan
-        group['pchembl_value_N'] = 1
-        group['pchembl_value_Median'] = group['pchembl_value']
-        group['pchembl_value_MAD'] = np.nan
-        return group.iloc[:1, :]
-
-    listvals = lambda x: ';'.join(set(str(y) for y in x)) if (x.values[0] == x.values).all() else ';'.join(
-        str(y) for y in x
-        )
-    listallvals = lambda x: ';'.join(str(y) for y in x)
-
-    mappings = {
-        'source': 'first', 'CID': listvals, 'AID': listvals,
-        'type_IC50': listvals, 'type_EC50': listvals, 'type_KD': listvals,
-        'type_Ki': listvals, 'type_other': listvals, 'relation': listvals,
-        'pchembl_value': listallvals,
-    }
-    if additional_columns:
-        for col in additional_columns:
-            mappings[col] = listvals
-
-    return pd.concat([
-        group.groupby('Activity_ID').aggregate(mappings).reset_index(),
-        group.groupby('Activity_ID')['pchembl_value'].aggregate(
-            pchembl_value_Mean='mean',
-            pchembl_value_StdDev='std',
-            pchembl_value_SEM='sem',
-            pchembl_value_N='count',
-            pchembl_value_Median='median',
-            pchembl_value_MAD=MAD,
-        ).reset_index(drop=True),
-    ], axis=1
-    )
-
-
-def process_groups(groups, additional_columns: Optional[List[str]] = None) -> pd.DataFrame:
-    """Aggregate data from multiple Activity-ID groups.
-
-    :param groups: iterable of group DataFrames (from a ``groupby`` result)
-    :param additional_columns: forwarded to :func:`process_group`
-    """
-    return pd.concat([process_group(g, additional_columns) for g in groups])
-
-
-# ---------------------------------------------------------------------------
-# Row-type helpers
-# ---------------------------------------------------------------------------
-
-def is_activity_type(row: pd.Series, activity_types: List[str]) -> bool:
-    """Return True when *row* matches one of the *activity_types* unambiguously.
-
-    :param row: a DataFrame row
-    :param activity_types: column names (e.g. ``'type_IC50'``) to check
-    """
-    return (
-            np.any([str(row[t]) == '1' for t in activity_types])
-            and np.all([';' not in str(row[t]) for t in activity_types])
-    )
-
-
-def is_multiple_types(row: pd.Series, activity_types: List[str]) -> bool:
-    """Return True when *row* has semicolon-separated values in any of *activity_types*.
-
-    :param row: a DataFrame row
-    :param activity_types: column names to inspect for multi-value entries
-    """
-    return np.any([';' in str(row[t]) for t in activity_types])
-
-
-# ---------------------------------------------------------------------------
-# Multi-source / multi-type splitting helper
 # ---------------------------------------------------------------------------
 
 _COLS_TO_SPLIT = [
@@ -263,74 +177,160 @@ _COLS_TO_SPLIT = [
     'relation', 'pchembl_value',
 ]
 
+_LISTVALS_COLS = [
+    'source', 'CID', 'AID',
+    'type_IC50', 'type_EC50', 'type_KD', 'type_Ki', 'type_other',
+    'relation',
+]
+
+
+def _listvals(vals: List) -> str:
+    """Return the single value when all equal, else ';'-join all."""
+    strs = [str(v) for v in vals]
+    return strs[0] if len(set(strs)) == 1 else ';'.join(strs)
+
+
+def process_groups(
+    data: pl.DataFrame,
+    additional_columns: Optional[List[str]] = None,
+) -> pl.DataFrame:
+    """Aggregate duplicate activity records, grouping by ``Activity_ID``.
+
+    :param data: DataFrame whose rows share ``Activity_ID`` values to aggregate
+    :param additional_columns: extra columns to include with ``listvals`` logic
+    :returns: aggregated DataFrame with ``pchembl_value_Mean``, ``_StdDev``,
+        ``_SEM``, ``_N``, ``_Median``, ``_MAD`` columns added
+    """
+    listvals_cols = _LISTVALS_COLS + (additional_columns or [])
+    has_pchembl   = 'pchembl_value' in data.columns
+    cols          = data.columns
+
+    rows: List[dict] = []
+    for (act_id,), grp in data.group_by(['Activity_ID'], maintain_order=True):
+        row: dict = {'Activity_ID': act_id}
+
+        for col in listvals_cols:
+            if col in cols:
+                row[col] = _listvals(grp[col].to_list())
+
+        if has_pchembl:
+            pv_strs = grp['pchembl_value'].cast(pl.Utf8).to_list()
+            row['pchembl_value'] = ';'.join(pv_strs)
+
+            pv_num = grp['pchembl_value'].cast(pl.Float64).drop_nulls()
+            n      = len(pv_num)
+            mean   = float(pv_num.mean())   if n > 0 else None
+            std    = float(pv_num.std())    if n > 1 else None
+            med    = float(pv_num.median()) if n > 0 else None
+            mad    = float((pv_num - med).abs().median()) if (n > 0 and med is not None) else None
+            row['pchembl_value_Mean']   = mean
+            row['pchembl_value_StdDev'] = std
+            row['pchembl_value_SEM']    = (std / n ** 0.5) if (std is not None and n > 0) else None
+            row['pchembl_value_N']      = n
+            row['pchembl_value_Median'] = med
+            row['pchembl_value_MAD']    = mad
+
+        rows.append(row)
+
+    return pl.DataFrame(rows) if rows else pl.DataFrame()
+
+
+# Keep the single-group entry point for backward compatibility.
+def process_group(
+    group: pl.DataFrame,
+    additional_columns: Optional[List[str]] = None,
+) -> pl.DataFrame:
+    """Aggregate a single Activity-ID group.
+
+    :param group: sub-DataFrame sharing the same ``Activity_ID``
+    :param additional_columns: extra columns to include in the aggregation
+    """
+    return process_groups(group, additional_columns)
+
+
+# ---------------------------------------------------------------------------
+# Row-type helpers  (kept for external callers; logic unchanged)
+# ---------------------------------------------------------------------------
+
+def is_activity_type(row: dict, activity_types: List[str]) -> bool:
+    """Return True when *row* matches one of the *activity_types* unambiguously.
+
+    :param row: a dict representing a DataFrame row
+    :param activity_types: column names (e.g. ``'type_IC50'``) to check
+    """
+    return (
+        any(str(row[t]) == '1' for t in activity_types)
+        and all(';' not in str(row[t]) for t in activity_types)
+    )
+
+
+def is_multiple_types(row: dict, activity_types: List[str]) -> bool:
+    """Return True when *row* has semicolon-separated values in any *activity_types*.
+
+    :param row: a dict representing a DataFrame row
+    :param activity_types: column names to inspect for multi-value entries
+    """
+    return any(';' in str(row[t]) for t in activity_types)
+
+
+# ---------------------------------------------------------------------------
+# Multi-source / multi-type splitting helper
+# ---------------------------------------------------------------------------
 
 def _unnest_and_filter(
-        df: pd.DataFrame,
-        keep_mask: pd.Series,
+        df: pl.DataFrame,
+        keep_mask: Callable[[pl.DataFrame], pl.Series],
         ordered_columns: List[str],
-        njobs: int,
-        verbose: bool,
         aggregate: bool = True,
-) -> pd.DataFrame:
+        additional_columns: Optional[List[str]] = None,
+) -> pl.DataFrame:
     """Split semicolon-joined columns, filter rows, and optionally re-aggregate.
 
-    This is the shared implementation used by :func:`keep_source` and
-    :func:`keep_type` when records carry multiple values in a single cell.
-
     :param df: records with semicolon-separated multi-values to process
-    :param keep_mask: boolean Series identifying rows to retain after unnesting
+    :param keep_mask: callable that takes a DataFrame and returns a bool Series
     :param ordered_columns: original column order to restore after merging
-    :param njobs: parallelism for the aggregation step
-    :param verbose: whether to show swifter progress bars
-    :param aggregate: when True, re-aggregate on ``Activity_ID`` after filtering;
-        set to False for binary-class records that should not be aggregated
-    :returns: filtered and optionally re-aggregated DataFrame
+    :param aggregate: re-aggregate on ``Activity_ID`` after filtering
+    :param additional_columns: forwarded to :func:`process_groups`
     """
-    included = df[[c for c in df.columns if c in _COLS_TO_SPLIT + ['Activity_ID']]]
-    excluded = df[[c for c in df.columns if c not in _COLS_TO_SPLIT and not c.startswith('pchembl_value_')]]
+    split_cols = [c for c in _COLS_TO_SPLIT if c in df.columns]
+    excl_cols  = [c for c in df.columns
+                  if c not in split_cols and not c.startswith('pchembl_value_')]
 
+    excluded = df.select(['Activity_ID'] + [c for c in excl_cols if c != 'Activity_ID'])
+
+    # Split each semicolon-delimited column into a list, then explode all at once.
     included = (
-        included.set_index('Activity_ID')
-        .astype(str)
-        .swifter.progress_bar(verbose).apply(lambda x: x.str.split(';'))
-        .swifter.progress_bar(verbose).apply(equalize_cell_size_in_row, axis=1)
-        .swifter.progress_bar(verbose).apply(pd.Series.explode)
-        .reset_index()
+        df.select(['Activity_ID'] + split_cols)
+        .with_columns([pl.col(c).cast(pl.Utf8).str.split(';') for c in split_cols])
+        .explode(split_cols)
     )
-    included = included[keep_mask(included)]
 
-    if not aggregate or included.empty:
-        return included.merge(excluded, how='inner', on='Activity_ID')[ordered_columns]
+    included = included.filter(keep_mask(included))
 
-    _, grouped = list(zip(*(
-        included.swifter.progress_bar(verbose)
-        .apply(pd.to_numeric, errors='ignore')
-        .groupby('Activity_ID')
-    )
-                          )
-                      )
-    filtered = pd.concat(
-        Parallel(n_jobs=njobs, backend='loky', verbose=int(verbose))(
-            delayed(process_groups)(grouped[i:i + 1000])
-            for i in range(0, len(grouped), 1000)
+    if not aggregate or included.is_empty():
+        return (
+            included
+            .join(excluded, on='Activity_ID', how='inner')
+            .select([c for c in ordered_columns if c in included.columns or c in excluded.columns])
         )
-    ).reset_index(drop=True)
 
-    return filtered.fillna(0).merge(excluded, how='inner', on='Activity_ID')[ordered_columns]
+    aggregated = process_groups(included, additional_columns)
+    result     = aggregated.join(excluded, on='Activity_ID', how='inner')
+    final_cols = [c for c in ordered_columns if c in result.columns]
+    return result.select(final_cols)
 
 
 # ---------------------------------------------------------------------------
 # Public filters
 # ---------------------------------------------------------------------------
 
-@_supports_chunks
 def keep_quality(
-        data: pd.DataFrame,
+        data: DataInput,
         min_quality: str = 'high',
-) -> pd.DataFrame:
+) -> DataOutput:
     """Keep only rows at or above the minimum required quality level.
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param min_quality: lowest quality to retain: ``'low'``, ``'medium'``,
         or ``'high'``
     :raises ValueError: if *min_quality* is not recognised
@@ -339,29 +339,25 @@ def keep_quality(
     if min_quality.lower() not in qualities:
         raise ValueError(f'min_quality must be one of {qualities}, got {min_quality!r}')
     threshold = qualities.index(min_quality.lower())
-    return data[data['Quality'].str.lower().isin(qualities[threshold:])]
+    return data.filter(pl.col('Quality').str.to_lowercase().is_in(qualities[threshold:]))
 
 
-@_supports_chunks
+@_supports_lazy
 def keep_source(
-        data: pd.DataFrame,
+        data: pl.DataFrame,
         source: Union[List[str], str] = 'all',
-        njobs: int = 1,
-        verbose: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Keep only rows from the specified data source(s).
 
     Aggregated statistics (mean, median, SEM …) are recomputed to reflect
     only the retained sources.
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame (or LazyFrame — collected automatically)
     :param source: source label(s) to retain; ``'all'`` or ``'any'`` keeps
         every source
-    :param njobs: number of parallel jobs for re-aggregation
-    :param verbose: show swifter progress bars
     """
-    sources_ = set(chain.from_iterable(s.split(';') for s in data['source'].unique()))
-    sources = set(map(str.lower, sources_))
+    sources_ = set(chain.from_iterable(s.split(';') for s in data['source'].to_list()))
+    sources  = {s.lower() for s in sources_}
 
     if isinstance(source, str):
         source = [source]
@@ -370,76 +366,74 @@ def keep_source(
     if 'any' in source or 'all' in source or set(source) >= sources:
         return data
 
-    pattern = '|'.join(f'^{re.escape(s)}$' for s in source)
+    pattern       = '|'.join(f'^{re.escape(s)}$' for s in source)
     source_adapted = [s for s in sources if re.search(pattern, s)]
 
     if not source_adapted:
-        return data[data['source'] == 'SOURCE UNAVAILABLE']
+        return data.filter(pl.lit(False))
 
-    ordered_columns = data.columns.tolist()
+    ordered_columns = data.columns
+    data, added     = _with_papyruspp_columns(data)
 
-    with _papyruspp_columns(data):
-        # Binary-class records with a single matching source — keep as-is.
-        preserved_binary = data[
-            data['Activity_class'].notna()
-            & data['source'].str.lower().isin(source_adapted)
-            ]
-        # Binary-class records with multiple sources — must be unnested first.
-        multi_binary = data[
-            data['Activity_class'].notna()
-            & data['source'].str.contains(';')
-            & data['source'].str.lower().str.contains('|'.join(map(re.escape, source_adapted)), case=False)
-            ]
-        # Continuous records.
-        data = data[data['Activity_class'].isna()]
+    # Binary-class records with a single matching source — keep as-is.
+    preserved_binary = data.filter(
+        pl.col('Activity_class').is_not_null()
+        & pl.col('source').str.to_lowercase().is_in(source_adapted)
+    )
+    # Binary-class records with multiple sources — must be unnested first.
+    multi_binary = data.filter(
+        pl.col('Activity_class').is_not_null()
+        & pl.col('source').str.contains(';')
+        & pl.col('source').str.to_lowercase().str.contains(
+            '|'.join(map(re.escape, source_adapted))
+        )
+    )
+    # Continuous records.
+    cont = data.filter(pl.col('Activity_class').is_null())
 
-    binary_data = pd.DataFrame()
-    if not multi_binary.empty:
+    binary_data = pl.DataFrame()
+    if not multi_binary.is_empty():
         binary_data = _unnest_and_filter(
-            multi_binary,
-            keep_mask=lambda df: df['source'].str.lower().isin(source_adapted),
-            ordered_columns=ordered_columns,
-            njobs=njobs, verbose=verbose, aggregate=False,
+            multi_binary.drop(added),
+            keep_mask=lambda df: df['source'].str.to_lowercase().is_in(source_adapted),
+            ordered_columns=[c for c in ordered_columns if c not in added],
+            aggregate=False,
         )
 
-    preserved = data[data['source'].str.lower().isin(source_adapted)]
-    multi_cont = data[
-        ~data['source'].str.lower().isin(source_adapted)
-        & data['source'].str.contains(';')
-        & data['source'].str.lower().str.contains('|'.join(map(re.escape, source_adapted)), case=False)
-        ]
-
-    filtered = pd.DataFrame()
-    if not multi_cont.empty:
-        filtered = _unnest_and_filter(
-            multi_cont,
-            keep_mask=lambda df: df['source'].str.lower().isin(source_adapted),
-            ordered_columns=ordered_columns,
-            njobs=njobs, verbose=verbose, aggregate=True,
+    preserved = cont.filter(pl.col('source').str.to_lowercase().is_in(source_adapted))
+    multi_cont = cont.filter(
+        ~pl.col('source').str.to_lowercase().is_in(source_adapted)
+        & pl.col('source').str.contains(';')
+        & pl.col('source').str.to_lowercase().str.contains(
+            '|'.join(map(re.escape, source_adapted))
         )
-
-    return pd.concat(
-        [preserved, filtered, preserved_binary, binary_data],
-        ignore_index=True,
     )
 
+    filtered = pl.DataFrame()
+    if not multi_cont.is_empty():
+        filtered = _unnest_and_filter(
+            multi_cont.drop(added),
+            keep_mask=lambda df: df['source'].str.to_lowercase().is_in(source_adapted),
+            ordered_columns=[c for c in ordered_columns if c not in added],
+            aggregate=True,
+        )
 
-@_supports_chunks
+    parts = [df for df in (preserved.drop(added), filtered, preserved_binary.drop(added), binary_data) if not df.is_empty()]
+    return pl.concat(parts, how='diagonal') if parts else pl.DataFrame(schema={c: data.schema[c] for c in ordered_columns if c in data.schema})
+
+
+@_supports_lazy
 def keep_type(
-        data: pd.DataFrame,
+        data: pl.DataFrame,
         activity_types: Union[List[str], str] = 'ic50',
-        njobs: int = 1,
-        verbose: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Keep only rows matching the desired activity type(s).
 
     Aggregated statistics are recomputed to reflect only the retained types.
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame (or LazyFrame — collected automatically)
     :param activity_types: type(s) to retain: ``'IC50'``, ``'EC50'``,
         ``'KD'``, ``'Ki'``, ``'other'``, ``'all'``, or ``'any'``
-    :param njobs: number of parallel jobs for re-aggregation
-    :param verbose: show swifter progress bars
     :raises ValueError: if any supplied type is not recognised
     """
     canonical = ['IC50', 'EC50', 'KD', 'Ki', 'other']
@@ -456,74 +450,85 @@ def keep_type(
     if unknown:
         raise ValueError(f'Unrecognised activity type(s): {unknown}. Must be one of {canonical}')
 
-    type_cols = [f'type_{lower_map[t]}' for t in activity_types]
-    ordered_columns = data.columns.tolist()
+    type_cols       = [f'type_{lower_map[t]}' for t in activity_types]
+    ordered_columns = data.columns
+    data, added     = _with_papyruspp_columns(data)
 
-    with _papyruspp_columns(data):
-        preserved_binary = data[
-            data['Activity_class'].notna()
-            & data.apply(is_activity_type, activity_types=type_cols, axis=1)
-            ]
-        multi_binary = data[
-            data['Activity_class'].notna()
-            & data.apply(is_multiple_types, activity_types=type_cols, axis=1)
-            ]
-        data = data[data['Activity_class'].isna()]
+    def _is_activity_type(df: pl.DataFrame) -> pl.Series:
+        has_one  = pl.Series([False] * len(df))
+        no_multi = pl.Series([True]  * len(df))
+        for col in type_cols:
+            if col in df.columns:
+                has_one  = has_one  | (df[col].cast(pl.Utf8) == '1')
+                no_multi = no_multi & ~df[col].cast(pl.Utf8).str.contains(';')
+        return has_one & no_multi
 
-    binary_data = pd.DataFrame()
-    if not multi_binary.empty:
+    def _is_multiple_types(df: pl.DataFrame) -> pl.Series:
+        result = pl.Series([False] * len(df))
+        for col in type_cols:
+            if col in df.columns:
+                result = result | df[col].cast(pl.Utf8).str.contains(';')
+        return result
+
+    activity_notnull = data['Activity_class'].is_not_null()
+    activity_isnull  = data['Activity_class'].is_null()
+
+    preserved_binary = data.filter(activity_notnull & _is_activity_type(data))
+    multi_binary     = data.filter(activity_notnull & _is_multiple_types(data))
+    cont             = data.filter(activity_isnull)
+
+    binary_data = pl.DataFrame()
+    if not multi_binary.is_empty():
+        mb = multi_binary.drop(added)
         binary_data = _unnest_and_filter(
-            multi_binary,
-            keep_mask=lambda df: df.apply(is_activity_type, activity_types=type_cols, axis=1),
-            ordered_columns=ordered_columns,
-            njobs=njobs, verbose=verbose, aggregate=False,
+            mb,
+            keep_mask=_is_activity_type,
+            ordered_columns=[c for c in ordered_columns if c not in added],
+            aggregate=False,
         )
 
-    preserved = data[data.apply(is_activity_type, activity_types=type_cols, axis=1)]
-    multi_cont = data[data.apply(is_multiple_types, activity_types=type_cols, axis=1)]
+    preserved  = cont.filter(_is_activity_type(cont))
+    multi_cont = cont.filter(_is_multiple_types(cont))
 
-    filtered = pd.DataFrame()
-    if not multi_cont.empty:
+    filtered = pl.DataFrame()
+    if not multi_cont.is_empty():
         filtered = _unnest_and_filter(
-            multi_cont,
-            keep_mask=lambda df: df.apply(is_activity_type, activity_types=type_cols, axis=1),
-            ordered_columns=ordered_columns,
-            njobs=njobs, verbose=verbose, aggregate=True,
+            multi_cont.drop(added),
+            keep_mask=_is_activity_type,
+            ordered_columns=[c for c in ordered_columns if c not in added],
+            aggregate=True,
         )
 
-    return pd.concat(
-        [preserved, filtered, preserved_binary, binary_data],
-        ignore_index=True,
-    )
+    parts = [df for df in (preserved.drop(added), filtered, preserved_binary.drop(added), binary_data) if not df.is_empty()]
+    return pl.concat(parts, how='diagonal') if parts else pl.DataFrame(schema={c: data.schema[c] for c in ordered_columns if c in data.schema})
 
 
-@_supports_chunks
 def keep_accession(
-        data: pd.DataFrame,
+        data: DataInput,
         accession: Union[List[str], str] = 'all',
-) -> pd.DataFrame:
+) -> DataOutput:
     """Keep only rows whose target ID matches the given UniProt accession(s).
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param accession: accession code(s) to retain, e.g. ``'P30542'``.
         Mutation suffixes are supported (e.g. ``'P30542_V52A'``).
     """
     if isinstance(accession, str):
         accession = [accession]
     pattern = '|'.join(re.escape(a) for a in accession)
-    return data[data['target_id'].str.lower().str.contains(pattern.lower(), regex=True)]
+    return data.filter(pl.col('target_id').str.to_lowercase().str.contains(pattern.lower()))
 
 
-@_supports_chunks
+@_supports_lazy
 def keep_protein_class(
-        data: pd.DataFrame,
-        protein_data: pd.DataFrame,
+        data: pl.DataFrame,
+        protein_data: pl.DataFrame,
         classes: Optional[Union[dict, List[dict]]] = None,
         generic_regex: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Keep only rows whose target belongs to the desired protein class(es).
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame (or LazyFrame — collected automatically)
     :param protein_data: Papyrus protein-target DataFrame
     :param classes: protein class filter(s).
 
@@ -547,96 +552,90 @@ def keep_protein_class(
         classes = [classes]
 
     allowed_keys = {'l?', 'l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7', 'l8'}
-    all_keys = {k for d in classes for k in d}
-    bad_keys = all_keys - allowed_keys
+    all_keys     = {k for d in classes for k in d}
+    bad_keys     = all_keys - allowed_keys
     if bad_keys:
         raise ValueError(f'Unrecognised level key(s): {bad_keys}. Allowed: {sorted(allowed_keys)}')
-
-    lvl_dependent = any('l?' not in d for d in classes)
-    lvl_independent = any('l?' in d for d in classes)
 
     for d in classes:
         if 'l?' in d and len(d) > 1:
             raise ValueError("A dict with 'l?' must contain only that one key.")
 
-    # ------------------------------------------------------------------
-    # Build a (targets × classification-levels) DataFrame.
-    # ------------------------------------------------------------------
-    split_classes = protein_data['Classification'].str.split(';')
-    split_classes = equalize_cell_size_in_column(split_classes, 'external', '')
-    split_classes = pd.DataFrame(split_classes.tolist())
-    multiplicity = len(split_classes.columns)
+    lvl_dependent   = any('l?' not in d for d in classes)
+    lvl_independent = any('l?' in d for d in classes)
 
+    # Build a (targets × classification-levels) DataFrame from the protein table.
+    classifications = equalize_cell_size_in_column(
+        protein_data['Classification'].str.split(';').to_list(), 'external', ''
+    )
+    if isinstance(classifications, pl.Series):
+        classifications = classifications.to_list()
+
+    multiplicity = max(len(c) for c in classifications) if classifications else 0
+    # Pad shorter entries
+    classifications = [c + [''] * (multiplicity - len(c)) for c in classifications]
+
+    # For each slot, split by '->' into up to 8 levels
+    level_frames = []
     for j in range(multiplicity):
-        split_classes.iloc[:, j] = split_classes.iloc[:, j].str.split('->')
-        split_classes.iloc[:, j] = equalize_cell_size_in_column(
-            split_classes.iloc[:, j], 'external', ''
-        )
-        while len(split_classes.iloc[0, j]) < 8:
-            split_classes.iloc[0, j].append('')
-        split_classes.iloc[:, j] = equalize_cell_size_in_column(split_classes.iloc[:, j])
+        slot = [row[j] for row in classifications]
+        levels = [s.split('->') for s in slot]
+        levels = [lvl + [''] * (8 - len(lvl)) for lvl in levels]
+        cols   = {f'l{lvl + 1}_{j + 1}': [row[lvl].lower() for row in levels] for lvl in range(8)}
+        level_frames.append(pl.DataFrame(cols))
 
-    split_classes = pd.concat(
-        [
-            pd.DataFrame(
-                split_classes.iloc[:, j].tolist(),
-                columns=[f'l{lvl + 1}_{j + 1}' for lvl in range(8)],
-            )
-            for j in range(multiplicity)
-        ],
-        axis=1,
-    ).apply(lambda s: s.str.lower())
+    if not level_frames:
+        return data.filter(pl.lit(False))
 
-    # ------------------------------------------------------------------
-    # Filter — replace eval() with explicit boolean mask construction.
-    # ------------------------------------------------------------------
-    mask = pd.Series(False, index=split_classes.index)
+    split_classes = pl.concat(level_frames, how='horizontal')
+
+    # Build the boolean mask over protein rows.
+    mask = pl.Series([False] * len(split_classes))
 
     if lvl_dependent:
         for d in (d for d in classes if 'l?' not in d):
-            # Each key/value pair must match across all classification slots.
-            sub_mask = pd.Series(True, index=split_classes.index)
+            sub_mask = pl.Series([True] * len(split_classes))
             for lvl_key, lvl_val in d.items():
-                # Any of the multiplicity columns at this level suffices.
                 level_cols = [f'{lvl_key}_{j + 1}' for j in range(multiplicity)]
                 level_cols = [c for c in level_cols if c in split_classes.columns]
-                col_mask = pd.Series(False, index=split_classes.index)
+                col_mask   = pl.Series([False] * len(split_classes))
                 for col in level_cols:
-                    col_mask |= split_classes[col] == lvl_val.lower()
-                sub_mask &= col_mask
-            mask |= sub_mask
+                    col_mask = col_mask | (split_classes[col] == lvl_val.lower())
+                sub_mask = sub_mask & col_mask
+            mask = mask | sub_mask
 
     if lvl_independent:
         for d in (d for d in classes if 'l?' in d):
-            pattern = next(iter(d.values()))
-            sub_mask = pd.Series(False, index=split_classes.index)
+            pattern  = next(iter(d.values()))
+            sub_mask = pl.Series([False] * len(split_classes))
             for col in split_classes.columns:
                 if generic_regex:
-                    sub_mask |= split_classes[col].str.contains(
-                        pattern.lower(), regex=True, na=False
-                    )
+                    sub_mask = sub_mask | split_classes[col].str.contains(pattern.lower())
                 else:
-                    sub_mask |= split_classes[col].str.lower() == pattern.lower()
-            mask |= sub_mask
+                    sub_mask = sub_mask | (split_classes[col] == pattern.lower())
+            mask = mask | sub_mask
 
-    indices = split_classes[mask].index.tolist()
-    targets = protein_data.loc[indices, 'target_id']
-    return data[data['target_id'].isin(targets)].merge(
-        protein_data.loc[indices, ['target_id', 'Classification']],
-        on='target_id',
-    )
+    matched_indices = [i for i, m in enumerate(mask.to_list()) if m]
+    targets         = protein_data['target_id'].gather(matched_indices)
+    classification_col = protein_data['Classification'].gather(matched_indices)
+
+    target_df = pl.DataFrame({
+        'target_id':      targets,
+        'Classification': classification_col,
+    })
+    return data.filter(pl.col('target_id').is_in(targets)).join(target_df, on='target_id')
 
 
-@_supports_chunks
+@_supports_lazy
 def keep_organism(
-        data: pd.DataFrame,
-        protein_data: pd.DataFrame,
+        data: pl.DataFrame,
+        protein_data: pl.DataFrame,
         organism: Optional[Union[str, List[str]]] = 'Homo sapiens (Human)',
         generic_regex: bool = False,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Keep only rows whose target comes from the specified organism(s).
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame (or LazyFrame — collected automatically)
     :param protein_data: Papyrus protein-target DataFrame
     :param organism: organism name(s) to retain (case-insensitive).
         ``None`` returns *data* unfiltered.
@@ -648,92 +647,100 @@ def keep_organism(
     if isinstance(organism, str):
         organism = [organism]
 
-    org_col = protein_data['Organism'].str.lower()
+    org_col = protein_data['Organism'].str.to_lowercase()
     if generic_regex:
-        mask = pd.Series(False, index=protein_data.index)
+        mask = pl.Series([False] * len(protein_data))
         for org in organism:
-            mask |= org_col.str.contains(org.lower(), regex=True, na=False)
+            mask = mask | org_col.str.contains(org.lower())
     else:
-        mask = org_col.isin(o.lower() for o in organism)
+        mask = org_col.is_in([o.lower() for o in organism])
 
-    indices = protein_data[mask].index.tolist()
-    targets = protein_data.loc[indices, 'target_id']
-    return data[data['target_id'].isin(targets)].merge(
-        protein_data.loc[indices, ['target_id', 'Organism']],
-        on='target_id',
-    )
+    matched_indices = [i for i, m in enumerate(mask.to_list()) if m]
+    targets         = protein_data['Organism'].gather(matched_indices)
+
+    organism_df = pl.DataFrame({
+        'target_id': protein_data['target_id'].gather(matched_indices),
+        'Organism':  targets,
+    })
+    return data.filter(
+        pl.col('target_id').is_in(organism_df['target_id'])
+    ).join(organism_df, on='target_id')
 
 
-@_supports_chunks
 def keep_match(
-        data: pd.DataFrame,
+        data: DataInput,
         column: str,
         values: Union[Any, List[Any]],
-) -> pd.DataFrame:
-    """Keep only rows where *column* is in *values* (equivalent to ``isin``).
+) -> DataOutput:
+    """Keep only rows where *column* is in *values* (equivalent to ``is_in``).
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param column: column name to filter on
     :param values: value(s) to retain
     """
     if not isinstance(values, list):
         values = [values]
-    return data[data[column].isin(values)]
+    return data.filter(pl.col(column).is_in(values))
 
 
-@_supports_chunks
 def keep_not_match(
-        data: pd.DataFrame,
+        data: DataInput,
         column: str,
         values: Union[Any, List[Any]],
-) -> pd.DataFrame:
-    """Keep only rows where *column* is **not** in *values* (equivalent to ``~isin``).
+) -> DataOutput:
+    """Keep only rows where *column* is **not** in *values*.
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param column: column name to filter on
     :param values: value(s) to exclude
     """
     if not isinstance(values, list):
         values = [values]
-    return data[~data[column].isin(values)]
+    return data.filter(~pl.col(column).is_in(values))
 
 
-@_supports_chunks
 def keep_contains(
-        data: pd.DataFrame,
+        data: DataInput,
         column: str,
         value: str,
         case: bool = True,
         regex: bool = False,
-) -> pd.DataFrame:
+) -> DataOutput:
     """Keep only rows where *column* contains *value*.
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param column: column name to search in
     :param value: substring or pattern to match
     :param case: whether the match is case-sensitive
     :param regex: whether *value* is a regular expression
     """
-    return data[data[column].str.contains(value, case=case, regex=regex)]
+    expr = pl.col(column)
+    if not case:
+        expr  = expr.str.to_lowercase()
+        value = value.lower()
+    return data.filter(expr.str.contains(value, literal=not regex))
 
 
-@_supports_chunks
 def keep_not_contains(
-        data: pd.DataFrame,
+        data: DataInput,
         column: str,
         value: str,
         case: bool = True,
         regex: bool = False,
-) -> pd.DataFrame:
+) -> DataOutput:
     """Keep only rows where *column* does **not** contain *value*.
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param column: column name to search in
     :param value: substring or pattern to exclude
     :param case: whether the match is case-sensitive
     :param regex: whether *value* is a regular expression
     """
-    return data[~data[column].str.contains(value, case=case, regex=regex)]
+    expr = pl.col(column)
+    if not case:
+        expr  = expr.str.to_lowercase()
+        value = value.lower()
+    return data.filter(~expr.str.contains(value, literal=not regex))
 
 
 # ---------------------------------------------------------------------------
@@ -766,7 +773,7 @@ def _collect_similar_molecules(
         fingerprint: Fingerprint,
         threshold: float,
         cuda: bool,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Run similarity search for every query SMILES and return merged results.
 
     :param fpss2: loaded :class:`~subsim_search.FPSubSim2` instance
@@ -781,23 +788,21 @@ def _collect_similar_molecules(
         engine.similarity(smi, threshold=threshold)
         for smi in tqdm(molecule_smiles)
     ]
-    result = pd.concat(frames, axis=0, ignore_index=True)
-    # Return only the identifier and score columns (last two) by name.
-    return result[['InChIKey', result.columns[-1]]]
+    result = pl.concat(frames, how='diagonal')
+    return result.select(['InChIKey', result.columns[-1]])
 
 
-@_supports_chunks
 def keep_similar(
-        data: pd.DataFrame,
+        data: DataInput,
         molecule_smiles: Union[str, List[str]],
         fpsubsim2_file: str,
         fingerprint: Fingerprint = MorganFingerprint(),
         threshold: float = 0.7,
         cuda: bool = False,
-) -> pd.DataFrame:
+) -> DataOutput:
     """Keep only rows associated to molecules similar to the query.
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param molecule_smiles: query SMILES string(s)
     :param fpsubsim2_file: path to the FPSubSim2 ``.h5`` database
     :param fingerprint: fingerprint to use for similarity search
@@ -806,23 +811,26 @@ def keep_similar(
     """
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
-    fpss2 = _load_fpsubsim2(fpsubsim2_file, fingerprint)
+    fpss2        = _load_fpsubsim2(fpsubsim2_file, fingerprint)
     similar_mols = _collect_similar_molecules(fpss2, molecule_smiles, fingerprint, threshold, cuda)
-    return data[data['InChIKey'].isin(similar_mols['InChIKey'])].merge(similar_mols, on='InChIKey')
+    score_col    = similar_mols.columns[-1]
+    return (
+        data.filter(pl.col('InChIKey').is_in(similar_mols['InChIKey']))
+        .join(similar_mols.select(['InChIKey', score_col]), on='InChIKey')
+    )
 
 
-@_supports_chunks
 def keep_dissimilar(
-        data: pd.DataFrame,
+        data: DataInput,
         molecule_smiles: Union[str, List[str]],
         fpsubsim2_file: str,
         fingerprint: Fingerprint = MorganFingerprint(),
         threshold: float = 0.7,
         cuda: bool = False,
-) -> pd.DataFrame:
+) -> DataOutput:
     """Keep only rows associated to molecules **not** similar to the query.
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param molecule_smiles: query SMILES string(s)
     :param fpsubsim2_file: path to the FPSubSim2 ``.h5`` database
     :param fingerprint: fingerprint to use for similarity search
@@ -831,96 +839,93 @@ def keep_dissimilar(
     """
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
-    fpss2 = _load_fpsubsim2(fpsubsim2_file, fingerprint)
+    fpss2        = _load_fpsubsim2(fpsubsim2_file, fingerprint)
     similar_mols = _collect_similar_molecules(fpss2, molecule_smiles, fingerprint, threshold, cuda)
-    return data[~data['InChIKey'].isin(similar_mols['InChIKey'])]
+    return data.filter(~pl.col('InChIKey').is_in(similar_mols['InChIKey']))
 
 
 def _collect_substructure_molecules(
         fpss2: FPSubSim2,
         molecule_smiles: List[str],
-) -> pd.DataFrame:
-    """Run substructure search for every query SMILES and return merged results.
-
-    :param fpss2: loaded :class:`~subsim_search.FPSubSim2` instance
-    :param molecule_smiles: list of SMILES query strings
-    :returns: DataFrame with ``InChIKey`` column
-    """
+) -> pl.DataFrame:
+    """Run substructure search for every query SMILES and return merged results."""
     engine = fpss2.get_substructure_lib()
     frames = [engine.substructure(smi) for smi in tqdm(molecule_smiles)]
-    return pd.concat(frames, axis=0, ignore_index=True)
+    return pl.concat(frames, how='diagonal')
 
 
-@_supports_chunks
 def keep_substructure(
-        data: pd.DataFrame,
+        data: DataInput,
         molecule_smiles: Union[str, List[str]],
         fpsubsim2_file: str,
-) -> pd.DataFrame:
+) -> DataOutput:
     """Keep only rows associated to substructures of the query molecule(s).
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param molecule_smiles: query SMILES string(s)
     :param fpsubsim2_file: path to the FPSubSim2 ``.h5`` database
     """
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
-    fpss2 = _load_fpsubsim2(fpsubsim2_file, fingerprint=None)
+    fpss2             = _load_fpsubsim2(fpsubsim2_file, fingerprint=None)
     substructure_mols = _collect_substructure_molecules(fpss2, molecule_smiles)
-    return data[data['InChIKey'].isin(substructure_mols['InChIKey'])]
+    return data.filter(pl.col('InChIKey').is_in(substructure_mols['InChIKey']))
 
 
-@_supports_chunks
 def keep_not_substructure(
-        data: pd.DataFrame,
+        data: DataInput,
         molecule_smiles: Union[str, List[str]],
         fpsubsim2_file: str,
-) -> pd.DataFrame:
+) -> DataOutput:
     """Keep only rows associated to molecules that are **not** substructures of the query.
 
-    :param data: bioactivity DataFrame (chunked or not)
+    :param data: bioactivity DataFrame or LazyFrame
     :param molecule_smiles: query SMILES string(s)
     :param fpsubsim2_file: path to the FPSubSim2 ``.h5`` database
     """
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
-    fpss2 = _load_fpsubsim2(fpsubsim2_file, fingerprint=None)
+    fpss2             = _load_fpsubsim2(fpsubsim2_file, fingerprint=None)
     substructure_mols = _collect_substructure_molecules(fpss2, molecule_smiles)
-    return data[~data['InChIKey'].isin(substructure_mols['InChIKey'])]
+    return data.filter(~pl.col('InChIKey').is_in(substructure_mols['InChIKey']))
 
 
 # ---------------------------------------------------------------------------
-# Chunk consumption
+# Materialisation
 # ---------------------------------------------------------------------------
 
 def consume_chunks(
-        generator: Union[PandasTextFileReader, Iterator],
+        generator: Union[pl.LazyFrame, Iterator],
         progress: bool = True,
         total: Optional[int] = None,
-) -> pd.DataFrame:
-    """Materialise a lazy chain of filters into a single :class:`~pandas.DataFrame`.
+) -> pl.DataFrame:
+    """Materialise a lazy frame or a generator of DataFrames into one DataFrame.
 
-    :param generator: iterator produced by one or more chained filter functions
-    :param progress: show a tqdm progress bar
+    * :class:`~polars.LazyFrame` → collected in one call via ``.collect()``.
+    * Generator of :class:`~polars.DataFrame` chunks → concatenated.
+
+    :param generator: lazy frame or iterator produced by one or more chained
+        filter functions
+    :param progress: show a tqdm progress bar (only for generators)
     :param total: total number of chunks (for the progress bar)
     :returns: concatenated DataFrame, or an empty DataFrame when the generator
         yields nothing
-
-    .. note::
-        Nested generators (filters applied to already-chunked filters) are
-        handled recursively.
     """
-    frames: List[pd.DataFrame] = []
+    if isinstance(generator, pl.LazyFrame):
+        return generator.collect()
+
+    frames: List[pl.DataFrame] = []
     iterable = tqdm(generator, total=total) if progress else generator
     for item in iterable:
-        if isinstance(item, pd.DataFrame):
+        if isinstance(item, pl.DataFrame):
             frames.append(item)
+        elif isinstance(item, pl.LazyFrame):
+            frames.append(item.collect())
         else:
-            # Nested generator — recurse without an extra progress bar.
             inner = consume_chunks(item, progress=False)
-            if not inner.empty:
+            if not inner.is_empty():
                 frames.append(inner)
-    return pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
+    return pl.concat(frames, how='diagonal') if frames else pl.DataFrame()
 
 
 # ---------------------------------------------------------------------------
@@ -928,13 +933,13 @@ def consume_chunks(
 # ---------------------------------------------------------------------------
 
 def yscrambling(
-        data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
+        data: DataInput,
         y_var: Union[str, List[str]] = 'pchembl_value_Mean',
         random_state: int = 1234,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Randomly permute the target variable(s) for y-scrambling experiments.
 
-    :param data: bioactivity DataFrame
+    :param data: bioactivity DataFrame or LazyFrame (collected if lazy)
     :param y_var: column name(s) to shuffle
     :param random_state: random seed for reproducibility
     :raises ValueError: if *y_var* is not a ``str`` or ``list``
@@ -943,6 +948,9 @@ def yscrambling(
         raise ValueError('y_var must be a str or a list of str.')
     if not isinstance(y_var, list):
         y_var = [y_var]
+    if isinstance(data, pl.LazyFrame):
+        data = data.collect()
     for var in y_var:
-        data[var] = shuffle(data[var], random_state=random_state)
+        shuffled = pl.Series(sk_shuffle(data[var].to_numpy(), random_state=random_state))
+        data = data.with_columns(shuffled.alias(var))
     return data
