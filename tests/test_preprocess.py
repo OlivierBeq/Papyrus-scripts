@@ -378,6 +378,15 @@ class TestConsumeChunks(unittest.TestCase):
         result = pp.consume_chunks(lf, progress=False)
         self.assertEqual(result['a'].to_list(), [1, 2, 3])
 
+    def test_consume_dataframe_returned_as_is(self):
+        # Regression test: consume_chunks used to have no early-return for an
+        # already-materialised DataFrame (only for LazyFrame), so it fell
+        # into the chunk-iteration loop, iterated over the DataFrame's own
+        # columns/values, and recursed until RecursionError.
+        df = pl.DataFrame({'a': [1, 2, 3]})
+        result = pp.consume_chunks(df, progress=False)
+        self.assertTrue(result.equals(df))
+
 
 class TestYScrambling(unittest.TestCase):
 

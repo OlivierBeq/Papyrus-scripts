@@ -908,22 +908,25 @@ def keep_not_substructure(
 # ---------------------------------------------------------------------------
 
 def consume_chunks(
-        generator: pl.LazyFrame | Iterator,
+        generator: pl.DataFrame | pl.LazyFrame | Iterator,
         progress: bool = True,
         total: int | None = None,
 ) -> pl.DataFrame:
     """Materialise a lazy frame or a generator of DataFrames into one DataFrame.
 
+    * :class:`~polars.DataFrame` → returned as-is (already materialised).
     * :class:`~polars.LazyFrame` → collected in one call via ``.collect()``.
     * Generator of :class:`~polars.DataFrame` chunks → concatenated.
 
-    :param generator: lazy frame or iterator produced by one or more chained
-        filter functions
+    :param generator: DataFrame, lazy frame, or iterator produced by one or
+        more chained filter functions
     :param progress: show a tqdm progress bar (only for generators)
     :param total: total number of chunks (for the progress bar)
     :returns: concatenated DataFrame, or an empty DataFrame when the generator
         yields nothing
     """
+    if isinstance(generator, pl.DataFrame):
+        return generator
     if isinstance(generator, pl.LazyFrame):
         return generator.collect()
 
