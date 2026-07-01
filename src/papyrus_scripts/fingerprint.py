@@ -217,7 +217,15 @@ def get_fp_from_name(fp_name, **kwargs):
     :param kwargs: parameters specific to the desired fingerprint
     :return: fingerprint instance
     """
-    fps = {fp().name: fp for fp in Fingerprint.derived()}
+    fps = {}
+    for fp_cls in Fingerprint.derived():
+        try:
+            fps[fp_cls().name] = fp_cls
+        except ImportError:
+            # Skip fingerprints whose optional dependencies (openbabel, FPSim2)
+            # are not installed instead of letting them break the lookup of
+            # every other, unrelated fingerprint type.
+            continue
     if fp_name not in fps.keys():
         raise ValueError(r'Fingerprint {fp_name} not available')
     return fps[fp_name](**kwargs)

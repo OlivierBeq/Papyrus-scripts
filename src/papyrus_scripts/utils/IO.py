@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import builtins
 import glob
 import hashlib
 import importlib
@@ -83,7 +84,10 @@ class TypeDecoder(json.JSONDecoder):
         module = obj['__type__']['module']
         type_ = obj['__type__']['type']
         if module == 'builtins':
-            return getattr(__builtins__, type_)
+            # NB: the bare `__builtins__` global is a dict (not the `builtins`
+            # module) in every module except __main__, so it must not be used
+            # here - it would raise AttributeError for any builtin type.
+            return getattr(builtins, type_)
         loaded_module = importlib.import_module(module)
         return getattr(loaded_module, type_)
 

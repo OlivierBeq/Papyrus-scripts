@@ -163,8 +163,12 @@ def keep_source(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], sourc
     if 'any' in source or 'all' in source or len(set(source).intersection(sources)) == len(sources):
         return data
     # Source not defined
-    elif set(source_adatped).difference(sources):
+    elif not source_adatped:
         # Supplied source not in data sources
+        # source_adatped is built by filtering `sources` (see above), so it is always
+        # a subset of `sources`: checking for elements not in `sources` is a no-op that
+        # would never catch an unmatched source. Checking for emptiness is what actually
+        # detects "supplied source not found in the data".
         return data[data.source == 'SOURCE UNAVAILABLE']  # Ensures an empty dataframe with colnames is returned
     # Sources are defined
     else:
@@ -573,7 +577,7 @@ def consume_chunks(generator: Union[PandasTextFileReader, Iterator], progress: b
     for item in pbar:
         if not isinstance(item, pd.DataFrame):
             consumed = _consume_deeper_chunks(item)
-            data.extend(consumed)
+            data.append(consumed)
         else:
             data.append(item)
     if not len(data):
@@ -592,7 +596,7 @@ def _consume_deeper_chunks(generator: Union[PandasTextFileReader, Iterator]):
     for item in generator:
         if not isinstance(item, pd.DataFrame):
             consumed = consume_chunks(item)
-            data.extend(consumed)
+            data.append(consumed)
         else:
             data.append(item)
     if not len(data):
@@ -930,5 +934,8 @@ def yscrambling(data: Union[pd.DataFrame, PandasTextFileReader, Iterator], y_var
     if not isinstance(y_var, list):
         y_var = [y_var]
     for var in y_var:
-        data[var] = shuffle(data[var], random_state=random_state)
+        # .values is required: shuffle() preserves index labels, so assigning
+        # the shuffled Series directly back would realign on those labels
+        # and silently undo the shuffle.
+        data[var] = shuffle(data[var].values, random_state=random_state)
     return data

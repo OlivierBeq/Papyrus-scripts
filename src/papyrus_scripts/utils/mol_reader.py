@@ -4,6 +4,7 @@ import io
 import lzma
 import re
 import warnings
+from functools import partial
 from typing import Iterable, Optional, Tuple, Callable, Union
 
 from rdkit import Chem
@@ -117,7 +118,7 @@ class ForwardSmilesMolSupplier:
                 else:
                     if len(self._buffer):
                         RDLogger.DisableLog('rdApp.*')  # Disable logger if no name column
-                        mol = next(SmilesMolSupplierFromText(self._buffer, self._mol_delimiter, self.smilesColumn,
+                        mol = next(SmilesMolSupplierFromText(self._buffer, self.delimiter, self.smilesColumn,
                                                              self.nameColumn, False, self.sanitize))
                         RDLogger.EnableLog('rdApp.*')  # Disable logger if no name column
                         yield mol
@@ -125,7 +126,7 @@ class ForwardSmilesMolSupplier:
             else:
                 RDLogger.DisableLog('rdApp.*')  # Disable logger if no name column
                 mol = next(
-                    SmilesMolSupplierFromText(self._buffer[:i_seps[0] + len(self._mol_delimiter)], self._mol_delimiter,
+                    SmilesMolSupplierFromText(self._buffer[:i_seps[0] + len(self._mol_delimiter)], self.delimiter,
                                               self.smilesColumn, self.nameColumn, False, self.sanitize))
                 RDLogger.EnableLog('rdApp.*')  # Disable logger if no name column
                 yield mol
@@ -205,6 +206,10 @@ class MolSupplier:
                 if compression not in self.valid_compression:
                     raise ValueError(f'compression must be one of {self.valid_compression}')
                 self.compression = compression
+                # Still derive the truncated filename (compression suffix stripped)
+                # so format auto-detection below works even when compression is
+                # passed explicitly instead of being inferred from the filename.
+                _, self._trunc_filename = self._get_compression(self.filename)
             else:
                 self.compression, self._trunc_filename = self._get_compression(self.filename)
             self.open_fn = self._get_compression_handler(self.compression)
@@ -215,6 +220,11 @@ class MolSupplier:
                 self.format = format
             else:
                 self.format = self._get_format(self._trunc_filename)
+            # SD/mol suppliers require a binary file handle; open()'s default text
+            # mode only works for uncompressed files since lzma/gzip/bz2.open
+            # already default to binary mode.
+            if self.compression is None and self.format in ('sd', 'mol'):
+                self.open_fn = partial(open, mode='rb')
         # source is file-like object
         elif isinstance(source, (io.TextIOBase, io.BufferedIOBase)):
             if format is None:

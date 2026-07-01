@@ -1,5 +1,16 @@
 # -*- coding: utf-8 -*-
 
+"""End-to-end integration tests for the object-oriented (PapyrusDataset) API.
+
+Unlike the other files under tests/, these are NOT unit tests: they download
+real Papyrus bioactivity datasets (one per version exercised below) and run
+full filter -> aggregate pipelines against them, comparing the functional
+reader/preprocess API against the equivalent PapyrusDataset chain. They
+require network access and disk space, and are slow. Fast, offline unit
+tests for the underlying reader/preprocess logic live in test_preprocess.py,
+test_io.py, test_fingerprint.py and test_mol_reader.py instead.
+"""
+
 import unittest
 from itertools import product
 
@@ -18,7 +29,7 @@ SOURCE_PATH = None
 
 
 def parametrized_test_name_func(testcase_func, _, param):
-    return "%s_%s" %(
+    return "%s_%s" % (
         testcase_func.__name__,
         parameterized.to_safe_name("_".join(str(x) for x in param.args)),
     )
@@ -39,9 +50,28 @@ def parametrized_testclass_name_func(cls, _, params_dict):
         [True, False]
     )), class_name_func=parametrized_testclass_name_func)
 class TestPapyrusDataset(unittest.TestCase):
+    """Each parametrization downloads (or reuses a cached download of) one
+    Papyrus version/stereochemistry combination. Papyrus++ (plusplus=True)
+    has no chiral (stereo=True) data, so that combination is expected to
+    raise ValueError and is skipped after asserting so (see setUp).
+    """
 
     def setUp(self):
-        pass
+        if self.plusplus and self.stereo:
+            with self.assertRaises(ValueError):
+                self._read_papyrus()
+            self.skipTest('Papyrus++ has no stereochemistry (chiral) data')
+
+    def _read_papyrus(self):
+        return reader.read_papyrus(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
+                                   chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
+
+    def _read_protein_set(self):
+        return reader.read_protein_set(version=self.version, source_path=SOURCE_PATH)
+
+    def _new_dataset(self):
+        return PapyrusDataset(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
+                              chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
 
     def assertDataFrameEqual(self, df1: pd.DataFrame, df2: pd.DataFrame):
         # Ensure NaN values can be compared
@@ -65,17 +95,9 @@ class TestPapyrusDataset(unittest.TestCase):
                              df2.iloc[:, j_col].tolist())
 
     def test_medium_quality_kinase(self):
-        if self.plusplus and self.stereo:
-            # No chiral data in the Papyrus++
-            with self.assertRaises(ValueError):
-                reader.read_papyrus(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                    chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
-            return
         # 1) Obtain data through the functional API
-        fn_data = reader.read_papyrus(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                      chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
-        # Read protein targets
-        fn_protein_data = reader.read_protein_set(version=self.version, source_path=SOURCE_PATH)
+        fn_data = self._read_papyrus()
+        fn_protein_data = self._read_protein_set()
         # Keep up to medium quality data (Papyrus++ only contains high quality)
         fn_filter1 = preprocess.keep_quality(fn_data, 'medium')
         # Keep kinases
@@ -84,8 +106,7 @@ class TestPapyrusDataset(unittest.TestCase):
         # Aggregate the data
         fn_data_agg = preprocess.consume_chunks(fn_filter2, progress=(not self.plusplus))
         # 2) Obtain data through the object-oriented API
-        oop_data_agg = (PapyrusDataset(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                   chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
+        oop_data_agg = (self._new_dataset()
                         .keep_quality('medium')
                         .keep_protein_class({'l2': 'Kinase'})
                         .aggregate(progress=(not self.plusplus)))
@@ -98,17 +119,9 @@ class TestPapyrusDataset(unittest.TestCase):
         self.assertEqual(oop_data_agg.Classification.str.split('->').str[1].unique(), ['Kinase'])
 
     def test_all_quality_human_adenosine_receptors_ic50(self):
-        if self.plusplus and self.stereo:
-            # No chiral data in the Papyrus++
-            with self.assertRaises(ValueError):
-                reader.read_papyrus(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                    chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
-            return
         # 1) Obtain data through the functional API
-        fn_data = reader.read_papyrus(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                      chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
-        # Read protein targets
-        fn_protein_data = reader.read_protein_set(version=self.version, source_path=SOURCE_PATH)
+        fn_data = self._read_papyrus()
+        fn_protein_data = self._read_protein_set()
         # Keep human targets
         fn_filter1 = preprocess.keep_organism(fn_data, fn_protein_data,
                                               organism='Homo sapiens (Human)')
@@ -120,8 +133,7 @@ class TestPapyrusDataset(unittest.TestCase):
         # Aggregate the data
         fn_data_agg = preprocess.consume_chunks(fn_filter3, progress=(not self.plusplus))
         # 2) Obtain data through the object-oriented API
-        oop_data_agg = (PapyrusDataset(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                   chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
+        oop_data_agg = (self._new_dataset()
                         .keep_organism('Homo sapiens (Human)')
                         .keep_protein_class({'l5': 'Adenosine receptor'})
                         .keep_activity_type('ic50')
@@ -139,17 +151,9 @@ class TestPapyrusDataset(unittest.TestCase):
         self.assertEqual(oop_data_proteins.Organism.unique().tolist(), ['Homo sapiens (Human)'])
 
     def test_chembl_mouse_cc_chemokine_receptors_ki_and_kd(self):
-        if self.plusplus and self.stereo:
-            with self.assertRaises(ValueError):
-                # No chiral data in the Papyrus++
-                reader.read_papyrus(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                    chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
-            return
         # 1) Obtain data through the functional API
-        fn_data = reader.read_papyrus(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                      chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
-        # Read protein targets
-        fn_protein_data = reader.read_protein_set(version=self.version, source_path=SOURCE_PATH)
+        fn_data = self._read_papyrus()
+        fn_protein_data = self._read_protein_set()
         # Keep ChEMBL data
         fn_filter1 = preprocess.keep_source(fn_data, 'chembl')
         # Keep human targets
@@ -165,8 +169,7 @@ class TestPapyrusDataset(unittest.TestCase):
         # Aggregate the data
         fn_data_agg = preprocess.consume_chunks(fn_filter5, progress=(not self.plusplus))
         # 2) Obtain data through the object-oriented API
-        oop_data_agg = (PapyrusDataset(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                   chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
+        oop_data_agg = (self._new_dataset()
                         .keep_source('chembl')
                         .keep_organism('Mus musculus (Mouse)')
                         .keep_protein_class({'l5': 'CC chemokine receptor'})
@@ -200,15 +203,8 @@ class TestPapyrusDataset(unittest.TestCase):
         self.assertEqual(oop_data_proteins.Organism.unique().tolist(), ['Mus musculus (Mouse)'])
 
     def test_sharma_klaeger_christman_egfr_specific_mutants_no_chirality(self):
-        if self.plusplus and self.stereo:
-            # No chiral data in the Papyrus++
-            with self.assertRaises(ValueError):
-                reader.read_papyrus(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                    chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
-            return
         # 1) Obtain data through the functional API
-        fn_data = reader.read_papyrus(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                      chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
+        fn_data = self._read_papyrus()
         # Keep data related to the human EGFR from its accession
         fn_filter1 = preprocess.keep_accession(fn_data, 'P00533')
         # Keep specific mutants
@@ -222,8 +218,7 @@ class TestPapyrusDataset(unittest.TestCase):
         # Aggregate the data
         fn_data_agg = preprocess.consume_chunks(fn_filter5, progress=(not self.plusplus))
         # 2) Obtain data through the object-oriented API
-        oop_data_agg = (PapyrusDataset(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                                   chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
+        oop_data_agg = (self._new_dataset()
                         .keep_accession('P00533')
                         .isin('target_id', ['P00533_L858R', 'P00533_L861Q'])
                         .contains('InChIKey', 'UHFFFAOYSA')
@@ -238,3 +233,7 @@ class TestPapyrusDataset(unittest.TestCase):
         self.assertEqual(np.sort(oop_data_agg.target_id.unique()).tolist(), ['P00533_L858R', 'P00533_L861Q'])
         self.assertEqual(oop_data_agg.InChIKey.str.split('-').str[1].unique(), 'UHFFFAOYSA')
         self.assertNotEqual(oop_data_agg.InChIKey.str.split('-').str[2].unique(), 'O')
+
+
+if __name__ == '__main__':
+    unittest.main()
