@@ -15,6 +15,9 @@ from .utils.IO import (get_disk_space, enough_disk_space, assert_sha256sum,
                        read_jsonfile, write_jsonfile, get_papyrus_links)
 
 
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
+
 def download_papyrus(outdir: Optional[str] = None,
                      version: Union[str, List[str]] = 'latest',
                      nostereo: bool = True,
@@ -173,10 +176,7 @@ def download_papyrus(outdir: Optional[str] = None,
                 retries = RETRIES
                 while not correct and retries > 0:  # Allow 3 failures
                     session = requests.session()
-                    res = session.get(durl, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) "
-                                                                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                                                   "Chrome/39.0.2171.95 "
-                                                                   "Safari/537.36"},
+                    res = session.get(durl, headers={"User-Agent": USER_AGENT},
                                       stream=True, verify=True)
                     with open(fpath, 'wb') as fh:
                         for chunk in res.iter_content(chunk_size=CHUNKSIZE):

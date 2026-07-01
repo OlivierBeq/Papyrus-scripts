@@ -77,6 +77,7 @@ class PapyrusDataset:
         dataset.papyrus_params = dict(is3d=is3d, version=version, plusplus=plusplus,
                                       chunksize=chunksize, source_path=source_path, num_rows=len(df),
                                       download_progress=download_progress)
+        dataset._fpsubsim2_ = None
         dataset._can_reset = False
         return dataset
 
@@ -97,6 +98,7 @@ class PapyrusDataset:
         dataset.papyrus_bioactivity_data = papyrus_bioactivity_data
         dataset.papyrus_protein_data = papyrus_protein_data
         dataset.papyrus_params = papyrus_params
+        dataset._fpsubsim2_ = None
         dataset._can_reset = False
         return dataset
 
