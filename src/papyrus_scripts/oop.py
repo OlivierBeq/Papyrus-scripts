@@ -667,14 +667,12 @@ class PapyrusDataFilter:
     def keep_source(self, source: list[str] | str = 'all') -> PapyrusDataset:
         return self._wrap(preprocess.keep_source(
             data=self.papyrus_bioactivity_data, source=source,
-            njobs=self.njobs, verbose=self.progress,
         )
         )
 
     def keep_activity_type(self, activity_types: list[str] | str = 'ic50') -> PapyrusDataset:
         return self._wrap(preprocess.keep_type(
             data=self.papyrus_bioactivity_data, activity_types=activity_types,
-            njobs=self.njobs, verbose=self.progress,
         )
         )
 
