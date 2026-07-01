@@ -4,9 +4,8 @@
 
 import os
 import time
+from collections.abc import Generator, Iterator
 from pathlib import Path
-
-from collections.abc import Iterator, Generator
 
 import pandas as pd
 import pystow
@@ -15,7 +14,8 @@ from pandas.io.parsers import TextFileReader as PandasTextFileReader
 from rdkit import Chem, RDLogger
 from tqdm.auto import tqdm, trange
 
-from .utils import UniprotMatch, IO
+from .utils import IO, UniprotMatch
+from .utils.IO import new_session
 
 
 def papyrus_rcsb_data_root(root_folder: str | Path | None = None) -> pystow.Module:
@@ -28,8 +28,13 @@ def papyrus_rcsb_data_root(root_folder: str | Path | None = None) -> pystow.Modu
     return pystow.module('rcsb')
 
 
-def get_all_pdb_ids_with_ligands():
-    """Obtain all ligands from the RCSB PDB Search API."""
+def get_all_pdb_ids_with_ligands(session: requests.Session | None = None):
+    """Obtain all ligands from the RCSB PDB Search API.
+
+    :param session: session to reuse for the request; a new one-off session
+        (with a modern User-Agent and retries) is created if not provided
+    """
+    session = session if session is not None else new_session()
     search_url = "https://search.rcsb.org/rcsbsearch/v2/query"
     # Query for all structures where non-polymer entity count > 0
     search_query = {
@@ -47,7 +52,7 @@ def get_all_pdb_ids_with_ligands():
             "return_all_hits": True  # Ensures we get the whole archive, no pagination
         }
     }
-    response = requests.post(search_url, json=search_query)
+    response = session.post(search_url, json=search_query)
     response.raise_for_status()
     # Parse the response to extract just the PDB IDs
     data = response.json()
@@ -80,7 +85,8 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     # Get all ligands
     if verbose:
         print(f'Obtaining RCSB ligands codes')
-    pdb_ids = get_all_pdb_ids_with_ligands()
+    session = new_session()
+    pdb_ids = get_all_pdb_ids_with_ligands(session)
     # Obtain the PDB structure code to PDB ligand code
     url = "https://data.rcsb.org/graphql"
     query = """
@@ -116,7 +122,7 @@ def update_rcsb_data(root_folder: str | Path | None = None,
         chunk = pdb_ids[i:i + chunk_size]
         current_chunk = (i // chunk_size) + 1
         # Make the GraphQL request for the current chunk
-        response = requests.post(
+        response = session.post(
             url,
             json={"query": query, "variables": {"pdbIds": chunk}}
         )

@@ -21,7 +21,42 @@ from pathlib import Path
 import pandas as pd
 import pystow
 import requests
+from requests.adapters import HTTPAdapter, Retry
 from tqdm.auto import tqdm
+
+# ---------------------------------------------------------------------------
+# HTTP session helpers
+# ---------------------------------------------------------------------------
+
+#: Modern browser User-Agent. Public scientific APIs (RCSB PDB, UniProt, ...)
+#: rate-limit or reject requests carrying no User-Agent (or a clearly dead one)
+#: more aggressively than ones that look like an up-to-date browser.
+USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+)
+
+
+def new_session(retries: int = 5, backoff_factor: float = 0.25,
+                 status_forcelist: tuple[int, ...] = (500, 502, 503, 504)) -> requests.Session:
+    """Return a :class:`requests.Session` with retries and a modern User-Agent.
+
+    Reusing one session across repeated requests to the same host keeps the
+    underlying TCP connection(s) alive instead of reconnecting (and
+    re-handshaking TLS) on every call.
+
+    :param retries: total number of retries for failed requests
+    :param backoff_factor: backoff factor applied between retry attempts
+    :param status_forcelist: HTTP status codes that trigger a retry
+    """
+    session = requests.Session()
+    session.headers.update({'User-Agent': USER_AGENT})
+    adapter = HTTPAdapter(max_retries=Retry(
+        total=retries, backoff_factor=backoff_factor, status_forcelist=list(status_forcelist),
+    ))
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    return session
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +182,7 @@ def get_papyrus_links(offline: bool = False) -> dict:
     if not offline:
         url = "https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/db-links/links.json"
         try:
-            response = requests.session().get(url, verify=True)
+            response = new_session().get(url, verify=True)
             response.raise_for_status()
             with open(local_file, 'w') as fh:
                 fh.write(response.text)
@@ -169,7 +204,7 @@ def get_papyrus_aliases(offline: bool = False) -> pd.DataFrame:
     if not offline:
         url = "https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/db-links/aliases.json"
         try:
-            response = requests.session().get(url, verify=True)
+            response = new_session().get(url, verify=True)
             response.raise_for_status()
             with open(local_file, 'w') as oh:
                 oh.write(response.text)

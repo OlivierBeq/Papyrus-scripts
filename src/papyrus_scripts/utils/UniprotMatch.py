@@ -2,16 +2,18 @@
 
 """Functions to interact with UniProt."""
 
-import re
 import json
+import re
 import time
 import zlib
+from urllib.parse import parse_qs, urlencode, urlparse
 from xml.etree import ElementTree
-from urllib.parse import urlparse, parse_qs, urlencode
 
 import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter, Retry
+
+from .IO import USER_AGENT, new_session
 
 
 def uniprot_mappings(query: str | list[str],
@@ -71,23 +73,22 @@ class UniprotMatch:
         self._api_url = api_url
         self._polling_interval = polling_interval
         if retry is None:
-            self._retries = Retry(total=5, backoff_factor=0.25, status_forcelist=[500, 502, 503, 504])
+            self._session = new_session()
         else:
-            self._retries = retry
-        self._session = requests.Session()
-        self._session.mount("https://", HTTPAdapter(max_retries=self._retries))
-
+            self._session = requests.Session()
+            self._session.headers.update({'User-Agent': USER_AGENT})
+            self._session.mount("https://", HTTPAdapter(max_retries=retry))
 
     def _submit_id_mapping(self, from_db, to_db, ids, taxon=None):
         if from_db == 'Gene_Name' and taxon is None:
             raise ValueError('Taxon must be provided when mapping from gene names.')
         if taxon is None:
-            request = requests.post(
+            request = self._session.post(
                 f"{self._api_url}/idmapping/run",
                 data={"from": from_db, "to": to_db, "ids": ",".join(ids)},
             )
         else:
-            request = requests.post(
+            request = self._session.post(
                 f"{self._api_url}/idmapping/run",
                 data={"from": from_db, "to": to_db, "ids": ",".join(ids), "taxId": taxon}
             )

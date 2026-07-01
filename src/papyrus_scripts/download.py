@@ -9,14 +9,19 @@ import zipfile
 from pathlib import Path
 
 import pystow
-import requests
 from tqdm.auto import tqdm
 
-from .utils.IO import (PapyrusVersion, get_disk_space, enough_disk_space,
-                       assert_sha256sum, get_papyrus_links,
-                       get_downloaded_versions, read_jsonfile, write_jsonfile)
-
-USER_AGENT = None  # "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+from .utils.IO import (
+    PapyrusVersion,
+    assert_sha256sum,
+    enough_disk_space,
+    get_disk_space,
+    get_downloaded_versions,
+    get_papyrus_links,
+    new_session,
+    read_jsonfile,
+    write_jsonfile,
+)
 
 # Download / integrity constants
 _CHUNKSIZE = 1_048_576  # 1 MB per streaming chunk
@@ -329,6 +334,7 @@ def download_papyrus(outdir: str | Path | None = None,
         descriptors = [descriptors]
 
     papyrus_root = pystow.module('papyrus')
+    session = new_session()
 
     for pv in versions:
         version_files = _get_version_files(files, pv)
@@ -434,10 +440,8 @@ def download_papyrus(outdir: str | Path | None = None,
                 success = False
                 remaining = _RETRIES
                 while not success and remaining > 0:
-                    session = requests.session()
                     res = session.get(
                         durl,
-                        headers={"User-Agent": USER_AGENT},
                         stream=True,
                         verify=True,
                     )
