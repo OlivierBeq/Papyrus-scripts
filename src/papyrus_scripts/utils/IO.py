@@ -18,7 +18,6 @@ import shutil
 import warnings
 from collections import namedtuple
 from pathlib import Path
-from typing import List, Optional
 
 import pandas as pd
 import pystow
@@ -48,7 +47,7 @@ def assert_sha256sum(filename: str, sha256: str, blocksize: int = 65536) -> bool
     :raises ValueError: if *sha256* is not a 64-character string
     """
     if not (isinstance(sha256, str) and len(sha256) == 64):
-        raise ValueError("SHA256 must be a 64-character hex string, got: {!r}".format(sha256))
+        raise ValueError(f"SHA256 must be a 64-character hex string, got: {sha256!r}")
     return sha256sum(filename, blocksize) == sha256
 
 
@@ -216,16 +215,16 @@ class PapyrusVersion:
 
     def __init__(
             self,
-            version: Optional[str] = None,
-            revision: Optional[str] = None,
-            chembl_version: Optional[int] = None,
-            chembl: Optional[bool] = None,
-            excape: Optional[bool] = None,
-            sharma: Optional[bool] = None,
-            christmann: Optional[bool] = None,
-            klaeger: Optional[bool] = None,
-            merget: Optional[bool] = None,
-            pickett: Optional[bool] = None,
+            version: str | None = None,
+            revision: str | None = None,
+            chembl_version: int | None = None,
+            chembl: bool | None = None,
+            excape: bool | None = None,
+            sharma: bool | None = None,
+            christmann: bool | None = None,
+            klaeger: bool | None = None,
+            merget: bool | None = None,
+            pickett: bool | None = None,
     ):
         """Determine the Papyrus version based on provided information.
 
@@ -284,7 +283,7 @@ class PapyrusVersion:
                     f'and (revision == "{latest_rev}")'
                 )
         else:
-            predicates: List[str] = []
+            predicates: list[str] = []
             for flag, col in [
                 (chembl_version, 'chembl_version'),
                 (revision, 'revision'),
@@ -393,7 +392,7 @@ class PapyrusVersion:
     # ------------------------------------------------------------------
 
     @classmethod
-    def get_versions(cls, root_folder: Optional[str | Path] = None) -> pd.DataFrame:
+    def get_versions(cls, root_folder: str | Path | None = None) -> pd.DataFrame:
         """Return a DataFrame of all known versions, annotated with download status.
 
         :param root_folder: directory that contains the Papyrus data tree
@@ -417,7 +416,7 @@ class PapyrusVersion:
     # Instance method
     # ------------------------------------------------------------------
 
-    def is_downloaded(self, root_folder: Optional[str | Path] = None) -> bool:
+    def is_downloaded(self, root_folder: str | Path | None = None) -> bool:
         """Return True if this version has been downloaded locally.
 
         :param root_folder: directory that contains the Papyrus data tree
@@ -429,7 +428,7 @@ class PapyrusVersion:
     # Sorting / comparison
     # ------------------------------------------------------------------
 
-    def _sort_key(self) -> List[int]:
+    def _sort_key(self) -> list[int]:
         return [int(u) for u in self.version.split('.')]
 
     def __lt__(self, other: PapyrusVersion) -> bool:
@@ -453,12 +452,12 @@ class PapyrusVersion:
 # Version-resolution helpers
 # ---------------------------------------------------------------------------
 
-def _sort_versions(versions: List[PapyrusVersion]) -> List[PapyrusVersion]:
+def _sort_versions(versions: list[PapyrusVersion]) -> list[PapyrusVersion]:
     """Return *versions* sorted from oldest to newest."""
     return sorted(versions)
 
 
-def get_online_versions() -> List[PapyrusVersion]:
+def get_online_versions() -> list[PapyrusVersion]:
     """Return all Papyrus versions available for download, oldest first."""
     links = get_papyrus_links()
     return _sort_versions([PapyrusVersion(version=v) for v in links.keys()])
@@ -469,7 +468,7 @@ def get_latest_online_version() -> PapyrusVersion:
     return get_online_versions()[-1]
 
 
-def _set_root_folder(root_folder: Optional[str | Path] = None):
+def _set_root_folder(root_folder: str | Path | None = None):
     """Set the root folder for Papyrus data tree."""
     if root_folder is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(
@@ -479,7 +478,7 @@ def _set_root_folder(root_folder: Optional[str | Path] = None):
         del os.environ['PYSTOW_HOME']
 
 
-def get_downloaded_versions(root_folder: Optional[str | Path] = None) -> List[PapyrusVersion]:
+def get_downloaded_versions(root_folder: str | Path | None = None) -> list[PapyrusVersion]:
     """Return all locally downloaded Papyrus versions, oldest first.
 
     :param root_folder: directory that contains the Papyrus data tree
@@ -493,7 +492,7 @@ def get_downloaded_versions(root_folder: Optional[str | Path] = None) -> List[Pa
     return _sort_versions([PapyrusVersion(version=v) for v in raw_versions])
 
 
-def get_latest_downloaded_version(root_folder: Optional[str | Path] = None) -> PapyrusVersion:
+def get_latest_downloaded_version(root_folder: str | Path | None = None) -> PapyrusVersion:
     """Return the newest locally downloaded Papyrus version.
 
     :param root_folder: directory that contains the Papyrus data tree
@@ -502,13 +501,13 @@ def get_latest_downloaded_version(root_folder: Optional[str | Path] = None) -> P
     """
     versions = get_downloaded_versions(root_folder)
     if not versions:
-        raise IOError('No Papyrus data found locally (did you download it first?)')
+        raise OSError('No Papyrus data found locally (did you download it first?)')
     return versions[-1]
 
 
 def is_local_version_available(
         version: str | PapyrusVersion,
-        root_folder: Optional[str | Path] = None,
+        root_folder: str | Path | None = None,
 ) -> bool:
     """Return True if *version* has been downloaded locally.
 
@@ -520,13 +519,13 @@ def is_local_version_available(
     try:
         pv = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
         return pv in get_downloaded_versions(root_folder)
-    except (IOError, ValueError):
+    except (OSError, ValueError):
         return False
 
 
 def process_data_version(
         version: str | PapyrusVersion,
-        root_folder: Optional[str | Path] = None,
+        root_folder: str | Path | None = None,
 ) -> PapyrusVersion:
     """Validate *version* against locally available data and return a
     :class:`PapyrusVersion`.
@@ -545,7 +544,7 @@ def process_data_version(
     pv = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
     downloaded = get_downloaded_versions(root_folder)
     if not downloaded:
-        raise IOError('No Papyrus data found locally (did you download it first?)')
+        raise OSError('No Papyrus data found locally (did you download it first?)')
     if pv not in downloaded:
         available = ', '.join(v.version for v in downloaded)
         raise ValueError(
@@ -567,7 +566,7 @@ def process_data_version(
     return pv
 
 
-def papyrus_version_module(pv: PapyrusVersion, root_folder: Optional[str | Path] = None) -> pystow.Module:
+def papyrus_version_module(pv: PapyrusVersion, root_folder: str | Path | None = None) -> pystow.Module:
     """Return the pystow :class:`~pystow.Module` for *pv*'s on-disk folder.
 
     This is the single place in the codebase that translates a
@@ -586,7 +585,7 @@ def papyrus_version_module(pv: PapyrusVersion, root_folder: Optional[str | Path]
 # Downloaded-file inventory
 # ---------------------------------------------------------------------------
 
-def get_downloaded_papyrus_files(root_folder: Optional[str] = None) -> pd.DataFrame:
+def get_downloaded_papyrus_files(root_folder: str | None = None) -> pd.DataFrame:
     """Return a DataFrame describing which Papyrus files have been downloaded.
 
     Columns: ``version`` (canonical string), ``short_name``, ``file_name``,
@@ -609,7 +608,7 @@ def get_downloaded_papyrus_files(root_folder: Optional[str] = None) -> pd.DataFr
     }
 
     FileInfo = namedtuple('FileInfo', ('version_str', 'pv', 'short_name', 'file_name'))
-    file_infos: List[FileInfo] = []
+    file_infos: list[FileInfo] = []
     for pv in downloaded_versions:
         # Bug-fix: original used PapyrusVersion as a dict key into files_map,
         # which is keyed by old-format strings → KeyError.
@@ -667,10 +666,10 @@ def locate_file(dirpath: str, regex_pattern: str) -> list[str]:
 def get_num_rows_in_file(
         filetype: str,
         is3D: bool,
-        descriptor_name: Optional[str] = None,
+        descriptor_name: str | None = None,
         version: str | PapyrusVersion = 'latest',
         plusplus: bool = True,
-        root_folder: Optional[str] = None,
+        root_folder: str | None = None,
 ) -> int:
     """Return the number of data rows in a Papyrus file.
 
@@ -724,7 +723,7 @@ def get_num_rows_in_file(
 def convert_xz_to_gz(
         input_file: str,
         output_file: str,
-        compression_level: Optional[int] = 9,
+        compression_level: int | None = 9,
         progress: bool = False,
 ) -> None:
     """Transcode an LZMA-compressed ``.xz`` file to a gzip-compressed file.

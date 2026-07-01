@@ -7,7 +7,6 @@ import shutil
 import warnings
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Union
 
 import pystow
 import requests
@@ -28,7 +27,7 @@ _RETRIES = 3
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _set_pystow_home(outdir: Optional[Union[str, Path]]) -> None:
+def _set_pystow_home(outdir: str | Path | None) -> None:
     """Point pystow at *outdir* when it is not None."""
     if outdir is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(
@@ -37,10 +36,10 @@ def _set_pystow_home(outdir: Optional[Union[str, Path]]) -> None:
 
 
 def _resolve_versions(
-    version: Union[str, List[str]],
+    version: str | list[str],
     files: dict,
     all_revisions: bool = False,
-) -> List[PapyrusVersion]:
+) -> list[PapyrusVersion]:
     """Normalise the *version* argument into a sorted, deduplicated list of :class:`PapyrusVersion` objects.
 
     Accepts any combination of new-format canonical strings (``'2022.04.2'``),
@@ -71,7 +70,7 @@ def _resolve_versions(
     if not isinstance(version, list):
         version = [version]
 
-    resolved: List[PapyrusVersion] = []
+    resolved: list[PapyrusVersion] = []
     for v in version:
         if v == 'latest':
             resolved.append(latest_pv)
@@ -153,7 +152,7 @@ def _resolve_versions(
 
     # Deduplicate while preserving sort order (oldest first).
     seen: set = set()
-    unique: List[PapyrusVersion] = []
+    unique: list[PapyrusVersion] = []
     for pv in sorted(set(resolved)):
         if pv not in seen:
             seen.add(pv)
@@ -187,7 +186,7 @@ def _file_path(papyrus_version_root: pystow.Module, ftype: str, fname: str) -> s
     return papyrus_version_root.join('descriptors', name=fname).as_posix()
 
 
-def _iter_entries(ftype_data) -> List[dict]:
+def _iter_entries(ftype_data) -> list[dict]:
     """Return a list of file-entry dicts regardless of whether the raw value
     is a single dict or a list of dicts.
 
@@ -276,13 +275,13 @@ def _get_version_files(files: dict, pv: PapyrusVersion) -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def download_papyrus(outdir: Optional[str] = None,
-                     version: Union[str, List[str]] = 'latest',
+def download_papyrus(outdir: str | None = None,
+                     version: str | list[str] = 'latest',
                      nostereo: bool = True,
                      stereo: bool = False,
                      only_pp: bool = True,
                      structures: bool = False,
-                     descriptors: Optional[Union[str, List[str]]] = 'all',
+                     descriptors: str | list[str] | None = 'all',
                      progress: bool = True,
                      disk_margin: float = 0.10,
                      update_links: bool = True,
@@ -466,7 +465,7 @@ def download_papyrus(outdir: Optional[str] = None,
                 if not success:
                     if progress:
                         pbar.close()
-                    raise IOError(f'Download failed for {dname}')
+                    raise OSError(f'Download failed for {dname}')
 
                 # Extract ZIP archives in-place
                 if dname.endswith('.zip'):
@@ -484,15 +483,15 @@ def download_papyrus(outdir: Optional[str] = None,
 
 
 def remove_papyrus(
-        outdir: Optional[Union[str, Path]] = None,
-        version: Union[str, List[str]] = 'latest',
+        outdir: str | Path | None = None,
+        version: str | list[str] = 'latest',
         papyruspp: bool = False,
         bioactivities: bool = False,
         proteins: bool = False,
         nostereo: bool = True,
         stereo: bool = False,
         structures: bool = False,
-        descriptors: Union[str, List[str]] = 'all',
+        descriptors: str | list[str] = 'all',
         other_files: bool = False,
         version_root: bool = False,
         papyrus_root: bool = False,
@@ -616,7 +615,7 @@ def remove_papyrus(
         # Determine which files are present on disk and calculate size
         # --------------------------------------------------------------
         total = 0
-        present: List[str] = []  # ftypes confirmed to exist on disk
+        present: list[str] = []  # ftypes confirmed to exist on disk
 
         for ftype in list(removal):
             ftype_data = version_files[ftype]
@@ -674,4 +673,4 @@ def remove_papyrus(
             if not f.startswith('.')
         ]
         if not remaining_files:
-            _update_versions_json(papyrus_root_mod, pv, add=False)
+            _update_versions_json(papyrus_root_mod, pv, add=False)

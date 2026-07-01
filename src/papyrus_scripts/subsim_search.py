@@ -12,7 +12,6 @@ import warnings
 from abc import ABC
 from collections import defaultdict
 from io import BytesIO
-from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import polars as pl
@@ -82,8 +81,8 @@ def _check_optional_deps() -> None:
 
 
 def _validate_fingerprints(
-        fingerprint: Optional[Union[Fingerprint, List[Fingerprint]]],
-) -> List[Fingerprint]:
+        fingerprint: Fingerprint | list[Fingerprint] | None,
+) -> list[Fingerprint]:
     """Normalise and validate the *fingerprint* argument.
 
     Returns a non-empty list of :class:`~fingerprint.Fingerprint` instances.
@@ -108,7 +107,7 @@ def _fp_table_path(fp: Fingerprint) -> str:
     return f'/similarity_info/{repr(fp)}/fps'
 
 
-def _derive_connectivity(props: dict, rdmol: Chem.Mol) -> Tuple[str, str]:
+def _derive_connectivity(props: dict, rdmol: Chem.Mol) -> tuple[str, str]:
     """Extract or derive ``(connectivity, inchikey)`` from SD-file properties.
 
     When ``connectivity`` is absent it is derived from the first block of the
@@ -260,10 +259,10 @@ class FPSubSim2:
 
     def __init__(self) -> None:
         _check_optional_deps()
-        self.version: Optional[PapyrusVersion] = None
-        self.is3d: Optional[bool] = None
-        self.sd_file: Optional[str] = None
-        self.h5_filename: Optional[str] = None
+        self.version: PapyrusVersion | None = None
+        self.is3d: bool | None = None
+        self.sd_file: str | None = None
+        self.h5_filename: str | None = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -272,10 +271,10 @@ class FPSubSim2:
     def create_from_papyrus(
             self,
             is3d: bool = False,
-            version: Union[str, PapyrusVersion] = 'latest',
-            outfile: Optional[str] = None,
-            fingerprint: Optional[Union[Fingerprint, List[Fingerprint]]] = None,
-            root_folder: Optional[str] = None,
+            version: str | PapyrusVersion = 'latest',
+            outfile: str | None = None,
+            fingerprint: Fingerprint | list[Fingerprint] | None = None,
+            root_folder: str | None = None,
             progress: bool = True,
             njobs: int = 1,
     ) -> None:
@@ -329,10 +328,10 @@ class FPSubSim2:
     def create(
             self,
             sd_file: str,
-            outfile: Optional[str] = None,
-            fingerprint: Union[Fingerprint, List[Fingerprint]] = None,
+            outfile: str | None = None,
+            fingerprint: Fingerprint | list[Fingerprint] = None,
             progress: bool = True,
-            total: Optional[int] = None,
+            total: int | None = None,
             njobs: int = 1,
     ) -> None:
         """Create an FPSubSim2 database from any SD file.
@@ -439,7 +438,7 @@ class FPSubSim2:
         # If the string is empty (database built from a custom SD file), leave as None.
         self.version = PapyrusVersion(version=version_str) if version_str else None
         # Invalidate the fingerprint cache so the next access re-reads the file.
-        self._avail_fp: Optional[dict] = None
+        self._avail_fp: dict | None = None
 
     # ------------------------------------------------------------------
     # Internal: single-process creation
@@ -447,9 +446,9 @@ class FPSubSim2:
 
     def _single_process_create(
             self,
-            fingerprint: List[Fingerprint],
+            fingerprint: list[Fingerprint],
             progress: bool,
-            total: Optional[int],
+            total: int | None,
     ) -> None:
         """Populate similarity and substructure tables from a single process."""
         with tb.open_file(self.h5_filename, mode='r+') as h5file:
@@ -507,9 +506,9 @@ class FPSubSim2:
     def _parallel_create(
             self,
             njobs: int,
-            fingerprint: List[Fingerprint],
+            fingerprint: list[Fingerprint],
             progress: bool,
-            total: Optional[int],
+            total: int | None,
     ) -> None:
         """Populate similarity and substructure tables using multiple processes."""
         # Pass only (type, params) pairs to worker processes — instances are
@@ -585,7 +584,7 @@ class FPSubSim2:
                 )
         return self._avail_fp
 
-    def get_substructure_lib(self) -> 'PapyrusSubstructureLibrary':
+    def get_substructure_lib(self) -> PapyrusSubstructureLibrary:
         """Return the deserialized RDKit substructure library.
 
         :raises ValueError: if the database file does not exist yet
@@ -604,9 +603,9 @@ class FPSubSim2:
 
     def get_similarity_lib(
             self,
-            fp_signature: Optional[str] = None,
+            fp_signature: str | None = None,
             cuda: bool = False,
-    ) -> Union['FPSubSim2Engine', 'FPSubSim2CudaEngine']:
+    ) -> FPSubSim2Engine | FPSubSim2CudaEngine:
         """Return a similarity search engine for the requested fingerprint.
 
         :param fp_signature: signature of the fingerprint to use; defaults to
@@ -637,7 +636,7 @@ class FPSubSim2:
             fingerprint: Fingerprint,
             papyrus_sd_file: str,
             progress: bool = True,
-            total: Optional[int] = None,
+            total: int | None = None,
     ) -> None:
         """Add a new fingerprint type to the database.
 
@@ -665,7 +664,7 @@ class FPSubSim2:
             self,
             papyrus_sd_file: str,
             progress: bool = True,
-            total: Optional[int] = None,
+            total: int | None = None,
     ) -> None:
         """Append new molecules to all fingerprint tables and the substructure library.
 
@@ -731,7 +730,7 @@ def _pad_to_int64(data: bytes) -> bytes:
 def _reader_process(
         sd_file: str,
         n_workers: int,
-        total: Optional[int],
+        total: int | None,
         progress: bool,
         input_queue: multiprocessing.Queue,
 ) -> None:
@@ -752,7 +751,7 @@ def _reader_process(
 
 
 def _worker_process(
-        fp_specs: List[Tuple[type, dict]],
+        fp_specs: list[tuple[type, dict]],
         input_queue: multiprocessing.Queue,
         output_queue: multiprocessing.Queue,
 ) -> None:
@@ -776,7 +775,7 @@ def _writer_process(
         h5_filename: str,
         output_queue: multiprocessing.Queue,
         table_paths: dict,
-        total: Optional[int],
+        total: int | None,
         progress: bool,
 ) -> None:
     """Consume results from worker processes and write them to the HDF5 file."""
@@ -853,7 +852,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
         self.name = 'pytables'
 
         with tb.open_file(self.fp_filename, mode='r') as fp_file:
-            self._fp_table_mappings: Dict[str, List[str]] = {}
+            self._fp_table_mappings: dict[str, list[str]] = {}
             for group in fp_file.walk_groups('/similarity_info/'):
                 if not group._v_name:
                     continue
@@ -883,7 +882,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
         with tb.open_file(self.fp_filename, mode='r') as fp_file:
             self.chunk_size = fp_file.get_node(self._current_fp_path).chunkshape[0] * 120
 
-    def read_parameters(self) -> Tuple[str, dict, str]:
+    def read_parameters(self) -> tuple[str, dict, str]:
         """Read fingerprint metadata for the currently selected fingerprint."""
         with tb.open_file(self.fp_filename, mode='r') as fp_file:
             rdkit_ver = fp_file.root.config[0]
@@ -892,7 +891,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
             fp_params = json.loads(fp_table.attrs.fp_params)
         return fp_type, fp_params, rdkit_ver
 
-    def get_fps_chunk(self, chunk_range: Tuple[int, int]) -> np.ndarray:
+    def get_fps_chunk(self, chunk_range: tuple[int, int]) -> np.ndarray:
         with tb.open_file(self.fp_filename, mode='r') as fp_file:
             return fp_file.get_node(self._current_fp_path)[slice(*chunk_range)]
 
@@ -914,7 +913,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
         fps = fps.reshape(fps.size // num_fields, num_fields)
         self.fps = fps
 
-    def delete_fps(self, ids_list: List[int]) -> None:
+    def delete_fps(self, ids_list: list[int]) -> None:
         """Delete fingerprint rows by their integer IDs."""
         with tb.open_file(self.fp_filename, mode='a') as fp_file:
             fps_table = fp_file.get_node(self._current_fp_path)
@@ -930,7 +929,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
             self,
             supplier: MolSupplier,
             progress: bool = True,
-            total: Optional[int] = None,
+            total: int | None = None,
             sort: bool = True,
     ) -> None:
         """Append fingerprints for molecules from *supplier* to the database."""
@@ -996,7 +995,7 @@ class _MappingMixin:
 
     fp_filename: str  # supplied by concrete subclass
 
-    def _get_mapping(self, ids: Union[List[int], int]) -> pl.DataFrame:
+    def _get_mapping(self, ids: list[int] | int) -> pl.DataFrame:
         """Return a DataFrame with Papyrus identifiers for the given integer *ids*.
 
         :param ids: one or more molecule IDs from the similarity/substructure result
@@ -1110,7 +1109,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
     def on_disk_tversky(
             self, query_string: str, threshold: float,
             a: float, b: float,
-            n_workers: int = 1, chunk_size: Optional[int] = None,
+            n_workers: int = 1, chunk_size: int | None = None,
     ) -> pl.DataFrame:
         """On-disk Tversky similarity search."""
         raw = FPSim2Engine.on_disk_tversky(self, query_string, threshold, a, b, n_workers, chunk_size)
@@ -1210,7 +1209,7 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
 
     def GetMatches(
             self,
-            query: Union[str, Chem.Mol],
+            query: str | Chem.Mol,
             recursionPossible: bool = True,
             useChirality: bool = True,
             useQueryQueryMatches: bool = False,
@@ -1239,6 +1238,6 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
             })
         return self._get_mapping(ids)
 
-    def substructure(self, query: Union[str, Chem.Mol]) -> pl.DataFrame:
+    def substructure(self, query: str | Chem.Mol) -> pl.DataFrame:
         """Alias for :meth:`GetMatches` with default parameters."""
-        return self.GetMatches(query)
+        return self.GetMatches(query)

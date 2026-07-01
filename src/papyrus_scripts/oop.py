@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any
+
+from collections.abc import Iterator
 
 import pandas as pd
 import prodec
@@ -22,7 +24,7 @@ from .utils import IO
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _ensure_papyrus_version(version: Union[str, IO.PapyrusVersion]) -> IO.PapyrusVersion:
+def _ensure_papyrus_version(version: str | IO.PapyrusVersion) -> IO.PapyrusVersion:
     """Return a :class:`~utils.IO.PapyrusVersion` from *version*.
 
     If *version* is already a :class:`~utils.IO.PapyrusVersion` it is returned
@@ -41,7 +43,7 @@ def _ceil_div(numerator: int, denominator: int) -> int:
     return -(-numerator // denominator)
 
 
-def _num_chunks(num_rows: int, chunksize: Optional[int]) -> Optional[int]:
+def _num_chunks(num_rows: int, chunksize: int | None) -> int | None:
     """Return the number of chunks or ``None`` when *chunksize* is ``None``."""
     if chunksize is None or num_rows is None:
         return None
@@ -68,11 +70,11 @@ class PapyrusDataset:
 
     def __init__(
             self,
-            version: Union[str, IO.PapyrusVersion] = 'latest',
+            version: str | IO.PapyrusVersion = 'latest',
             is3d: bool = False,
             plusplus: bool = True,
-            chunksize: Optional[int] = 1_000_000,
-            source_path: Optional[str] = None,
+            chunksize: int | None = 1_000_000,
+            source_path: str | None = None,
             download_progress: bool = False,
     ) -> None:
         """Read, filter and aggregate data from a release of the Papyrus dataset.
@@ -106,7 +108,7 @@ class PapyrusDataset:
                 progress=download_progress, disk_margin=0.0,
             )
 
-        self.papyrus_params: Dict = dict(
+        self.papyrus_params: dict = dict(
             is3d=is3d,
             version=pv,
             plusplus=plusplus,
@@ -126,7 +128,7 @@ class PapyrusDataset:
         self.papyrus_protein_data = reader.read_protein_set(
             source_path=source_path, version=pv,
         )
-        self._fpsubsim2_: Optional[FPSubSim2Engine] = None
+        self._fpsubsim2_: FPSubSim2Engine | None = None
         self._can_reset: bool = True
 
     # ------------------------------------------------------------------
@@ -137,11 +139,11 @@ class PapyrusDataset:
     def from_dataframe(
             df: pd.DataFrame,
             is3d: bool,
-            version: Union[str, IO.PapyrusVersion],
+            version: str | IO.PapyrusVersion,
             plusplus: bool = True,
-            source_path: Optional[str] = None,
+            source_path: str | None = None,
             download_progress: bool = False,
-            chunksize: Optional[int] = None,
+            chunksize: int | None = None,
     ) -> PapyrusDataset:
         """Create a :class:`PapyrusDataset` from an existing DataFrame.
 
@@ -166,15 +168,15 @@ class PapyrusDataset:
             chunksize=chunksize, source_path=source_path,
             num_rows=len(df), download_progress=download_progress,
         )
-        dataset._fpsubsim2_: Optional[FPSubSim2Engine] = None
+        dataset._fpsubsim2_: FPSubSim2Engine | None = None
         dataset._can_reset: bool = False
         return dataset
 
     @staticmethod
     def _from_data(
-            papyrus_bioactivity_data: Union[Iterator[pd.DataFrame], pd.DataFrame],
+            papyrus_bioactivity_data: Iterator[pd.DataFrame] | pd.DataFrame,
             papyrus_protein_data: pd.DataFrame,
-            papyrus_params: Dict,
+            papyrus_params: dict,
     ) -> PapyrusDataset:
         """Create a :class:`PapyrusDataset` from raw components.
 
@@ -188,7 +190,7 @@ class PapyrusDataset:
         dataset.papyrus_bioactivity_data = papyrus_bioactivity_data
         dataset.papyrus_protein_data = papyrus_protein_data
         dataset.papyrus_params = papyrus_params
-        dataset._fpsubsim2_: Optional[FPSubSim2Engine] = None
+        dataset._fpsubsim2_: FPSubSim2Engine | None = None
         dataset._can_reset: bool = False
         return dataset
 
@@ -228,7 +230,7 @@ class PapyrusDataset:
         """
         return self._filter.keep_quality(min_quality=min_quality)
 
-    def keep_source(self, source: Union[List[str], str]) -> PapyrusDataset:
+    def keep_source(self, source: list[str] | str) -> PapyrusDataset:
         """Keep samples from specific data source(s).
 
         :param source: source label(s) such as ``'chembl'`` or
@@ -236,7 +238,7 @@ class PapyrusDataset:
         """
         return self._filter.keep_source(source=source)
 
-    def keep_activity_type(self, activity_types: Union[List[str], str]) -> PapyrusDataset:
+    def keep_activity_type(self, activity_types: list[str] | str) -> PapyrusDataset:
         """Keep samples of specific activity type(s).
 
         :param activity_types: type(s) such as ``'ic50'`` or
@@ -244,7 +246,7 @@ class PapyrusDataset:
         """
         return self._filter.keep_activity_type(activity_types=activity_types)
 
-    def keep_accession(self, accession: Union[List[str], str] = 'all') -> PapyrusDataset:
+    def keep_accession(self, accession: list[str] | str = 'all') -> PapyrusDataset:
         """Keep samples matching the given UniProt accession(s).
 
         :param accession: accession code(s) such as ``'P00533'`` or
@@ -258,7 +260,7 @@ class PapyrusDataset:
 
     def keep_protein_class(
             self,
-            classes: Optional[Union[dict, List[dict]]],
+            classes: dict | list[dict] | None,
             generic_regex: bool = False,
     ) -> PapyrusDataset:
         """Keep samples whose targets belong to the given protein class(es).
@@ -271,7 +273,7 @@ class PapyrusDataset:
 
     def keep_organism(
             self,
-            organism: Optional[Union[str, List[str]]],
+            organism: str | list[str] | None,
             generic_regex: bool = False,
     ) -> PapyrusDataset:
         """Keep samples whose targets come from the specified organism(s).
@@ -318,7 +320,7 @@ class PapyrusDataset:
         """
         return self._filter.not_contains(column=column, value=value, case=case, regex=regex)
 
-    def isin(self, column: str, values: Union[Any, List[Any]]) -> PapyrusDataset:
+    def isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
         """Keep samples whose *column* value is in *values*.
 
         :param column: column to inspect
@@ -326,7 +328,7 @@ class PapyrusDataset:
         """
         return self._filter.isin(column=column, values=values)
 
-    def not_isin(self, column: str, values: Union[Any, List[Any]]) -> PapyrusDataset:
+    def not_isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
         """Keep samples whose *column* value is **not** in *values*.
 
         :param column: column to inspect
@@ -340,7 +342,7 @@ class PapyrusDataset:
 
     def keep_similar_molecules(
             self,
-            smiles: Union[str, List[str]],
+            smiles: str | list[str],
             fp: Fingerprint = None,
             threshold: float = 0.7,
             cuda: bool = False,
@@ -360,7 +362,7 @@ class PapyrusDataset:
 
     def keep_dissimilar_molecules(
             self,
-            smiles: Union[str, List[str]],
+            smiles: str | list[str],
             fp: Fingerprint = None,
             threshold: float = 0.7,
             cuda: bool = False,
@@ -378,14 +380,14 @@ class PapyrusDataset:
                                                          threshold=threshold, cuda=cuda
                                                          )
 
-    def keep_substructure_molecules(self, smiles: Union[str, List[str]]) -> PapyrusDataset:
+    def keep_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
         """Keep samples whose structures contain any of the given SMILES as a substructure.
 
         :param smiles: query SMILES string(s)
         """
         return self._fpsubsim2.keep_substructure_molecules(smiles=smiles)
 
-    def keep_not_substructure_molecules(self, smiles: Union[str, List[str]]) -> PapyrusDataset:
+    def keep_not_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
         """Keep samples whose structures do **not** contain any of the given SMILES as a substructure.
 
         :param smiles: query SMILES string(s)
@@ -428,7 +430,7 @@ class PapyrusDataset:
 
     def molecules(
             self,
-            chunksize: Optional[int] = 1_000_000,
+            chunksize: int | None = 1_000_000,
             progress: bool = False,
     ) -> PapyrusMoleculeSet:
         """Return the molecular structures for the samples in this dataset.
@@ -484,7 +486,7 @@ class PapyrusDataset:
             self,
             desc_type: str,
             progress: bool = False,
-    ) -> Union[pd.DataFrame, Iterator[pd.DataFrame]]:
+    ) -> pd.DataFrame | Iterator[pd.DataFrame]:
         """Return molecular descriptors for the molecules in this dataset.
 
         Downloads the descriptor file if it is not yet available locally.
@@ -546,20 +548,20 @@ class PapyrusDataset:
 
     @staticmethod
     def remove(
-            version: Union[str, IO.PapyrusVersion],
+            version: str | IO.PapyrusVersion,
             remove_papyruspp: bool,
             remove_bioactivities: bool,
             remove_proteins: bool,
             remove_nostereo: bool,
             remove_stereo: bool,
             remove_structures: bool,
-            remove_descriptors: Union[str, List[str]],
+            remove_descriptors: str | list[str],
             remove_other_files: bool,
             remove_version_root: bool,
             remove_papyrus_root: bool,
             force: bool = False,
             progress: bool = True,
-            source_path: Optional[str] = None,
+            source_path: str | None = None,
             all_revisions: bool = False,
     ) -> None:
         """Remove locally downloaded Papyrus data.
@@ -616,9 +618,9 @@ class PapyrusDataFilter:
 
     def __init__(
             self,
-            papyrus_bioactivity_data: Union[Iterator[pd.DataFrame], pd.DataFrame],
+            papyrus_bioactivity_data: Iterator[pd.DataFrame] | pd.DataFrame,
             papyrus_protein_data: pd.DataFrame,
-            papyrus_params: Dict,
+            papyrus_params: dict,
             njobs: int = 1,
             progress: bool = False,
     ) -> None:
@@ -661,21 +663,21 @@ class PapyrusDataFilter:
         )
         )
 
-    def keep_source(self, source: Union[List[str], str] = 'all') -> PapyrusDataset:
+    def keep_source(self, source: list[str] | str = 'all') -> PapyrusDataset:
         return self._wrap(preprocess.keep_source(
             data=self.papyrus_bioactivity_data, source=source,
             njobs=self.njobs, verbose=self.progress,
         )
         )
 
-    def keep_activity_type(self, activity_types: Union[List[str], str] = 'ic50') -> PapyrusDataset:
+    def keep_activity_type(self, activity_types: list[str] | str = 'ic50') -> PapyrusDataset:
         return self._wrap(preprocess.keep_type(
             data=self.papyrus_bioactivity_data, activity_types=activity_types,
             njobs=self.njobs, verbose=self.progress,
         )
         )
 
-    def keep_accession(self, accession: Union[List[str], str] = 'all') -> PapyrusDataset:
+    def keep_accession(self, accession: list[str] | str = 'all') -> PapyrusDataset:
         return self._wrap(preprocess.keep_accession(
             data=self.papyrus_bioactivity_data, accession=accession,
         )
@@ -683,7 +685,7 @@ class PapyrusDataFilter:
 
     def keep_protein_class(
             self,
-            classes: Optional[Union[dict, List[dict]]],
+            classes: dict | list[dict] | None,
             generic_regex: bool = False,
     ) -> PapyrusDataset:
         return self._wrap(preprocess.keep_protein_class(
@@ -695,7 +697,7 @@ class PapyrusDataFilter:
 
     def keep_organism(
             self,
-            organism: Optional[Union[str, List[str]]] = 'Homo sapiens (Human)',
+            organism: str | list[str] | None = 'Homo sapiens (Human)',
             generic_regex: bool = False,
     ) -> PapyrusDataset:
         return self._wrap(preprocess.keep_organism(
@@ -723,13 +725,13 @@ class PapyrusDataFilter:
         )
         )
 
-    def isin(self, column: str, values: Union[Any, List[Any]]) -> PapyrusDataset:
+    def isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
         return self._wrap(preprocess.keep_match(
             data=self.papyrus_bioactivity_data, column=column, values=values,
         )
         )
 
-    def not_isin(self, column: str, values: Union[Any, List[Any]]) -> PapyrusDataset:
+    def not_isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
         return self._wrap(preprocess.keep_not_match(
             data=self.papyrus_bioactivity_data, column=column, values=values,
         )
@@ -745,9 +747,9 @@ class FPSubSim2Engine:
     substructure search database for a specific :class:`PapyrusDataset`.
     """
 
-    def __init__(self, papyrus_params: Dict) -> None:
+    def __init__(self, papyrus_params: dict) -> None:
         self.papyrus_params = papyrus_params
-        self.path: Optional[str] = None
+        self.path: str | None = None
         self.progress: bool = False
         self.fp: Fingerprint = MorganFingerprint()
         self.fpsubsim2 = subsim_search.FPSubSim2()
@@ -756,8 +758,8 @@ class FPSubSim2Engine:
 
     def __call__(
             self,
-            fp: Optional[Union[Fingerprint, List[Fingerprint]]] = None,
-            path: Optional[str] = None,
+            fp: Fingerprint | list[Fingerprint] | None = None,
+            path: str | None = None,
             progress: bool = False,
     ) -> FPSubSim2Engine:
         """Configure the engine and return *self* for chaining.
@@ -822,7 +824,7 @@ class FPSubSim2Engine:
 
     def _set_data(
             self,
-            papyrus_bioactivity_data: Union[Iterator[pd.DataFrame], pd.DataFrame],
+            papyrus_bioactivity_data: Iterator[pd.DataFrame] | pd.DataFrame,
             papyrus_protein_data: pd.DataFrame,
     ) -> None:
         """Attach current bioactivity and protein data to this engine."""
@@ -846,8 +848,8 @@ class FPSubSim2Engine:
 
     def keep_similar_molecules(
             self,
-            smiles: Union[str, List[str]],
-            fp: Optional[Fingerprint] = None,
+            smiles: str | list[str],
+            fp: Fingerprint | None = None,
             threshold: float = 0.7,
             cuda: bool = False,
     ) -> PapyrusDataset:
@@ -865,8 +867,8 @@ class FPSubSim2Engine:
 
     def keep_dissimilar_molecules(
             self,
-            smiles: Union[str, List[str]],
-            fp: Optional[Fingerprint] = None,
+            smiles: str | list[str],
+            fp: Fingerprint | None = None,
             threshold: float = 0.7,
             cuda: bool = False,
     ) -> PapyrusDataset:
@@ -882,7 +884,7 @@ class FPSubSim2Engine:
         )
         )
 
-    def keep_substructure_molecules(self, smiles: Union[str, List[str]]) -> PapyrusDataset:
+    def keep_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
         """Keep samples that are substructures of any of the query SMILES."""
         self._ensure_loaded()
         return self._wrap(preprocess.keep_substructure(
@@ -892,7 +894,7 @@ class FPSubSim2Engine:
         )
         )
 
-    def keep_not_substructure_molecules(self, smiles: Union[str, List[str]]) -> PapyrusDataset:
+    def keep_not_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
         """Keep samples that are **not** substructures of any of the query SMILES."""
         self._ensure_loaded()
         return self._wrap(preprocess.keep_not_substructure(
@@ -912,8 +914,8 @@ class PapyrusMoleculeSet:
 
     def __init__(
             self,
-            df: Union[pd.DataFrame, Iterator],
-            papyrus_params: Dict,
+            df: pd.DataFrame | Iterator,
+            papyrus_params: dict,
     ) -> None:
         self.data = df
         self.papyrus_params = papyrus_params
@@ -958,7 +960,7 @@ class PapyrusMoleculeSet:
             self,
             desc_type: str,
             progress: bool = False,
-    ) -> Union[pd.DataFrame, Iterator[pd.DataFrame]]:
+    ) -> pd.DataFrame | Iterator[pd.DataFrame]:
         """Return molecular descriptors for the molecules in this set.
 
         Downloads the descriptor file if not yet available locally.
@@ -1010,7 +1012,7 @@ class ProteinSet(ABC):
     """Abstract base for protein-target set classes."""
 
     data: pd.DataFrame
-    papyrus_params: Dict
+    papyrus_params: dict
 
     @abstractmethod
     def aggregate(self, progress: bool = False) -> pd.DataFrame:
@@ -1018,7 +1020,7 @@ class ProteinSet(ABC):
 
     def protein_descriptors(
             self,
-            desc_type: Union[str, prodec.Descriptor, prodec.Transform],
+            desc_type: str | prodec.Descriptor | prodec.Transform,
             progress: bool = False,
     ) -> pd.DataFrame:
         """Return protein descriptors for the targets in this set.
@@ -1064,8 +1066,8 @@ class PapyrusProteinSet(ProteinSet):
 
     def __init__(
             self,
-            df: Union[pd.DataFrame, Iterator],
-            papyrus_params: Dict,
+            df: pd.DataFrame | Iterator,
+            papyrus_params: dict,
             num_proteins: int,
     ) -> None:
         self.data = df
@@ -1117,12 +1119,12 @@ class PapyrusPDBProteinSet(ProteinSet):
 
     def __init__(
             self,
-            df: Union[pd.DataFrame, Iterator],
-            papyrus_params: Dict,
+            df: pd.DataFrame | Iterator,
+            papyrus_params: dict,
     ) -> None:
         self.data = df
         self.papyrus_params = papyrus_params
-        self.num_rows: Optional[int] = len(df) if isinstance(df, pd.DataFrame) else None
+        self.num_rows: int | None = len(df) if isinstance(df, pd.DataFrame) else None
 
     # ------------------------------------------------------------------
     # Materialisation
@@ -1157,4 +1159,4 @@ class PapyrusPDBProteinSet(ProteinSet):
     def __repr__(self) -> str:
         if not isinstance(self.data, pd.DataFrame):
             return f'{type(self).__name__}<iterator of protein structures>'
-        return f'{type(self).__name__}<{len(self.data)} protein structures>'
+        return f'{type(self).__name__}<{len(self.data)} protein structures>'

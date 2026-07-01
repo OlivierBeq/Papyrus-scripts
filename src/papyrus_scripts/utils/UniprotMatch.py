@@ -6,7 +6,6 @@ import re
 import json
 import time
 import zlib
-from typing import List, Union
 from xml.etree import ElementTree
 from urllib.parse import urlparse, parse_qs, urlencode
 
@@ -15,7 +14,7 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 
-def uniprot_mappings(query: Union[str, List[str]],
+def uniprot_mappings(query: str | list[str],
                      map_from: str = 'ID',
                      map_to: str = 'PDB_ID',
                      taxon: str = None
@@ -256,4 +255,4 @@ class UniprotMatch:
                     query_to_newIDs[id] = " ".join(list(subset_df["to"].unique()))
                 elif isinstance(subset_df["to"].tolist()[0], dict):
                     query_to_newIDs[id] = " ".join(set(subset_df["to"].apply(lambda row: row['primaryAccession'])))
-            return query_to_newIDs
+            return query_to_newIDs

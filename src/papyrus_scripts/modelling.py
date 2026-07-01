@@ -6,7 +6,8 @@ from copy import deepcopy
 import warnings
 from itertools import chain, combinations
 from collections import Counter
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
+
+from collections.abc import Iterable, Iterator
 
 import numpy as np
 import pandas as pd
@@ -49,11 +50,11 @@ from .neuralnet import (BaseNN,
 pd.set_option('mode.chained_assignment', None)
 
 
-def filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
+def filter_molecular_descriptors(data: pd.DataFrame | Iterator,
                                  column_name: str,
                                  keep_values: Iterable,
                                  progress: bool = True,
-                                 total: Optional[int] = None) -> pd.DataFrame:
+                                 total: int | None = None) -> pd.DataFrame:
     """Filter the data so that the desired column contains only the desired data.
 
     :param data: data to be filtered, either a dataframe or an iterator of chunks
@@ -207,11 +208,11 @@ def model_metrics(model, y_true, x_test) -> dict:
 
 
 def crossvalidate_model(data: pd.DataFrame,
-                        model: Union[RegressorMixin, ClassifierMixin],
+                        model: RegressorMixin | ClassifierMixin,
                         folds: BaseCrossValidator,
-                        groups: List[int] = None,
+                        groups: list[int] = None,
                         verbose: bool = False
-                        ) -> Tuple[pd.DataFrame, Dict[str, Union[RegressorMixin, ClassifierMixin]]]:
+                        ) -> tuple[pd.DataFrame, dict[str, RegressorMixin | ClassifierMixin]]:
     """Create a machine learning model predicting values in the first column
 
    :param data: data containing the dependent vairable (in the first column) and other features
@@ -252,10 +253,10 @@ def crossvalidate_model(data: pd.DataFrame,
 
 
 def train_test_proportional_group_split(data: pd.DataFrame,
-                                        groups: List[int],
+                                        groups: list[int],
                                         test_size: float = 0.30,
                                         verbose: bool = False
-                                        ) -> Tuple[pd.DataFrame, pd.DataFrame, List[int], List[int]]:
+                                        ) -> tuple[pd.DataFrame, pd.DataFrame, list[int], list[int]]:
     """Split the data into training and test sets according to the groups that respect most test_size (based on MSE)
 
    :param data: the data to be split up into training and test sets
@@ -289,10 +290,10 @@ def qsar(data: pd.DataFrame,
          delta_activity: float = 2,
          version: str = 'latest',
          descriptors: str = 'mold2',
-         descriptor_path: Optional[str] = None,
-         descriptor_chunksize: Optional[int] = 50000,
+         descriptor_path: str | None = None,
+         descriptor_chunksize: int | None = 50000,
          activity_threshold: float = 6.5,
-         model: Union[RegressorMixin, ClassifierMixin] = xgboost.XGBRegressor(verbosity=0),
+         model: RegressorMixin | ClassifierMixin = xgboost.XGBRegressor(verbosity=0),
          folds: int = 5,
          stratify: bool = False,
          split_by: str = 'Year',
@@ -305,9 +306,9 @@ def qsar(data: pd.DataFrame,
          yscramble: bool = False,
          random_state: int = 1234,
          verbose: bool = True
-         ) -> Tuple[pd.DataFrame, Dict[str,
-                                       Optional[Union[TransformerMixin, LabelEncoder,
-                                                      BaseCrossValidator, Dict[str, ClassifierMixin]]]]]:
+         ) -> tuple[pd.DataFrame, dict[str,
+                                       None | (TransformerMixin | LabelEncoder |
+                                                      BaseCrossValidator | dict[str, ClassifierMixin])]]:
     """Create QSAR models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -635,14 +636,14 @@ def pcm(data: pd.DataFrame,
         delta_activity: float = 2,
         version: str = 'latest',
         mol_descriptors: str = 'mold2',
-        mol_descriptor_path: Optional[str] = None,
-        mol_descriptor_chunksize: Optional[int] = 50000,
-        prot_sequences_path: Optional[str] = None,
-        prot_descriptors: Union[str, Descriptor, Transform] = 'unirep',
-        prot_descriptor_path: Optional[str] = None,
-        prot_descriptor_chunksize: Optional[int] = 50000,
+        mol_descriptor_path: str | None = None,
+        mol_descriptor_chunksize: int | None = 50000,
+        prot_sequences_path: str | None = None,
+        prot_descriptors: str | Descriptor | Transform = 'unirep',
+        prot_descriptor_path: str | None = None,
+        prot_descriptor_chunksize: int | None = 50000,
         activity_threshold: float = 6.5,
-        model: Union[RegressorMixin, ClassifierMixin] = xgboost.XGBRegressor(verbosity=0),
+        model: RegressorMixin | ClassifierMixin = xgboost.XGBRegressor(verbosity=0),
         folds: int = 5,
         stratify: bool = False,
         split_by: str = 'Year',
@@ -655,9 +656,9 @@ def pcm(data: pd.DataFrame,
         yscramble: bool = False,
         random_state: int = 1234,
         verbose: bool = True
-        ) -> Tuple[pd.DataFrame, Dict[str,
-                                      Union[TransformerMixin, LabelEncoder,
-                                            BaseCrossValidator, RegressorMixin, ClassifierMixin]]]:
+        ) -> tuple[pd.DataFrame, dict[str,
+                                      (TransformerMixin | LabelEncoder |
+                                            BaseCrossValidator | RegressorMixin | ClassifierMixin)]]:
     """Create PCM models for as many targets with selected data source(s),
     data quality, minimum number of datapoints and minimum activity amplitude.
 
@@ -1071,4 +1072,4 @@ def pcm(data: pd.DataFrame,
 #     X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
 #     performance.loc['Test set'] = model_metrics(model, y_test, X_test)
 #     warnings.filterwarnings("default", category=RuntimeWarning)
-#     return performance, model
+#     return performance, model

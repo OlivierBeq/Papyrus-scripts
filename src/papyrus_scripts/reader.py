@@ -2,13 +2,11 @@
 
 """Reading functions for the Papyrus dataset."""
 
-from __future__ import annotations
-
 import json
 import os
 from functools import reduce
 from pathlib import Path
-from typing import Generator, List, Optional, Union
+from collections.abc import Generator
 
 import numpy as np
 import polars as pl
@@ -31,10 +29,10 @@ from .utils.mol_reader import MolSupplier
 # ---------------------------------------------------------------------------
 
 #: A single eager DataFrame or a lazy scan (non-greedy).
-DataOrChunks = Union[pl.DataFrame, pl.LazyFrame]
+DataOrChunks = pl.DataFrame | pl.LazyFrame
 
 #: Anything accepted as a ``version`` argument.
-VersionArg = Union[str, PapyrusVersion]
+VersionArg = str | PapyrusVersion
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +82,7 @@ def _to_polars_schema(dtypes: dict) -> dict:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _set_pystow_home(source_path: Optional[Union[str, Path]]) -> None:
+def _set_pystow_home(source_path: str | Path | None) -> None:
     """Point pystow at *source_path* when it is not None."""
     if source_path is not None:
         os.environ['PYSTOW_HOME'] = os.path.abspath(
@@ -94,7 +92,7 @@ def _set_pystow_home(source_path: Optional[Union[str, Path]]) -> None:
 
 def _resolve_version(
     version: VersionArg,
-    source_path: Optional[Union[str, Path]],
+    source_path: str | Path | None,
 ) -> PapyrusVersion:
     """Set pystow home and validate *version* against local data."""
     _set_pystow_home(source_path)
@@ -104,7 +102,7 @@ def _resolve_version(
 def _load_schemas(source_module: pystow.Module) -> dict:
     """Read ``data_types.json`` and return ``{section: {col: polars_dtype}}``."""
     dtype_file = source_module.join(name='data_types.json').as_posix()
-    with open(dtype_file, 'r') as fh:
+    with open(dtype_file) as fh:
         raw = json.load(fh, cls=TypeDecoder)
     return {
         key: _to_polars_schema(val) if isinstance(val, dict) else val
@@ -146,7 +144,7 @@ def _read_one_mol_descriptor(
     desc_dir: str,
     schemas: dict,
     lazy: bool,
-    ids: Optional[List[str]],
+    ids: list[str] | None,
     id_col: str,
 ) -> DataOrChunks:
     pattern, schema_key = _resolve_mol_desc_pattern(key, is3d)
@@ -172,8 +170,8 @@ def read_papyrus(
     is3d: bool = False,
     version: VersionArg = 'latest',
     plusplus: bool = True,
-    chunksize: Optional[int] = None,
-    source_path: Optional[str] = None,
+    chunksize: int | None = None,
+    source_path: str | None = None,
 ) -> DataOrChunks:
     """Read the Papyrus bioactivity dataset.
 
@@ -205,7 +203,7 @@ def read_papyrus(
 
 
 def read_protein_set(
-    source_path: Optional[str] = None,
+    source_path: str | None = None,
     version: VersionArg = 'latest',
 ) -> pl.DataFrame:
     """Read the protein-target table of the Papyrus dataset.
@@ -228,9 +226,9 @@ def read_molecular_descriptors(
     desc_type: str = 'mold2',
     is3d: bool = False,
     version: VersionArg = 'latest',
-    chunksize: Optional[int] = None,
-    source_path: Optional[str] = None,
-    ids: Optional[List[str]] = None,
+    chunksize: int | None = None,
+    source_path: str | None = None,
+    ids: list[str] | None = None,
     verbose: bool = True,
 ) -> DataOrChunks:
     """Read pre-computed molecular descriptors.
@@ -273,11 +271,11 @@ def read_molecular_descriptors(
 
 
 def read_protein_descriptors(
-    desc_type: Union[str, Descriptor, Transform] = 'unirep',
+    desc_type: str | Descriptor | Transform = 'unirep',
     version: VersionArg = 'latest',
-    chunksize: Optional[int] = None,
-    source_path: Optional[str] = None,
-    ids: Optional[List[str]] = None,
+    chunksize: int | None = None,
+    source_path: str | None = None,
+    ids: list[str] | None = None,
     verbose: bool = True,
     **kwargs,
 ) -> pl.DataFrame:
@@ -349,11 +347,11 @@ def read_protein_descriptors(
 def read_molecular_structures(
     is3d: bool = False,
     version: VersionArg = 'latest',
-    chunksize: Optional[int] = None,
-    source_path: Optional[str] = None,
-    ids: Optional[List[str]] = None,
+    chunksize: int | None = None,
+    source_path: str | None = None,
+    ids: list[str] | None = None,
     verbose: bool = True,
-) -> Union[pl.DataFrame, Generator[pl.DataFrame, None, None]]:
+) -> pl.DataFrame | Generator[pl.DataFrame]:
     """Read molecular structures from the Papyrus SD files.
 
     Returns a :class:`~polars.DataFrame` (``chunksize=None``) or a generator
@@ -389,7 +387,7 @@ def read_molecular_structures(
 
 def _read_structures_full(
     sd_file: str,
-    ids: Optional[List[str]],
+    ids: list[str] | None,
     id_col: str,
     verbose: bool,
 ) -> pl.DataFrame:
@@ -409,10 +407,10 @@ def _read_structures_full(
 def _read_structures_chunked(
     sd_file: str,
     chunksize: int,
-    ids: Optional[List[str]],
+    ids: list[str] | None,
     id_col: str,
     verbose: bool,
-) -> Generator[pl.DataFrame, None, None]:
+) -> Generator[pl.DataFrame]:
     if not isinstance(chunksize, int) or chunksize < 1:
         raise ValueError('chunksize must be a positive integer.')
 
@@ -448,7 +446,7 @@ def _read_unirep(
     filepath: str,
     schema: dict,
     lazy: bool,
-    ids: Optional[List[str]],
+    ids: list[str] | None,
 ) -> pl.DataFrame:
     read_kw = dict(separator='\t', schema_overrides=schema)
     df = pl.scan_csv(filepath, **read_kw).collect() if lazy else pl.read_csv(filepath, **read_kw)
@@ -462,7 +460,7 @@ def _read_unirep(
 def _read_custom_protein_descriptors(
     filepath: str,
     lazy: bool,
-    ids: Optional[List[str]],
+    ids: list[str] | None,
 ) -> pl.DataFrame:
     read_kw = dict(separator='\t')
     df = pl.scan_csv(filepath, **read_kw).collect() if lazy else pl.read_csv(filepath, **read_kw)

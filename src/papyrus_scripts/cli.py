@@ -415,4 +415,4 @@ def convert(indir, version, format, level, extreme):
                 convert_gz_to_xz(filepath, out, compression_level=level,
                                  extreme=extreme, progress=True
                                  )
-                os.remove(filepath)
+                os.remove(filepath)

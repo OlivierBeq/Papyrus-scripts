@@ -9,7 +9,7 @@ import lzma
 import re
 import warnings
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Optional, Tuple, Union
+from collections.abc import Callable, Iterable, Iterator
 
 from rdkit import Chem, RDLogger
 from rdkit.Chem import (
@@ -27,7 +27,7 @@ from tqdm.auto import tqdm
 # ---------------------------------------------------------------------------
 
 #: A source accepted by any supplier: a file path or an open file-like object.
-Source = Union[str, Path, io.TextIOBase, io.BufferedIOBase]
+Source = str | Path | io.TextIOBase | io.BufferedIOBase
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ _BINARY_FORMATS = {'mae', 'sd', 'mol'}
 _TEXT_FORMATS = {'smi', 'mol2'}
 
 
-def _strip_compression_suffix(filename: str) -> Tuple[Optional[str], Callable, bool, str]:
+def _strip_compression_suffix(filename: str) -> tuple[str | None, Callable, bool, str]:
     """Return ``(label, open_fn, is_binary, inner_filename)`` for a (possibly
     compressed) filename.
 
@@ -110,7 +110,7 @@ class ForwardMol2MolSupplier:
 
     def __init__(
         self,
-        fileobj: Union[str, Path, io.TextIOBase],
+        fileobj: str | Path | io.TextIOBase,
         sanitize: bool = True,
         removeHs: bool = True,
         cleanupSubstructures: bool = True,
@@ -129,7 +129,7 @@ class ForwardMol2MolSupplier:
 
         if isinstance(fileobj, (str, Path)):
             self._owns_handle = True
-            self._handle: io.TextIOBase = open(fileobj, 'r')
+            self._handle: io.TextIOBase = open(fileobj)
         elif isinstance(fileobj, io.TextIOBase):
             self._owns_handle = False
             self._handle = fileobj
@@ -139,7 +139,7 @@ class ForwardMol2MolSupplier:
                 f'file object, got {type(fileobj).__name__!r}.'
             )
 
-        self._iterator: Optional[Iterator] = None
+        self._iterator: Iterator | None = None
 
     # ------------------------------------------------------------------
     # Context-manager protocol
@@ -155,7 +155,7 @@ class ForwardMol2MolSupplier:
     # Iteration
     # ------------------------------------------------------------------
 
-    def _iterate(self) -> Iterator[Optional[Chem.Mol]]:
+    def _iterate(self) -> Iterator[Chem.Mol | None]:
         self._buffer = self._handle.read(self._BUFFER_SIZE)
         while True:
             # Find all delimiter positions that are NOT at position 0
@@ -182,7 +182,7 @@ class ForwardMol2MolSupplier:
                 yield self._parse_block(self._buffer[: sep_positions[0]])
                 self._buffer = self._buffer[sep_positions[0]:]
 
-    def _parse_block(self, block: str) -> Optional[Chem.Mol]:
+    def _parse_block(self, block: str) -> Chem.Mol | None:
         return MolFromMol2Block(
             block,
             self.sanitize,
@@ -190,12 +190,12 @@ class ForwardMol2MolSupplier:
             self.cleanupSubstructures,
         )
 
-    def __iter__(self) -> Iterator[Optional[Chem.Mol]]:
+    def __iter__(self) -> Iterator[Chem.Mol | None]:
         if self._iterator is None:
             self._iterator = self._iterate()
         yield from self._iterator
 
-    def __next__(self) -> Optional[Chem.Mol]:
+    def __next__(self) -> Chem.Mol | None:
         if self._iterator is None:
             self._iterator = self._iterate()
         return next(self._iterator)
@@ -222,7 +222,7 @@ class ForwardSmilesMolSupplier:
 
     def __init__(
         self,
-        fileobj: Union[str, Path, io.TextIOBase],
+        fileobj: str | Path | io.TextIOBase,
         delimiter: str = '\t',
         smilesColumn: int = 0,
         nameColumn: int = 1,
@@ -244,7 +244,7 @@ class ForwardSmilesMolSupplier:
         self.titleLine    = titleLine
         self.sanitize     = sanitize
         self._buffer: str = ''
-        self._iterator: Optional[Iterator] = None
+        self._iterator: Iterator | None = None
 
         if isinstance(fileobj, (str, Path)):
             # Let RDKit handle the file natively — most efficient path.
@@ -283,7 +283,7 @@ class ForwardSmilesMolSupplier:
     # Iteration
     # ------------------------------------------------------------------
 
-    def _iterate(self) -> Iterator[Optional[Chem.Mol]]:
+    def _iterate(self) -> Iterator[Chem.Mol | None]:
         """Stream molecules from a text-mode file object line by line."""
         if self.titleLine:
             self._handle.readline()
@@ -306,7 +306,7 @@ class ForwardSmilesMolSupplier:
                 yield self._parse_smiles_line(self._buffer[:end])
                 self._buffer = self._buffer[end:]
 
-    def _parse_smiles_line(self, line: str) -> Optional[Chem.Mol]:
+    def _parse_smiles_line(self, line: str) -> Chem.Mol | None:
         # Suppress RDKit log noise when there is no name column.
         RDLogger.DisableLog('rdApp.*')
         mol = next(
@@ -322,12 +322,12 @@ class ForwardSmilesMolSupplier:
         RDLogger.EnableLog('rdApp.*')
         return mol
 
-    def __iter__(self) -> Iterator[Optional[Chem.Mol]]:
+    def __iter__(self) -> Iterator[Chem.Mol | None]:
         if self._iterator is None:
             self._iterator = self._iterate()
         yield from self._iterator
 
-    def __next__(self) -> Optional[Chem.Mol]:
+    def __next__(self) -> Chem.Mol | None:
         if self._iterator is None:
             self._iterator = self._iterate()
         return next(self._iterator)
@@ -365,10 +365,10 @@ class MolSupplier:
 
     def __init__(
         self,
-        source: Optional[Source] = None,
-        supplier: Optional[Iterable[Chem.Mol]] = None,
-        format: Optional[str] = None,
-        compression: Optional[str] = None,
+        source: Source | None = None,
+        supplier: Iterable[Chem.Mol] | None = None,
+        format: str | None = None,
+        compression: str | None = None,
         **kwargs,
     ):
         """Initialise the supplier.
@@ -406,9 +406,9 @@ class MolSupplier:
         self._supplier_kwargs = kwargs
 
         self._owns_handle = False   # whether we opened the stream
-        self._handle: Optional[io.IOBase] = None
-        self._inner_supplier: Optional[Iterable[Chem.Mol]] = None
-        self._iterator: Optional[Iterator[Tuple[int, Chem.Mol]]] = None
+        self._handle: io.IOBase | None = None
+        self._inner_supplier: Iterable[Chem.Mol] | None = None
+        self._iterator: Iterator[tuple[int, Chem.Mol]] | None = None
 
         # ------------------------------------------------------------------
         # Branch 1: a pre-built supplier is given — nothing else to do.
@@ -489,7 +489,7 @@ class MolSupplier:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _open_fn_for_label(label: str) -> Tuple[Callable, bool]:
+    def _open_fn_for_label(label: str) -> tuple[Callable, bool]:
         """Return ``(open_fn, is_binary)`` for an explicit compression label."""
         for _label, open_fn, binary in _COMPRESSION_MAP.values():
             if _label == label:
@@ -547,7 +547,7 @@ class MolSupplier:
         self,
         start: int = 0,
         progress: bool = True,
-        total: Optional[int] = None,
+        total: int | None = None,
     ) -> None:
         """Configure iteration behaviour after construction.
 
@@ -563,7 +563,7 @@ class MolSupplier:
     # Core generator
     # ------------------------------------------------------------------
 
-    def _processed_mol_supplier(self) -> Iterator[Tuple[int, Chem.Mol]]:
+    def _processed_mol_supplier(self) -> Iterator[tuple[int, Chem.Mol]]:
         """Yield ``(mol_id, rdmol)`` pairs, skipping ``None`` entries."""
         enumerated = enumerate(self._inner_supplier, self._iter_start)
         if self._iter_progress:
@@ -592,12 +592,12 @@ class MolSupplier:
     # Iteration protocol
     # ------------------------------------------------------------------
 
-    def __iter__(self) -> Iterator[Tuple[int, Chem.Mol]]:
+    def __iter__(self) -> Iterator[tuple[int, Chem.Mol]]:
         if self._iterator is None:
             self._iterator = self._processed_mol_supplier()
         yield from self._iterator
 
-    def __next__(self) -> Tuple[int, Chem.Mol]:
+    def __next__(self) -> tuple[int, Chem.Mol]:
         if self._iterator is None:
             self._iterator = self._processed_mol_supplier()
         return next(self._iterator)

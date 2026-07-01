@@ -2,13 +2,12 @@
 
 """Filtering functions for the Papyrus dataset."""
 
-from __future__ import annotations
-
 import os
 import re
 from functools import wraps
 from itertools import chain
-from typing import Any, Callable, Generator, Iterator, List, Optional, Union
+from typing import Any
+from collections.abc import Callable, Iterator
 
 import numpy as np
 import polars as pl
@@ -23,9 +22,9 @@ from .subsim_search import FPSubSim2
 # ---------------------------------------------------------------------------
 
 #: Any of the two input forms accepted by every public filter.
-DataInput = Union[pl.DataFrame, pl.LazyFrame]
+DataInput = pl.DataFrame | pl.LazyFrame
 #: The corresponding output form.
-DataOutput = Union[pl.DataFrame, pl.LazyFrame]
+DataOutput = pl.DataFrame | pl.LazyFrame
 
 
 # ---------------------------------------------------------------------------
@@ -65,13 +64,13 @@ def _supports_lazy(fn: Callable) -> Callable:
 # Papyrus++ column-injection helper
 # ---------------------------------------------------------------------------
 
-def _with_papyruspp_columns(data: pl.DataFrame) -> tuple[pl.DataFrame, List[str]]:
+def _with_papyruspp_columns(data: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
     """Add ``Activity_class`` and ``type_other`` null columns when absent.
 
     Returns the (possibly augmented) DataFrame and the list of column names
     that were added, so callers can drop them afterwards.
     """
-    added: List[str] = []
+    added: list[str] = []
     for col in ('Activity_class', 'type_other'):
         if col not in data.columns:
             data = data.with_columns(pl.lit(None).cast(pl.Utf8).alias(col))
@@ -84,11 +83,11 @@ def _with_papyruspp_columns(data: pl.DataFrame) -> tuple[pl.DataFrame, List[str]
 # ---------------------------------------------------------------------------
 
 def equalize_cell_size_in_row(
-    row: List,
-    cols: Optional[List[int]] = None,
+    row: list,
+    cols: list[int] | None = None,
     fill_mode: str = 'internal',
     fill_value: object = '',
-) -> List:
+) -> list:
     """Equalise the number of values in each list-containing cell of a row.
 
     Operates on a plain Python list (one element per column).
@@ -133,7 +132,7 @@ def equalize_cell_size_in_row(
 
 
 def equalize_cell_size_in_column(
-    col: Union[pl.Series, List],
+    col: pl.Series | list,
     fill_mode: str = 'internal',
     fill_value: object = '',
 ) -> pl.Series:
@@ -184,7 +183,7 @@ _LISTVALS_COLS = [
 ]
 
 
-def _listvals(vals: List) -> str:
+def _listvals(vals: list) -> str:
     """Return the single value when all equal, else ';'-join all."""
     strs = [str(v) for v in vals]
     return strs[0] if len(set(strs)) == 1 else ';'.join(strs)
@@ -192,7 +191,7 @@ def _listvals(vals: List) -> str:
 
 def process_groups(
     data: pl.DataFrame,
-    additional_columns: Optional[List[str]] = None,
+    additional_columns: list[str] | None = None,
 ) -> pl.DataFrame:
     """Aggregate duplicate activity records, grouping by ``Activity_ID``.
 
@@ -205,7 +204,7 @@ def process_groups(
     has_pchembl   = 'pchembl_value' in data.columns
     cols          = data.columns
 
-    rows: List[dict] = []
+    rows: list[dict] = []
     for (act_id,), grp in data.group_by(['Activity_ID'], maintain_order=True):
         row: dict = {'Activity_ID': act_id}
 
@@ -238,7 +237,7 @@ def process_groups(
 # Keep the single-group entry point for backward compatibility.
 def process_group(
     group: pl.DataFrame,
-    additional_columns: Optional[List[str]] = None,
+    additional_columns: list[str] | None = None,
 ) -> pl.DataFrame:
     """Aggregate a single Activity-ID group.
 
@@ -252,7 +251,7 @@ def process_group(
 # Row-type helpers  (kept for external callers; logic unchanged)
 # ---------------------------------------------------------------------------
 
-def is_activity_type(row: dict, activity_types: List[str]) -> bool:
+def is_activity_type(row: dict, activity_types: list[str]) -> bool:
     """Return True when *row* matches one of the *activity_types* unambiguously.
 
     :param row: a dict representing a DataFrame row
@@ -264,7 +263,7 @@ def is_activity_type(row: dict, activity_types: List[str]) -> bool:
     )
 
 
-def is_multiple_types(row: dict, activity_types: List[str]) -> bool:
+def is_multiple_types(row: dict, activity_types: list[str]) -> bool:
     """Return True when *row* has semicolon-separated values in any *activity_types*.
 
     :param row: a dict representing a DataFrame row
@@ -280,9 +279,9 @@ def is_multiple_types(row: dict, activity_types: List[str]) -> bool:
 def _unnest_and_filter(
         df: pl.DataFrame,
         keep_mask: Callable[[pl.DataFrame], pl.Series],
-        ordered_columns: List[str],
+        ordered_columns: list[str],
         aggregate: bool = True,
-        additional_columns: Optional[List[str]] = None,
+        additional_columns: list[str] | None = None,
 ) -> pl.DataFrame:
     """Split semicolon-joined columns, filter rows, and optionally re-aggregate.
 
@@ -345,7 +344,7 @@ def keep_quality(
 @_supports_lazy
 def keep_source(
         data: pl.DataFrame,
-        source: Union[List[str], str] = 'all',
+        source: list[str] | str = 'all',
 ) -> pl.DataFrame:
     """Keep only rows from the specified data source(s).
 
@@ -425,7 +424,7 @@ def keep_source(
 @_supports_lazy
 def keep_type(
         data: pl.DataFrame,
-        activity_types: Union[List[str], str] = 'ic50',
+        activity_types: list[str] | str = 'ic50',
 ) -> pl.DataFrame:
     """Keep only rows matching the desired activity type(s).
 
@@ -505,7 +504,7 @@ def keep_type(
 
 def keep_accession(
         data: DataInput,
-        accession: Union[List[str], str] = 'all',
+        accession: list[str] | str = 'all',
 ) -> DataOutput:
     """Keep only rows whose target ID matches the given UniProt accession(s).
 
@@ -523,7 +522,7 @@ def keep_accession(
 def keep_protein_class(
         data: pl.DataFrame,
         protein_data: pl.DataFrame,
-        classes: Optional[Union[dict, List[dict]]] = None,
+        classes: dict | list[dict] | None = None,
         generic_regex: bool = False,
 ) -> pl.DataFrame:
     """Keep only rows whose target belongs to the desired protein class(es).
@@ -630,7 +629,7 @@ def keep_protein_class(
 def keep_organism(
         data: pl.DataFrame,
         protein_data: pl.DataFrame,
-        organism: Optional[Union[str, List[str]]] = 'Homo sapiens (Human)',
+        organism: str | list[str] | None = 'Homo sapiens (Human)',
         generic_regex: bool = False,
 ) -> pl.DataFrame:
     """Keep only rows whose target comes from the specified organism(s).
@@ -670,7 +669,7 @@ def keep_organism(
 def keep_match(
         data: DataInput,
         column: str,
-        values: Union[Any, List[Any]],
+        values: Any | list[Any],
 ) -> DataOutput:
     """Keep only rows where *column* is in *values* (equivalent to ``is_in``).
 
@@ -686,7 +685,7 @@ def keep_match(
 def keep_not_match(
         data: DataInput,
         column: str,
-        values: Union[Any, List[Any]],
+        values: Any | list[Any],
 ) -> DataOutput:
     """Keep only rows where *column* is **not** in *values*.
 
@@ -747,7 +746,7 @@ def keep_not_contains(
 # Similarity / substructure helpers
 # ---------------------------------------------------------------------------
 
-def _load_fpsubsim2(fpsubsim2_file: str, fingerprint: Optional[Fingerprint]) -> FPSubSim2:
+def _load_fpsubsim2(fpsubsim2_file: str, fingerprint: Fingerprint | None) -> FPSubSim2:
     """Load an :class:`~subsim_search.FPSubSim2` database and validate *fingerprint*.
 
     :param fpsubsim2_file: path to the ``.h5`` database
@@ -769,7 +768,7 @@ def _load_fpsubsim2(fpsubsim2_file: str, fingerprint: Optional[Fingerprint]) -> 
 
 def _collect_similar_molecules(
         fpss2: FPSubSim2,
-        molecule_smiles: List[str],
+        molecule_smiles: list[str],
         fingerprint: Fingerprint,
         threshold: float,
         cuda: bool,
@@ -794,7 +793,7 @@ def _collect_similar_molecules(
 
 def keep_similar(
         data: DataInput,
-        molecule_smiles: Union[str, List[str]],
+        molecule_smiles: str | list[str],
         fpsubsim2_file: str,
         fingerprint: Fingerprint = MorganFingerprint(),
         threshold: float = 0.7,
@@ -822,7 +821,7 @@ def keep_similar(
 
 def keep_dissimilar(
         data: DataInput,
-        molecule_smiles: Union[str, List[str]],
+        molecule_smiles: str | list[str],
         fpsubsim2_file: str,
         fingerprint: Fingerprint = MorganFingerprint(),
         threshold: float = 0.7,
@@ -846,7 +845,7 @@ def keep_dissimilar(
 
 def _collect_substructure_molecules(
         fpss2: FPSubSim2,
-        molecule_smiles: List[str],
+        molecule_smiles: list[str],
 ) -> pl.DataFrame:
     """Run substructure search for every query SMILES and return merged results."""
     engine = fpss2.get_substructure_lib()
@@ -856,7 +855,7 @@ def _collect_substructure_molecules(
 
 def keep_substructure(
         data: DataInput,
-        molecule_smiles: Union[str, List[str]],
+        molecule_smiles: str | list[str],
         fpsubsim2_file: str,
 ) -> DataOutput:
     """Keep only rows associated to substructures of the query molecule(s).
@@ -874,7 +873,7 @@ def keep_substructure(
 
 def keep_not_substructure(
         data: DataInput,
-        molecule_smiles: Union[str, List[str]],
+        molecule_smiles: str | list[str],
         fpsubsim2_file: str,
 ) -> DataOutput:
     """Keep only rows associated to molecules that are **not** substructures of the query.
@@ -895,9 +894,9 @@ def keep_not_substructure(
 # ---------------------------------------------------------------------------
 
 def consume_chunks(
-        generator: Union[pl.LazyFrame, Iterator],
+        generator: pl.LazyFrame | Iterator,
         progress: bool = True,
-        total: Optional[int] = None,
+        total: int | None = None,
 ) -> pl.DataFrame:
     """Materialise a lazy frame or a generator of DataFrames into one DataFrame.
 
@@ -914,7 +913,7 @@ def consume_chunks(
     if isinstance(generator, pl.LazyFrame):
         return generator.collect()
 
-    frames: List[pl.DataFrame] = []
+    frames: list[pl.DataFrame] = []
     iterable = tqdm(generator, total=total) if progress else generator
     for item in iterable:
         if isinstance(item, pl.DataFrame):
@@ -934,7 +933,7 @@ def consume_chunks(
 
 def yscrambling(
         data: DataInput,
-        y_var: Union[str, List[str]] = 'pchembl_value_Mean',
+        y_var: str | list[str] = 'pchembl_value_Mean',
         random_state: int = 1234,
 ) -> pl.DataFrame:
     """Randomly permute the target variable(s) for y-scrambling experiments.

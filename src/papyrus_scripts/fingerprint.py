@@ -1,4 +1,6 @@
-from typing import Dict, Callable, List
+# -*- coding: utf-8 -*-
+
+from collections.abc import Callable
 import json
 import hashlib
 from abc import ABC, abstractmethod
@@ -20,7 +22,7 @@ except ImportError as e:
 
 
 class Fingerprint(ABC):
-    def __init__(self, name: str, params: Dict, call_func: Callable):
+    def __init__(self, name: str, params: dict, call_func: Callable):
         self.name = name
         self.params = params
         self.func = call_func
@@ -63,12 +65,12 @@ class Fingerprint(ABC):
         return subclasses
 
     @abstractmethod
-    def get(self, mol: Chem.Mol) -> List[int]:
+    def get(self, mol: Chem.Mol) -> list[int]:
         """Get the bistring fingerprint of the molecule"""
 
 
 class RDKitFingerprint(Fingerprint):
-    def get(self, mol: Chem.Mol) -> List[int]:
+    def get(self, mol: Chem.Mol) -> list[int]:
         """Get the bistring fingerprint of the molecule and popcounts"""
         if isinstance(FPSim2, ImportError):
             raise ImportError('Some required dependencies are missing:\n\ttables, FPSim2')
@@ -79,12 +81,12 @@ class RDKitFingerprint(Fingerprint):
 
 class MACCSKeysFingerprint(RDKitFingerprint):
     def __init__(self):
-        super(MACCSKeysFingerprint, self).__init__('MACCSKeys', {}, rdMolDescriptors.GetMACCSKeysFingerprint)
+        super().__init__('MACCSKeys', {}, rdMolDescriptors.GetMACCSKeysFingerprint)
 
 
 class AvalonFingerprint(RDKitFingerprint):
     def __init__(self, nBits: int = 512, isQuery: bool = False, resetVect: bool = False, bitFlags: int = 15761407):
-        super(AvalonFingerprint, self).__init__('Avalon',
+        super().__init__('Avalon',
                                                 {'nBits': nBits,
                                                  'isQuery': isQuery,
                                                  'resetVect': resetVect,
@@ -95,7 +97,7 @@ class AvalonFingerprint(RDKitFingerprint):
 class MorganFingerprint(RDKitFingerprint):
     def __init__(self, radius: int = 2, nBits: int = 2048, invariants: list = [], fromAtoms: list = [],
                  useChirality: bool = False, useBondTypes: bool = True, useFeatures: bool = False):
-        super(MorganFingerprint, self).__init__('Morgan',
+        super().__init__('Morgan',
                                                 {'radius': radius,
                                                  'nBits': nBits,
                                                  'invariants': invariants,
@@ -107,10 +109,9 @@ class MorganFingerprint(RDKitFingerprint):
 
 
 class TopologicalTorsionFingerprint(RDKitFingerprint):
-    def __init__(self, nBits: int = 2048, targetSize: int = 4, fromAtoms: List = 0,
-                 ignoreAtoms: List = 0, atomInvariants: List = 0, includeChirality: bool = False):
-        super(TopologicalTorsionFingerprint, self
-              ).__init__('TopologicalTorsion',
+    def __init__(self, nBits: int = 2048, targetSize: int = 4, fromAtoms: list = 0,
+                 ignoreAtoms: list = 0, atomInvariants: list = 0, includeChirality: bool = False):
+        super().__init__('TopologicalTorsion',
                          {"nBits": nBits,
                           "targetSize": targetSize,
                           "fromAtoms": fromAtoms,
@@ -122,10 +123,10 @@ class TopologicalTorsionFingerprint(RDKitFingerprint):
 
 class AtomPairFingerprint(RDKitFingerprint):
     def __init__(self, nBits: int = 2048, minLength: int = 1, maxLength: int = 30,
-                 fromAtoms: List = 0, ignoreAtoms: List = 0, atomInvariants: List = 0,
+                 fromAtoms: list = 0, ignoreAtoms: list = 0, atomInvariants: list = 0,
                  nBitsPerEntry: int = 4, includeChirality: bool = False,
                  use2D: bool = True, confId: int = -1):
-        super(AtomPairFingerprint, self).__init__('AtomPair',
+        super().__init__('AtomPair',
                                                   {"nBits": nBits,
                                                    "minLength": minLength,
                                                    "maxLength": maxLength,
@@ -142,9 +143,9 @@ class AtomPairFingerprint(RDKitFingerprint):
 class RDKitTopologicalFingerprint(RDKitFingerprint):
     def __init__(self, fpSize: int = 2048, minPath: int = 1, maxPath: int = 7, nBitsPerHash: int = 2,
                  useHs: bool = True, tgtDensity: float = 0.0, minSize: int = 128,
-                 branchedPaths: bool = True, useBondOrder: bool = True, atomInvariants: List = 0,
-                 fromAtoms: List = 0, atomBits: List = None, bitInfo: List = None):
-        super(RDKitTopologicalFingerprint, self).__init__('RDKFingerprint',
+                 branchedPaths: bool = True, useBondOrder: bool = True, atomInvariants: list = 0,
+                 fromAtoms: list = 0, atomBits: list = None, bitInfo: list = None):
+        super().__init__('RDKFingerprint',
                                                           {"minPath": minPath,
                                                            "maxPath": maxPath,
                                                            "fpSize": fpSize,
@@ -163,7 +164,7 @@ class RDKitTopologicalFingerprint(RDKitFingerprint):
 
 class RDKPatternFingerprint(RDKitFingerprint):
     def __init__(self, fpSize: int = 2048, atomCounts: list = [], setOnlyBits: list = None):
-        super(RDKPatternFingerprint, self).__init__('RDKPatternFingerprint',
+        super().__init__('RDKPatternFingerprint',
                                                     {'fpSize': fpSize,
                                                      'atomCounts': atomCounts,
                                                      'setOnlyBits': setOnlyBits},
@@ -171,16 +172,16 @@ class RDKPatternFingerprint(RDKitFingerprint):
 
 
 class OBFingerprint(Fingerprint):
-    def __init__(self, name: str, params: Dict, call_func: Callable):
+    def __init__(self, name: str, params: dict, call_func: Callable):
         if isinstance(pybel, ImportError) and isinstance(FPSim2, ImportError):
             raise ImportError('Some required dependencies are missing:\n\topenbabel, FPSim2')
         elif isinstance(pybel, ImportError):
             raise ImportError('Some required dependencies are missing:\n\topenbabel')
         elif isinstance(FPSim2, ImportError):
             raise ImportError('Some required dependencies are missing:\n\tFPSim2')
-        super(OBFingerprint, self).__init__(name, params, call_func)
+        super().__init__(name, params, call_func)
 
-    def get(self, mol: Chem.Mol) -> List[int]:
+    def get(self, mol: Chem.Mol) -> list[int]:
         """Get the bistring fingerprint of the molecule and popcounts"""
         binvec = DataStructs.ExplicitBitVect(self.length)
         obmol = pybel.readstring('smi', Chem.MolToSmiles(mol))
@@ -192,21 +193,21 @@ class OBFingerprint(Fingerprint):
 
 class FP2Fingerprint(OBFingerprint):
     def __init__(self):
-        super(FP2Fingerprint, self).__init__('FP2',
+        super().__init__('FP2',
                                              {},
                                              'FP2')
 
 
 class FP3Fingerprint(OBFingerprint):
     def __init__(self):
-        super(FP3Fingerprint, self).__init__('FP3',
+        super().__init__('FP3',
                                              {},
                                              'FP3')
 
 
 class FP4Fingerprint(OBFingerprint):
     def __init__(self):
-        super(FP4Fingerprint, self).__init__('FP4',
+        super().__init__('FP4',
                                              {},
                                              'FP4')
 

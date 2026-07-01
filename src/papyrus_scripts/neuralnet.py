@@ -4,7 +4,8 @@ import os
 import time
 import random
 import itertools
-from typing import Iterator, List, Optional, Union
+
+from collections.abc import Iterator
 
 import numpy as np
 import pandas as pd
@@ -36,7 +37,7 @@ def cuda(var: nn.Module):
     return var
 
 
-def Variable(tensor: Union[T.Tensor, np.ndarray, List]):
+def Variable(tensor: T.Tensor | np.ndarray | list):
     """Transform a list or numpy array into a pytorch tensor on GPU (if available).
 
     Originates from Xuhan Liu's DrugEx version 1 (https://github.com/XuhanLiu/DrugEx/tree/1.0)
@@ -53,7 +54,7 @@ def Variable(tensor: Union[T.Tensor, np.ndarray, List]):
     return cuda(T.autograd.Variable(tensor))
 
 
-def set_seed(seed: Optional[int] = None) -> Optional[np.random.Generator]:
+def set_seed(seed: int | None = None) -> np.random.Generator | None:
     """Set the internal seed of rnadom number generators for reproducibility."""
     if seed is None:
         return
@@ -70,7 +71,7 @@ def set_seed(seed: Optional[int] = None) -> Optional[np.random.Generator]:
 class BaseNN(nn.Module):
     def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
-                 random_seed: Optional[int] = None):
+                 random_seed: int | None = None):
         """Base class for neural networks.
 
         Architecture is derived from https://doi.org/10.1186/s13321-017-0232-0
@@ -97,7 +98,7 @@ class BaseNN(nn.Module):
         self.dropout = dropout
         self.rng = set_seed(random_seed)
 
-    def set_validation(self, X: Union[Iterator, pd.DataFrame], y: Union[Iterator, pd.Series]):
+    def set_validation(self, X: Iterator | pd.DataFrame, y: Iterator | pd.Series):
         """Set the validation set to be used during fitting.
 
         :param X: features to predict y from
@@ -111,7 +112,7 @@ class BaseNN(nn.Module):
         else:
             self.loader_valid = loader_from_iterator(X, y, batch_size=self.batch_size)
 
-    def set_architecture(self, dimensions: List[int]):
+    def set_architecture(self, dimensions: list[int]):
         """Define the size of each fully connected linear hidden layer
 
         :param dimensions: dimensions of the layers
@@ -124,7 +125,7 @@ class BaseNN(nn.Module):
         """Reset weights and reload the initial state of the model"""
         self.load_state_dict(T.load(os.path.join(self.out, 'empty_model.pkg')))
 
-    def fit(self, X: Union[Iterator, pd.DataFrame], y: Union[Iterator, pd.Series]):
+    def fit(self, X: Iterator | pd.DataFrame, y: Iterator | pd.Series):
         """Fit neural network with training set and optimize for loss on validation set.
 
         :param X: features to predict y from
@@ -200,7 +201,7 @@ class BaseNN(nn.Module):
             loss += self.criterion(y_, yb).item()
         return loss / len(loader)
 
-    def predict(self, X: Union[pd.DataFrame, np.ndarray]):
+    def predict(self, X: pd.DataFrame | np.ndarray):
         """Predict outcome for the incoming data
 
         :param X: features to predict the endpoint(s) from
@@ -223,7 +224,7 @@ class BaseNN(nn.Module):
 class SingleTaskNNClassifier(BaseNN):
     def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
-                 random_seed: Optional[int] = None):
+                 random_seed: int | None = None):
         """Neural Network classifier to predict a unique endpoint.
 
         Architecture is derived from https://doi.org/10.1186/s13321-017-0232-0
@@ -236,7 +237,7 @@ class SingleTaskNNClassifier(BaseNN):
         :param dropout: fraction of randomly disabled neurons at each epoch during training
         :param random_seed: seed of random number generators
         """
-        super(SingleTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
+        super().__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
         self.dropoutl = nn.Dropout(self.dropout)
         # Consider binary classification as default
         self.criterion = nn.BCELoss()
@@ -295,7 +296,7 @@ class SingleTaskNNClassifier(BaseNN):
 class SingleTaskNNRegressor(BaseNN):
     def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
-                 random_seed: Optional[int] = None):
+                 random_seed: int | None = None):
         """Neural Network regressor to predict a unique endpoint.
 
         Architecture is adapted from https://doi.org/10.1186/s13321-017-0232-0 for regression
@@ -308,7 +309,7 @@ class SingleTaskNNRegressor(BaseNN):
         :param dropout: fraction of randomly disabled neurons at each epoch during training
         :param random_seed: seed of random number generators
         """
-        super(SingleTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
+        super().__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
         self.dropoutl = nn.Dropout(self.dropout)
         self.criterion = nn.MSELoss()
 
@@ -337,7 +338,7 @@ class SingleTaskNNRegressor(BaseNN):
 class MultiTaskNNClassifier(BaseNN):
     def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
-                 random_seed: Optional[int] = None):
+                 random_seed: int | None = None):
         """Neural Network classifier to predict multiple endpoints.
 
         Architecture is derived from https://doi.org/10.1186/s13321-017-0232-0
@@ -350,7 +351,7 @@ class MultiTaskNNClassifier(BaseNN):
         :param dropout: fraction of randomly disabled neurons at each epoch during training
         :param random_seed: seed of random number generators
         """
-        super(MultiTaskNNClassifier, self).__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
+        super().__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
         self.criterion = nn.BCELoss()
         self.activation = nn.Sigmoid()
         self.dropoutl = nn.Dropout(self.dropout)
@@ -399,7 +400,7 @@ class MultiTaskNNClassifier(BaseNN):
 class MultiTaskNNRegressor(BaseNN):
     def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
-                 random_seed: Optional[int] = None):
+                 random_seed: int | None = None):
         """Neural Network regressor to predict multiple endpoints.
 
         Architecture is adapted from https://doi.org/10.1186/s13321-017-0232-0 for multi-task regression
@@ -412,7 +413,7 @@ class MultiTaskNNRegressor(BaseNN):
         :param dropout: fraction of randomly disabled neurons at each epoch during training
         :param random_seed: seed of random number generators
         """
-        super(MultiTaskNNRegressor, self).__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
+        super().__init__(out, epochs, lr, early_stop, batch_size, dropout, random_seed)
         self.dropoutl = nn.Dropout(self.dropout)
         self.criterion = nn.MSELoss()
 
@@ -444,7 +445,7 @@ class MultiTaskNNRegressor(BaseNN):
 
 
 def loader_from_dataframe(X: pd.DataFrame,
-                          Y: Union[pd.Series, pd.DataFrame],
+                          Y: pd.Series | pd.DataFrame,
                           batch_size: int = 1024):
     """Get PyTorch data loaders from pandas dataframes
 
@@ -465,9 +466,9 @@ def loader_from_dataframe(X: pd.DataFrame,
     return loader
 
 
-def loader_from_iterator(X: Union[PandasTextFileReader, Iterator],
-                         Y: Union[PandasTextFileReader, Iterator] = None,
-                         y_col: Optional[str] = None,
+def loader_from_iterator(X: PandasTextFileReader | Iterator,
+                         Y: PandasTextFileReader | Iterator = None,
+                         y_col: str | None = None,
                          batch_size: int = 1024):
     """Get PyTorch data loaders from iterators
 
@@ -490,12 +491,11 @@ class IterableDataset(PandasIterableDataset):
 
     def __iter__(self):
         for chunk_x, chunk_y in self.iterator:
-            for row in zip(chunk_x, chunk_y):
-                yield row
+            yield from zip(chunk_x, chunk_y)
 
 
-def split_into_x_and_y(data: Union[PandasTextFileReader, Iterator],
-                       y_col: Union[str, List[str]]):
+def split_into_x_and_y(data: PandasTextFileReader | Iterator,
+                       y_col: str | list[str]):
     """Extract the columns for the data iterator into another iterator.
 
     :param data: the input iterator to extract columns from
@@ -510,7 +510,7 @@ def split_into_x_and_y(data: Union[PandasTextFileReader, Iterator],
     return extract_x(gen_x, y_col), extract_y(gen_y, y_col)
 
 
-def extract_y(data: Union[PandasTextFileReader, Iterator], y_col: List[str]):
+def extract_y(data: PandasTextFileReader | Iterator, y_col: list[str]):
     """Extract the columns from the data."""
     for chunk in data:
         if not np.all(chunk.columns.isin(y_col)):
@@ -518,9 +518,9 @@ def extract_y(data: Union[PandasTextFileReader, Iterator], y_col: List[str]):
         return T.Tensor(chunk[y_col])
 
 
-def extract_x(data: Union[PandasTextFileReader, Iterator], y_col: List[str]):
+def extract_x(data: PandasTextFileReader | Iterator, y_col: list[str]):
     """Extract the columns from the data."""
     for chunk in data:
         if not np.all(data.columns.isin(y_col)):
             raise ValueError(f'columns {chunk.columns} not found in data')
-        return T.Tensor(chunk.drop(columns=y_col))
+        return T.Tensor(chunk.drop(columns=y_col))

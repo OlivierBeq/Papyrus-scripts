@@ -5,7 +5,8 @@
 import os
 import time
 from pathlib import Path
-from typing import Iterator, Generator, Optional, Union
+
+from collections.abc import Iterator, Generator
 
 import pandas as pd
 import pystow
@@ -17,7 +18,7 @@ from tqdm.auto import tqdm, trange
 from .utils import UniprotMatch, IO
 
 
-def papyrus_rcsb_data_root(root_folder: Optional[str | Path] = None) -> pystow.Module:
+def papyrus_rcsb_data_root(root_folder: str | Path | None = None) -> pystow.Module:
     """Return the pystow :class:`~pystow.Module` for the RCSB on-disk folder.
 
     :param root_folder: folder that will contain the RCSB Protein Data Bank data
@@ -54,7 +55,7 @@ def get_all_pdb_ids_with_ligands():
     return pdb_ids
 
 
-def update_rcsb_data(root_folder: Optional[str] = None,
+def update_rcsb_data(root_folder: str | None = None,
                      overwrite: bool = False,
                      verbose: bool = True
                      ) -> pd.DataFrame:
@@ -193,11 +194,11 @@ def update_rcsb_data(root_folder: Optional[str] = None,
     return pdb_data
 
 
-def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
-                root_folder: Optional[str] = None,
+def get_matches(data: pd.DataFrame | PandasTextFileReader | Iterator,
+                root_folder: str | None = None,
                 verbose: bool = True,
-                total: Optional[int] = None,
-                update: bool = True) -> Union[pd.DataFrame, Generator]:
+                total: int | None = None,
+                update: bool = True) -> pd.DataFrame | Generator:
     """
 
     :param data: Papyrus data to be mapped with PDB identifiers
@@ -244,7 +245,7 @@ def get_matches(data: Union[pd.DataFrame, PandasTextFileReader, Iterator],
         raise TypeError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
 
 
-def _chunked_get_matches(chunks: Union[PandasTextFileReader, Iterator], root_folder: Optional[str], verbose: bool,
+def _chunked_get_matches(chunks: PandasTextFileReader | Iterator, root_folder: str | None, verbose: bool,
                          total: int):
     if verbose:
         pbar = tqdm(chunks, total=total, ncols=100)
@@ -252,4 +253,4 @@ def _chunked_get_matches(chunks: Union[PandasTextFileReader, Iterator], root_fol
         pbar = chunks
     for chunk in pbar:
         processed_chunk = get_matches(chunk, root_folder, update=False)
-        yield processed_chunk
+        yield processed_chunk

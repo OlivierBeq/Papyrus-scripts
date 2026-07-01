@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "papyrus_scripts"
 dynamic = ["version"]
 description = "A collection of scripts to handle the Papyrus bioactivity dataset"
+requires-python = ">=3.10"
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
 authors = [
@@ -21,10 +22,9 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 keywords = [
     "bioactivity data",
