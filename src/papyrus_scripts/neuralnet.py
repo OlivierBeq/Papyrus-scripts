@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+from __future__ import annotations
+
 import os
 import time
 import random
@@ -16,13 +18,15 @@ try:
     from torch import nn, optim
     from torch.nn import functional as F
     from torch.utils.data import DataLoader, TensorDataset, IterableDataset as PandasIterableDataset
-except ImportError as e:
-    T = e
-    nn = e
-    # Placeholders
-    T.Tensor = int
-    nn.Module = list
-    PandasIterableDataset = int
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+
+def _require_torch() -> None:
+    """Raise a clear error when PyTorch, an optional dependency, is not installed."""
+    if not HAS_TORCH:
+        raise ImportError('Some required dependencies are missing:\n\tpytorch')
 
 
 def cuda(var: nn.Module):
@@ -32,6 +36,7 @@ def cuda(var: nn.Module):
 
     :param var: torch.nn.Module derived class to be trained on GPU (or CPU if not GPU available)
     """
+    _require_torch()
     if T.cuda.is_available():
         return var.cuda()
     return var
@@ -47,6 +52,7 @@ def Variable(tensor: T.Tensor | np.ndarray | list):
                             left to the CPU.
     :param tensor: the list, numpy array or pytorch tensor to be sent to GPU (if available)
     """
+    _require_torch()
     if isinstance(tensor, np.ndarray):
         tensor = T.from_numpy(tensor)
     if isinstance(tensor, list):
@@ -58,6 +64,7 @@ def set_seed(seed: int | None = None) -> np.random.Generator | None:
     """Set the internal seed of rnadom number generators for reproducibility."""
     if seed is None:
         return
+    _require_torch()
     T.manual_seed(seed)
     T.cuda.manual_seed_all(seed)
     T.cuda.manual_seed(seed)
@@ -68,7 +75,7 @@ def set_seed(seed: int | None = None) -> np.random.Generator | None:
     return rng
 
 
-class BaseNN(nn.Module):
+class BaseNN(nn.Module if HAS_TORCH else object):
     def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: int | None = None):
@@ -84,8 +91,7 @@ class BaseNN(nn.Module):
         :param dropout: fraction of randomly disabled neurons at each epoch during training
         :param random_seed: seed of random number generators
         """
-        if isinstance(T, ImportError):
-            raise ImportError('Some required dependencies are missing:\n\tpytorch')
+        _require_torch()
         if not os.path.isdir(out):
             os.makedirs(out, exist_ok=True)
         super().__init__()
@@ -453,6 +459,7 @@ def loader_from_dataframe(X: pd.DataFrame,
     :param Y: feature(s) to be predicted (dependent variable(s))
     :param batch_size: batch size of the data loader
     """
+    _require_torch()
     if Y is None:
         raise ValueError('Y must be specified')
     if isinstance(X, pd.DataFrame):
@@ -477,6 +484,7 @@ def loader_from_iterator(X: PandasTextFileReader | Iterator,
     :param y_col: name of the columns in X containing the dependent variables to be predicted
     :param batch_size: batch size of the data loader
     """
+    _require_torch()
     if Y is None and y_col is None:
         raise ValueError('either Y or y_col must be specified')
     if Y is None:
@@ -485,8 +493,9 @@ def loader_from_iterator(X: PandasTextFileReader | Iterator,
     return DataLoader(dataset, batch_size=batch_size)
 
 
-class IterableDataset(PandasIterableDataset):
+class IterableDataset(PandasIterableDataset if HAS_TORCH else object):
     def __init__(self, x_iterator: Iterator, y_iterator: Iterator):
+        _require_torch()
         self.iterator = zip(x_iterator, y_iterator)
 
     def __iter__(self):
@@ -512,6 +521,7 @@ def split_into_x_and_y(data: PandasTextFileReader | Iterator,
 
 def extract_y(data: PandasTextFileReader | Iterator, y_col: list[str]):
     """Extract the columns from the data."""
+    _require_torch()
     for chunk in data:
         if not np.all(chunk.columns.isin(y_col)):
             raise ValueError(f'columns {chunk.columns} not found in data')
@@ -520,6 +530,7 @@ def extract_y(data: PandasTextFileReader | Iterator, y_col: list[str]):
 
 def extract_x(data: PandasTextFileReader | Iterator, y_col: list[str]):
     """Extract the columns from the data."""
+    _require_torch()
     for chunk in data:
         if not np.all(data.columns.isin(y_col)):
             raise ValueError(f'columns {chunk.columns} not found in data')

@@ -16,8 +16,8 @@ from rdkit import Chem
 
 from src.papyrus_scripts import fingerprint as fp
 
-FPSIM2_AVAILABLE = not isinstance(fp.FPSim2, ImportError)
-PYBEL_AVAILABLE = not isinstance(fp.pybel, ImportError)
+FPSIM2_AVAILABLE = fp.HAS_FPSIM2
+PYBEL_AVAILABLE = fp.HAS_PYBEL
 
 
 class TestFingerprintConstruction(unittest.TestCase):

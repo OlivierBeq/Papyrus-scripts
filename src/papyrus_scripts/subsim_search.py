@@ -23,24 +23,26 @@ from tqdm.auto import tqdm
 
 try:
     import cupy
-except ImportError as e:
-    cupy = e
+    HAS_CUPY = True
+except ImportError:
+    HAS_CUPY = False
 
 try:
     import tables as tb
-except ImportError as e:
-    tb = e
+    HAS_TABLES = True
+except ImportError:
+    HAS_TABLES = False
 
 try:
-    import FPSim2
     from FPSim2.FPSim2 import FPSim2Engine
     from FPSim2.FPSim2Cuda import FPSim2CudaEngine
     from FPSim2.base import BaseEngine
     from FPSim2.io.backends.base import BaseStorageBackend
     from FPSim2.io.backends.pytables import BATCH_WRITE_SIZE, calc_popcnt_bins_pytables, create_schema
     from FPSim2.io.chem import load_molecule
-except ImportError as e:
-    FPSim2 = e
+    HAS_FPSIM2 = True
+except ImportError:
+    HAS_FPSIM2 = False
     # Stub classes so class definitions below do not fail at import time.
     # Using dedicated stubs (not `object`) avoids MRO conflicts when these are
     # mixed with other bases that already implicitly inherit from `object`.
@@ -61,23 +63,14 @@ from .utils.mol_reader import MolSupplier
 def _check_optional_deps() -> None:
     """Raise :exc:`ImportError` when *tables* or *FPSim2* are unavailable."""
     missing = []
-    if isinstance(tb, ImportError):
+    if not HAS_TABLES:
         missing.append('tables')
-    if isinstance(FPSim2, ImportError):
+    if not HAS_FPSIM2:
         missing.append('FPSim2')
     if missing:
         raise ImportError(
             'Some required dependencies are missing:\n\t' + ', '.join(missing)
         )
-    # Guard against partial FPSim2 imports (placeholder strings would remain).
-    for name, obj in [
-        ('BaseStorageBackend', BaseStorageBackend),
-        ('BaseEngine', BaseEngine),
-        ('FPSim2Engine', FPSim2Engine),
-        ('FPSim2CudaEngine', FPSim2CudaEngine),
-    ]:
-        if obj is object:
-            raise ImportError(f'FPSim2 component {name!r} could not be loaded.')
 
 
 def _validate_fingerprints(
@@ -848,6 +841,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
             in_memory_fps: bool = True,
             fps_sort: bool = False,
     ) -> None:
+        _check_optional_deps()
         super().__init__(fp_filename)
         self.name = 'pytables'
 
@@ -1039,6 +1033,7 @@ class BaseMultiFpEngine(_MappingMixin, BaseEngine, ABC):
             in_memory_fps: bool,
             fps_sort: bool,
     ) -> None:
+        _check_optional_deps()
         self.fp_filename = fp_filename
         self.in_memory_fps = in_memory_fps
         if storage_backend == 'pytables':
@@ -1138,7 +1133,7 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
             storage_backend: str = 'pytables',
             kernel: str = 'raw',
     ) -> None:
-        if isinstance(cupy, ImportError):
+        if not HAS_CUPY:
             raise ImportError('cupy is required for GPU-accelerated search.')
         if kernel not in ('raw', 'element_wise'):
             raise ValueError("kernel must be 'raw' or 'element_wise'.")
@@ -1203,6 +1198,7 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
     """
 
     def __init__(self, fp_filename: str) -> None:
+        _check_optional_deps()
         # Initialise SubstructLibrary with the standard molecule holders.
         super().__init__(CachedMolHolder(), PatternHolder())
         self.fp_filename = fp_filename
