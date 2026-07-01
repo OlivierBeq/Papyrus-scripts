@@ -312,7 +312,7 @@ class ForwardSmilesMolSupplier:
         mol = next(
             SmilesMolSupplierFromText(
                 line,
-                '\n',
+                self.delimiter,
                 self.smilesColumn,
                 self.nameColumn,
                 False,       # titleLine=False — we already handled it
@@ -435,7 +435,10 @@ class MolSupplier:
                     )
                 self.compression = compression
                 open_fn, is_binary = self._open_fn_for_label(compression)
-                inner_filename = filename   # no suffix to strip
+                # Still derive the truncated filename (compression suffix stripped)
+                # so format auto-detection below works even when compression is
+                # passed explicitly instead of being inferred from the filename.
+                _, _, _, inner_filename = _strip_compression_suffix(filename)
             else:
                 label, open_fn, is_binary, inner_filename = _strip_compression_suffix(filename)
                 self.compression = label
