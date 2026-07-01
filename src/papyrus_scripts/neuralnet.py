@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import time
 import random
 import itertools
+from pathlib import Path
 
 from collections.abc import Iterator
 
@@ -76,7 +76,7 @@ def set_seed(seed: int | None = None) -> np.random.Generator | None:
 
 
 class BaseNN(nn.Module if HAS_TORCH else object):
-    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+    def __init__(self, out: str | Path, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: int | None = None):
         """Base class for neural networks.
@@ -92,8 +92,8 @@ class BaseNN(nn.Module if HAS_TORCH else object):
         :param random_seed: seed of random number generators
         """
         _require_torch()
-        if not os.path.isdir(out):
-            os.makedirs(out, exist_ok=True)
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
         super().__init__()
         self.fcl = nn.ModuleList()  # fully connected layers
         self.out = out
@@ -125,11 +125,11 @@ class BaseNN(nn.Module if HAS_TORCH else object):
         """
         for i in range(len(dimensions) - 1):
             self.fcl.append(nn.Linear(dimensions[i], dimensions[i + 1]))
-        T.save(self.state_dict(), os.path.join(self.out, 'empty_model.pkg'))
+        T.save(self.state_dict(), self.out / 'empty_model.pkg')
 
     def reset(self):
         """Reset weights and reload the initial state of the model"""
-        self.load_state_dict(T.load(os.path.join(self.out, 'empty_model.pkg')))
+        self.load_state_dict(T.load(self.out / 'empty_model.pkg'))
 
     def fit(self, X: Iterator | pd.DataFrame, y: Iterator | pd.Series):
         """Fit neural network with training set and optimize for loss on validation set.
@@ -156,10 +156,9 @@ class BaseNN(nn.Module if HAS_TORCH else object):
         best_loss = np.inf
         last_save = 0
         # Set up output folder
-        if not (os.path.exists(self.out) and os.path.isdir(self.out)):
-            os.mkdir(self.out)
+        self.out.mkdir(parents=True, exist_ok=True)
         # Log file
-        log = open(os.path.join(self.out, 'training_log.txt'), 'w')
+        log = open(self.out / 'training_log.txt', 'w')
         for epoch in range(self.epochs):
             t0 = time.perf_counter()
             # Change learning rate according to epoch
@@ -180,7 +179,7 @@ class BaseNN(nn.Module if HAS_TORCH else object):
             print(f'[Epoch: {epoch + 1}/{self.epochs}] {time.perf_counter() - t0:.1f}s '
                   f'loss_train: {loss.item():f} loss_valid: {loss_valid:f}', file=log, flush=True)
             if loss_valid < best_loss:
-                T.save(self.state_dict(), os.path.join(self.out, 'model.pkg'))
+                T.save(self.state_dict(), self.out / 'model.pkg')
                 print(f'[Performance] loss_valid improved from {best_loss:f} to {loss_valid:f}, '
                       'Saved model to model.pkg', file=log, flush=True)
                 best_loss = loss_valid
@@ -191,7 +190,7 @@ class BaseNN(nn.Module if HAS_TORCH else object):
                 if epoch - last_save > self.early_stop:
                     break
         log.close()
-        self.load_state_dict(T.load(os.path.join(self.out, 'model.pkg')))
+        self.load_state_dict(T.load(self.out / 'model.pkg'))
 
     def evaluate(self, loader):
         """Calculate loss according to criterion function
@@ -228,7 +227,7 @@ class BaseNN(nn.Module if HAS_TORCH else object):
 
 
 class SingleTaskNNClassifier(BaseNN):
-    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+    def __init__(self, out: str | Path, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: int | None = None):
         """Neural Network classifier to predict a unique endpoint.
@@ -300,7 +299,7 @@ class SingleTaskNNClassifier(BaseNN):
 
 
 class SingleTaskNNRegressor(BaseNN):
-    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+    def __init__(self, out: str | Path, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: int | None = None):
         """Neural Network regressor to predict a unique endpoint.
@@ -342,7 +341,7 @@ class SingleTaskNNRegressor(BaseNN):
 
 
 class MultiTaskNNClassifier(BaseNN):
-    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+    def __init__(self, out: str | Path, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: int | None = None):
         """Neural Network classifier to predict multiple endpoints.
@@ -404,7 +403,7 @@ class MultiTaskNNClassifier(BaseNN):
 
 
 class MultiTaskNNRegressor(BaseNN):
-    def __init__(self, out: str, epochs: int = 100, lr: float = 1e-3,
+    def __init__(self, out: str | Path, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  random_seed: int | None = None):
         """Neural Network regressor to predict multiple endpoints.

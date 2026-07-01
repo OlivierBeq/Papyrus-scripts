@@ -12,6 +12,7 @@ import os
 import tempfile
 import unittest
 import warnings
+from pathlib import Path
 
 from src.papyrus_scripts.utils import IO
 
@@ -45,7 +46,7 @@ class TestJsonFileHelpers(unittest.TestCase):
 
     def test_write_then_read_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'data.json')
+            path = Path(d) / 'data.json'
             IO.write_jsonfile({'x': 1, 'y': [1, 2, 3]}, path)
             result = IO.read_jsonfile(path)
             self.assertEqual(result, {'x': 1, 'y': [1, 2, 3]})
@@ -59,7 +60,7 @@ class TestSha256(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self.filepath = os.path.join(self._tmpdir.name, 'data.bin')
+        self.filepath = Path(self._tmpdir.name) / 'data.bin'
         with open(self.filepath, 'wb') as fh:
             fh.write(b'hello world')
         # Precomputed with hashlib directly.
@@ -91,9 +92,9 @@ class TestLocateFile(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self.dirpath = self._tmpdir.name
+        self.dirpath = Path(self._tmpdir.name)
         for name in ('05.4_combined_set.tsv', '05.4_combined_set.tsv:ZoneIdentifier', 'other.tsv'):
-            open(os.path.join(self.dirpath, name), 'w').close()
+            (self.dirpath / name).open('w').close()
 
     def tearDown(self):
         self._tmpdir.cleanup()
@@ -101,11 +102,12 @@ class TestLocateFile(unittest.TestCase):
     def test_locate_matching_file(self):
         result = IO.locate_file(self.dirpath, r'\d+\.\d+_combined_set\.tsv.*')
         self.assertEqual(len(result), 1)
-        self.assertTrue(result[0].endswith('05.4_combined_set.tsv'))
+        self.assertIsInstance(result[0], Path)
+        self.assertEqual(result[0].name, '05.4_combined_set.tsv')
 
     def test_zone_identifier_files_are_ignored(self):
         result = IO.locate_file(self.dirpath, r'.*')
-        self.assertTrue(all(not f.endswith(':ZoneIdentifier') for f in result))
+        self.assertTrue(all(not f.name.endswith(':ZoneIdentifier') for f in result))
 
     def test_no_match_raises_file_not_found(self):
         with self.assertRaises(FileNotFoundError):
@@ -196,7 +198,7 @@ class TestProcessDataVersion(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
         self._old_pystow_home = os.environ.get('PYSTOW_HOME')
-        os.makedirs(os.path.join(self._tmpdir.name, 'papyrus'), exist_ok=True)
+        (Path(self._tmpdir.name) / 'papyrus').mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
         if self._old_pystow_home is None:
@@ -206,7 +208,7 @@ class TestProcessDataVersion(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def _write_downloaded_versions(self, versions):
-        path = os.path.join(self._tmpdir.name, 'papyrus', 'versions.json')
+        path = Path(self._tmpdir.name) / 'papyrus' / 'versions.json'
         with open(path, 'w') as fh:
             json.dump(versions, fh)
 

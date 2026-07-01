@@ -10,9 +10,9 @@ enough to exercise the supplier/compression/format-detection logic.
 import bz2
 import gzip
 import lzma
-import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from rdkit import Chem
 
@@ -113,7 +113,7 @@ class SmallSDFFixture(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self.sd_path = os.path.join(self._tmpdir.name, 'mols.sd')
+        self.sd_path = Path(self._tmpdir.name) / 'mols.sd'
         writer = Chem.SDWriter(self.sd_path)
         for smi in ('CCO', 'c1ccccc1'):
             writer.write(Chem.MolFromSmiles(smi))
@@ -153,7 +153,7 @@ class TestMolSupplierSDFCompressed(SmallSDFFixture):
     def _compress(self, opener, suffix):
         with open(self.sd_path, 'rb') as fin:
             data = fin.read()
-        path = self.sd_path + suffix
+        path = self.sd_path.with_name(self.sd_path.name + suffix)
         with opener(path, 'wb') as fout:
             fout.write(data)
         return path
@@ -187,7 +187,7 @@ class TestMolSupplierSMI(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self.smi_path = os.path.join(self._tmpdir.name, 'mols.smi')
+        self.smi_path = Path(self._tmpdir.name) / 'mols.smi'
         with open(self.smi_path, 'w') as f:
             f.write('SMILES\tName\n')
             f.write('CCO\tethanol\n')
@@ -218,7 +218,7 @@ class TestMolSupplierSMI(unittest.TestCase):
         self.assertEqual(names, ['ethanol', 'benzene'])
 
     def test_no_name_column_does_not_raise(self):
-        path = os.path.join(self._tmpdir.name, 'nonames.smi')
+        path = Path(self._tmpdir.name) / 'nonames.smi'
         with open(path, 'w') as f:
             f.write('SMILES\n')
             f.write('CCO\n')

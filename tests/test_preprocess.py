@@ -410,7 +410,7 @@ class TestKeepSimilarDissimilarSubstructure(unittest.TestCase):
         with self.assertRaises(ValueError):
             pp.keep_not_substructure(pl.DataFrame(), 'CCO', '/no/such/file.h5')
 
-    @patch('src.papyrus_scripts.preprocess.os.path.isfile', return_value=True)
+    @patch('src.papyrus_scripts.preprocess.Path.is_file', return_value=True)
     @patch('src.papyrus_scripts.preprocess.FPSubSim2')
     def test_keep_similar_unknown_fingerprint_raises(self, mock_fpss2_cls, _mock_isfile):
         mock_fpss2 = MagicMock()
@@ -419,7 +419,7 @@ class TestKeepSimilarDissimilarSubstructure(unittest.TestCase):
         with self.assertRaises(ValueError):
             pp.keep_similar(pl.DataFrame(), 'CCO', 'fake.h5')
 
-    @patch('src.papyrus_scripts.preprocess.os.path.isfile', return_value=True)
+    @patch('src.papyrus_scripts.preprocess.Path.is_file', return_value=True)
     @patch('src.papyrus_scripts.preprocess.FPSubSim2')
     def test_keep_similar_filters_by_similarity_result(self, mock_fpss2_cls, _mock_isfile):
         mock_fpss2 = MagicMock()
@@ -435,7 +435,7 @@ class TestKeepSimilarDissimilarSubstructure(unittest.TestCase):
             result = pp.keep_similar(data, 'CCO', 'fake.h5', fingerprint=mock_fp_cls.return_value)
         self.assertEqual(sorted(result['InChIKey']), ['KEY1', 'KEY2'])
 
-    @patch('src.papyrus_scripts.preprocess.os.path.isfile', return_value=True)
+    @patch('src.papyrus_scripts.preprocess.Path.is_file', return_value=True)
     @patch('src.papyrus_scripts.preprocess.FPSubSim2')
     def test_keep_dissimilar_filters_out_similarity_result(self, mock_fpss2_cls, _mock_isfile):
         mock_fpss2 = MagicMock()
@@ -450,7 +450,7 @@ class TestKeepSimilarDissimilarSubstructure(unittest.TestCase):
             result = pp.keep_dissimilar(data, 'CCO', 'fake.h5', fingerprint=mock_fp_cls.return_value)
         self.assertEqual(sorted(result['InChIKey']), ['KEY2', 'KEY3'])
 
-    @patch('src.papyrus_scripts.preprocess.os.path.isfile', return_value=True)
+    @patch('src.papyrus_scripts.preprocess.Path.is_file', return_value=True)
     @patch('src.papyrus_scripts.preprocess.FPSubSim2')
     def test_keep_substructure_filters_by_substructure_result(self, mock_fpss2_cls, _mock_isfile):
         mock_fpss2 = MagicMock()
@@ -462,7 +462,7 @@ class TestKeepSimilarDissimilarSubstructure(unittest.TestCase):
         result = pp.keep_substructure(data, 'CCO', 'fake.h5')
         self.assertEqual(result['InChIKey'].to_list(), ['KEY2'])
 
-    @patch('src.papyrus_scripts.preprocess.os.path.isfile', return_value=True)
+    @patch('src.papyrus_scripts.preprocess.Path.is_file', return_value=True)
     @patch('src.papyrus_scripts.preprocess.FPSubSim2')
     def test_keep_not_substructure_filters_out_substructure_result(self, mock_fpss2_cls, _mock_isfile):
         mock_fpss2 = MagicMock()

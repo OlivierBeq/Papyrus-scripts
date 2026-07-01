@@ -85,9 +85,7 @@ def _to_polars_schema(dtypes: dict) -> dict:
 def _set_pystow_home(source_path: str | Path | None) -> None:
     """Point pystow at *source_path* when it is not None."""
     if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(
-            source_path if isinstance(source_path, str) else str(source_path)
-        )
+        os.environ['PYSTOW_HOME'] = str(Path(source_path).resolve())
 
 
 def _resolve_version(
@@ -101,7 +99,7 @@ def _resolve_version(
 
 def _load_schemas(source_module: pystow.Module) -> dict:
     """Read ``data_types.json`` and return ``{section: {col: polars_dtype}}``."""
-    dtype_file = source_module.join(name='data_types.json').as_posix()
+    dtype_file = source_module.join(name='data_types.json')
     with open(dtype_file) as fh:
         raw = json.load(fh, cls=TypeDecoder)
     return {
@@ -141,7 +139,7 @@ def _resolve_mol_desc_pattern(key: str, is3d: bool):
 def _read_one_mol_descriptor(
     key: str,
     is3d: bool,
-    desc_dir: str,
+    desc_dir: str | Path,
     schemas: dict,
     lazy: bool,
     ids: list[str] | None,
@@ -171,7 +169,7 @@ def read_papyrus(
     version: VersionArg = 'latest',
     plusplus: bool = True,
     chunksize: int | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
 ) -> DataOrChunks:
     """Read the Papyrus bioactivity dataset.
 
@@ -195,7 +193,7 @@ def read_papyrus(
     pp_tag     = r'\+\+' if plusplus else ''
     pattern    = rf'\d+\.\d+{pp_tag}_combined_set_{stereo_tag}_stereochemistry\.tsv.*'
 
-    filenames = locate_file(source_mod.base.as_posix(), pattern)
+    filenames = locate_file(source_mod.base, pattern)
     read_kw   = dict(separator='\t', schema_overrides=schema)
     if chunksize is None:
         return pl.read_csv(filenames[0], **read_kw)
@@ -203,7 +201,7 @@ def read_papyrus(
 
 
 def read_protein_set(
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     version: VersionArg = 'latest',
 ) -> pl.DataFrame:
     """Read the protein-target table of the Papyrus dataset.
@@ -215,7 +213,7 @@ def read_protein_set(
     source_mod = papyrus_version_module(pv)
 
     filenames = locate_file(
-        source_mod.base.as_posix(),
+        source_mod.base,
         r'\d+\.\d+_combined_set_protein_targets\.tsv.*',
     )
     # null_values=[] keeps empty strings as empty strings (no implicit NA).
@@ -227,7 +225,7 @@ def read_molecular_descriptors(
     is3d: bool = False,
     version: VersionArg = 'latest',
     chunksize: int | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     ids: list[str] | None = None,
     verbose: bool = True,
 ) -> DataOrChunks:
@@ -254,7 +252,7 @@ def read_molecular_descriptors(
     pv         = _resolve_version(version, source_path)
     source_mod = papyrus_version_module(pv)
     schemas    = _load_schemas(source_mod)
-    desc_dir   = source_mod.join('descriptors').as_posix()
+    desc_dir   = source_mod.join('descriptors')
     id_col     = 'InChIKey' if is3d else 'connectivity'
     lazy       = chunksize is not None
 
@@ -274,7 +272,7 @@ def read_protein_descriptors(
     desc_type: str | Descriptor | Transform = 'unirep',
     version: VersionArg = 'latest',
     chunksize: int | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     ids: list[str] | None = None,
     verbose: bool = True,
     **kwargs,
@@ -294,7 +292,7 @@ def read_protein_descriptors(
     :param kwargs: extra keyword arguments forwarded to ProDEC ``pandas_get``
     """
     if desc_type == 'custom':
-        if not os.path.isfile(source_path):
+        if not Path(source_path).is_file():
             raise ValueError(
                 'source_path must point to an existing file when desc_type="custom"'
             )
@@ -303,7 +301,7 @@ def read_protein_descriptors(
     if isinstance(desc_type, (Descriptor, Transform)):
         pv           = _resolve_version(version, source_path)
         protein_data = read_protein_set(
-            source_path=papyrus_version_module(pv).base.as_posix(), version=pv,
+            source_path=papyrus_version_module(pv).base, version=pv,
         )
         protein_data = protein_data.rename({'TARGET_NAME': 'target_id'})
         if ids is not None:
@@ -327,7 +325,7 @@ def read_protein_descriptors(
         source_mod = papyrus_version_module(pv)
         schemas    = _load_schemas(source_mod)
         unirep_files = locate_file(
-            source_mod.join('descriptors').as_posix(),
+            source_mod.join('descriptors'),
             r'(?:\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*)'
             r'|(?:\d+\.\d+_combined_protdescs_unirep\.tsv.*)',
         )
@@ -348,7 +346,7 @@ def read_molecular_structures(
     is3d: bool = False,
     version: VersionArg = 'latest',
     chunksize: int | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     ids: list[str] | None = None,
     verbose: bool = True,
 ) -> pl.DataFrame | Generator[pl.DataFrame]:
@@ -373,7 +371,7 @@ def read_molecular_structures(
     dim_tag    = 3  if is3d else 2
     pattern    = rf'\d+\.\d+_combined_{dim_tag}D_set_with{stereo_tag}_stereochemistry\.sd.*'
 
-    sd_files = locate_file(source_mod.join('structures').as_posix(), pattern)
+    sd_files = locate_file(source_mod.join('structures'), pattern)
     id_col   = 'InChIKey' if is3d else 'connectivity'
 
     if chunksize is None:
@@ -386,7 +384,7 @@ def read_molecular_structures(
 # ---------------------------------------------------------------------------
 
 def _read_structures_full(
-    sd_file: str,
+    sd_file: str | Path,
     ids: list[str] | None,
     id_col: str,
     verbose: bool,
@@ -405,7 +403,7 @@ def _read_structures_full(
 
 
 def _read_structures_chunked(
-    sd_file: str,
+    sd_file: str | Path,
     chunksize: int,
     ids: list[str] | None,
     id_col: str,
@@ -443,7 +441,7 @@ def _read_structures_chunked(
 # ---------------------------------------------------------------------------
 
 def _read_unirep(
-    filepath: str,
+    filepath: str | Path,
     schema: dict,
     lazy: bool,
     ids: list[str] | None,
@@ -458,7 +456,7 @@ def _read_unirep(
 
 
 def _read_custom_protein_descriptors(
-    filepath: str,
+    filepath: str | Path,
     lazy: bool,
     ids: list[str] | None,
 ) -> pl.DataFrame:

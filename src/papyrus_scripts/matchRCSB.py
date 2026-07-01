@@ -55,7 +55,7 @@ def get_all_pdb_ids_with_ligands():
     return pdb_ids
 
 
-def update_rcsb_data(root_folder: str | None = None,
+def update_rcsb_data(root_folder: str | Path | None = None,
                      overwrite: bool = False,
                      verbose: bool = True
                      ) -> pd.DataFrame:
@@ -71,7 +71,7 @@ def update_rcsb_data(root_folder: str | None = None,
     path = papyrus_rcsb_data_root(root_folder)
     output_path = path.join('rcsb', name='RCSB_data.tsv.xz')
     # Check if file is too recent
-    if (os.path.isfile(output_path) and (time.time() - os.path.getmtime(output_path)) < 86400) and not overwrite:
+    if (output_path.is_file() and (time.time() - output_path.stat().st_mtime) < 86400) and not overwrite:
         if verbose:
             print(f'RCSB data was obtained less than 24 hours ago: {output_path}\n'
                   f'Set overwrite=True to force the fetching of data again.'
@@ -195,7 +195,7 @@ def update_rcsb_data(root_folder: str | None = None,
 
 
 def get_matches(data: pd.DataFrame | PandasTextFileReader | Iterator,
-                root_folder: str | None = None,
+                root_folder: str | Path | None = None,
                 verbose: bool = True,
                 total: int | None = None,
                 update: bool = True) -> pd.DataFrame | Generator:
@@ -224,7 +224,7 @@ def get_matches(data: pd.DataFrame | PandasTextFileReader | Iterator,
             _ = update_rcsb_data(root_folder, verbose=verbose)
         # Set pystow root folder
         if root_folder is not None:
-            os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
+            os.environ['PYSTOW_HOME'] = str(Path(root_folder).resolve())
         root_folder = pystow.module('papyrus')
         rcsb_data_path = root_folder.join('rcsb', name='RCSB_data.tsv.xz')
         # Read the data mapping
@@ -245,7 +245,7 @@ def get_matches(data: pd.DataFrame | PandasTextFileReader | Iterator,
         raise TypeError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
 
 
-def _chunked_get_matches(chunks: PandasTextFileReader | Iterator, root_folder: str | None, verbose: bool,
+def _chunked_get_matches(chunks: PandasTextFileReader | Iterator, root_folder: str | Path | None, verbose: bool,
                          total: int):
     if verbose:
         pbar = tqdm(chunks, total=total, ncols=100)

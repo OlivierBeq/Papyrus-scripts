@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 from collections.abc import Iterator
@@ -74,7 +75,7 @@ class PapyrusDataset:
             is3d: bool = False,
             plusplus: bool = True,
             chunksize: int | None = 1_000_000,
-            source_path: str | None = None,
+            source_path: str | Path | None = None,
             download_progress: bool = False,
     ) -> None:
         """Read, filter and aggregate data from a release of the Papyrus dataset.
@@ -141,7 +142,7 @@ class PapyrusDataset:
             is3d: bool,
             version: str | IO.PapyrusVersion,
             plusplus: bool = True,
-            source_path: str | None = None,
+            source_path: str | Path | None = None,
             download_progress: bool = False,
             chunksize: int | None = None,
     ) -> PapyrusDataset:
@@ -561,7 +562,7 @@ class PapyrusDataset:
             remove_papyrus_root: bool,
             force: bool = False,
             progress: bool = True,
-            source_path: str | None = None,
+            source_path: str | Path | None = None,
             all_revisions: bool = False,
     ) -> None:
         """Remove locally downloaded Papyrus data.
@@ -749,7 +750,7 @@ class FPSubSim2Engine:
 
     def __init__(self, papyrus_params: dict) -> None:
         self.papyrus_params = papyrus_params
-        self.path: str | None = None
+        self.path: str | Path | None = None
         self.progress: bool = False
         self.fp: Fingerprint = MorganFingerprint()
         self.fpsubsim2 = subsim_search.FPSubSim2()
@@ -759,7 +760,7 @@ class FPSubSim2Engine:
     def __call__(
             self,
             fp: Fingerprint | list[Fingerprint] | None = None,
-            path: str | None = None,
+            path: str | Path | None = None,
             progress: bool = False,
     ) -> FPSubSim2Engine:
         """Configure the engine and return *self* for chaining.
@@ -780,7 +781,7 @@ class FPSubSim2Engine:
     # Internal
     # ------------------------------------------------------------------
 
-    def _resolve_path(self) -> str:
+    def _resolve_path(self) -> Path:
         """Derive the default ``.h5`` path from ``papyrus_params``.
 
         :returns: absolute path to the FPSubSim2 database file
@@ -794,12 +795,12 @@ class FPSubSim2Engine:
                 f'{stereo}_stereochemistry_FPSubSim2_{dim_tag}.h5')
 
         if self.papyrus_params['source_path'] is not None:
-            os.environ['PYSTOW_HOME'] = os.path.abspath(self.papyrus_params['source_path'])
+            os.environ['PYSTOW_HOME'] = str(Path(self.papyrus_params['source_path']).resolve())
 
-        path = pystow.module('papyrus', pv.pystow_path_key).join(name=name).as_posix()
+        path = pystow.module('papyrus', pv.pystow_path_key).join(name=name)
 
-        parent = os.path.dirname(path)
-        if not os.path.isdir(parent):
+        parent = path.parent
+        if not parent.is_dir():
             raise NotADirectoryError(
                 f'Cannot create the FPSubSim2 file in a non-existing folder: {parent!r}'
             )
@@ -810,7 +811,7 @@ class FPSubSim2Engine:
         if self.path is None:
             self.path = self._resolve_path()
 
-        if os.path.isfile(self.path):
+        if Path(self.path).is_file():
             self.fpsubsim2.load(fpsubsim_path=self.path)
         else:
             self.fpsubsim2.create_from_papyrus(

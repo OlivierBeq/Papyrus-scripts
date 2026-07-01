@@ -2,10 +2,10 @@
 
 """Filtering functions for the Papyrus dataset."""
 
-import os
 import re
 from functools import wraps
 from itertools import chain
+from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Iterator
 
@@ -746,7 +746,7 @@ def keep_not_contains(
 # Similarity / substructure helpers
 # ---------------------------------------------------------------------------
 
-def _load_fpsubsim2(fpsubsim2_file: str, fingerprint: Fingerprint | None) -> FPSubSim2:
+def _load_fpsubsim2(fpsubsim2_file: str | Path, fingerprint: Fingerprint | None) -> FPSubSim2:
     """Load an :class:`~subsim_search.FPSubSim2` database and validate *fingerprint*.
 
     :param fpsubsim2_file: path to the ``.h5`` database
@@ -754,7 +754,7 @@ def _load_fpsubsim2(fpsubsim2_file: str, fingerprint: Fingerprint | None) -> FPS
         database; pass ``None`` to skip the signature check
     :raises ValueError: if the file does not exist or the fingerprint is absent
     """
-    if not os.path.isfile(fpsubsim2_file):
+    if not Path(fpsubsim2_file).is_file():
         raise ValueError(f'FPSubSim2 database does not exist: {fpsubsim2_file!r}')
     fpss2 = FPSubSim2()
     fpss2.load(fpsubsim2_file)
@@ -794,7 +794,7 @@ def _collect_similar_molecules(
 def keep_similar(
         data: DataInput,
         molecule_smiles: str | list[str],
-        fpsubsim2_file: str,
+        fpsubsim2_file: str | Path,
         fingerprint: Fingerprint = MorganFingerprint(),
         threshold: float = 0.7,
         cuda: bool = False,
@@ -822,7 +822,7 @@ def keep_similar(
 def keep_dissimilar(
         data: DataInput,
         molecule_smiles: str | list[str],
-        fpsubsim2_file: str,
+        fpsubsim2_file: str | Path,
         fingerprint: Fingerprint = MorganFingerprint(),
         threshold: float = 0.7,
         cuda: bool = False,
@@ -856,7 +856,7 @@ def _collect_substructure_molecules(
 def keep_substructure(
         data: DataInput,
         molecule_smiles: str | list[str],
-        fpsubsim2_file: str,
+        fpsubsim2_file: str | Path,
 ) -> DataOutput:
     """Keep only rows associated to substructures of the query molecule(s).
 
@@ -874,7 +874,7 @@ def keep_substructure(
 def keep_not_substructure(
         data: DataInput,
         molecule_smiles: str | list[str],
-        fpsubsim2_file: str,
+        fpsubsim2_file: str | Path,
 ) -> DataOutput:
     """Keep only rows associated to molecules that are **not** substructures of the query.
 

@@ -30,9 +30,7 @@ _RETRIES = 3
 def _set_pystow_home(outdir: str | Path | None) -> None:
     """Point pystow at *outdir* when it is not None."""
     if outdir is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(
-            outdir if isinstance(outdir, str) else str(outdir)
-        )
+        os.environ['PYSTOW_HOME'] = str(Path(outdir).resolve())
 
 
 def _resolve_versions(
@@ -160,7 +158,7 @@ def _resolve_versions(
     return unique
 
 
-def _file_path(papyrus_version_root: pystow.Module, ftype: str, fname: str) -> str:
+def _file_path(papyrus_version_root: pystow.Module, ftype: str, fname: str) -> Path:
     """Return the absolute path where *fname* of type *ftype* should be stored.
 
     The mapping follows the original layout:
@@ -180,10 +178,10 @@ def _file_path(papyrus_version_root: pystow.Module, ftype: str, fname: str) -> s
     _STRUCTURE_FTYPES = {'2D_structures', '3D_structures'}
 
     if ftype in _ROOT_FTYPES:
-        return papyrus_version_root.join(name=fname).as_posix()
+        return papyrus_version_root.join(name=fname)
     if ftype in _STRUCTURE_FTYPES:
-        return papyrus_version_root.join('structures', name=fname).as_posix()
-    return papyrus_version_root.join('descriptors', name=fname).as_posix()
+        return papyrus_version_root.join('structures', name=fname)
+    return papyrus_version_root.join('descriptors', name=fname)
 
 
 def _iter_entries(ftype_data) -> list[dict]:
@@ -227,8 +225,8 @@ def _update_versions_json(
     :param pv: the version to register or deregister
     :param add: True to add the version, False to remove it
     """
-    json_file = papyrus_root.join(name='versions.json').as_posix()
-    existing: list = read_jsonfile(json_file) if os.path.isfile(json_file) else []
+    json_file = papyrus_root.join(name='versions.json')
+    existing: list = read_jsonfile(json_file) if json_file.is_file() else []
     path_key = pv.pystow_path_key
     if add:
         updated = sorted(set(existing + [path_key]))
@@ -275,7 +273,7 @@ def _get_version_files(files: dict, pv: PapyrusVersion) -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def download_papyrus(outdir: str | None = None,
+def download_papyrus(outdir: str | Path | None = None,
                      version: str | list[str] = 'latest',
                      nostereo: bool = True,
                      stereo: bool = False,
@@ -305,8 +303,8 @@ def download_papyrus(outdir: str | None = None,
     _set_pystow_home(outdir)
 
     # Warn if any data downloaded with the old versioning format exists on disk.
-    _versions_json = pystow.join('papyrus', name='versions.json').as_posix()
-    if os.path.isfile(_versions_json):
+    _versions_json = pystow.join('papyrus', name='versions.json')
+    if _versions_json.is_file():
         _old_fmt_keys = set(PapyrusVersion.aliases['version'].values)
         _stale = [v for v in (read_jsonfile(_versions_json) or []) if v in _old_fmt_keys]
         if _stale:
@@ -396,7 +394,7 @@ def download_papyrus(outdir: str | None = None,
                 f'Total size: {tqdm.format_sizeof(total)}B'
             )
 
-        base = papyrus_version_root.base.as_posix()
+        base = papyrus_version_root.base
         if not enough_disk_space(base, total, disk_margin):
             print(
                 '########## ERROR ##########\n'
@@ -427,7 +425,7 @@ def download_papyrus(outdir: str | None = None,
                 fpath = _file_path(papyrus_version_root, ftype, dname)
 
                 # Skip if already present and intact
-                if os.path.isfile(fpath) and assert_sha256sum(fpath, dhash):
+                if fpath.is_file() and assert_sha256sum(fpath, dhash):
                     if progress:
                         pbar.update(dsize)
                     continue
@@ -452,7 +450,7 @@ def download_papyrus(outdir: str | None = None,
                     success = assert_sha256sum(fpath, dhash)
                     if not success:
                         remaining -= 1
-                        os.remove(fpath)
+                        fpath.unlink()
                         if progress:
                             msg = (
                                     f'SHA256 mismatch for {dname}. '
@@ -469,11 +467,11 @@ def download_papyrus(outdir: str | None = None,
 
                 # Extract ZIP archives in-place
                 if dname.endswith('.zip'):
-                    dest = os.path.dirname(fpath)
+                    dest = fpath.parent
                     with zipfile.ZipFile(fpath) as zh:
                         for name in zh.namelist():
                             zh.extract(name, dest)
-                    os.remove(fpath)
+                    fpath.unlink()
 
         if progress:
             pbar.close()
@@ -546,7 +544,7 @@ def remove_papyrus(
             if confirmation != 'Y':
                 print('Removal was aborted.')
                 return
-        shutil.rmtree(papyrus_root_mod.base.as_posix())
+        shutil.rmtree(papyrus_root_mod.base)
         if progress:
             print('All Papyrus data was successfully removed.')
         return
@@ -566,7 +564,7 @@ def remove_papyrus(
                 if confirmation != 'Y':
                     print('Removal was aborted.')
                     return
-            shutil.rmtree(papyrus_version_root.base.as_posix())
+            shutil.rmtree(papyrus_version_root.base)
             if progress:
                 print(f'Version {pv} of Papyrus was successfully removed.')
             _update_versions_json(papyrus_root_mod, pv, add=False)
@@ -624,7 +622,7 @@ def remove_papyrus(
             ftype_size = 0
             for entry in _iter_entries(ftype_data):
                 fpath = _file_path(papyrus_version_root, ftype, entry['name'])
-                if os.path.isfile(fpath):
+                if fpath.is_file():
                     ftype_size += entry['size']
                 else:
                     all_entries_exist = False
@@ -655,11 +653,11 @@ def remove_papyrus(
         for ftype in present:
             for entry in _iter_entries(version_files[ftype]):
                 fpath = _file_path(papyrus_version_root, ftype, entry['name'])
-                if not os.path.isfile(fpath):
+                if not fpath.is_file():
                     if progress:
                         pbar.update(entry['size'])
                     continue
-                os.remove(fpath)
+                fpath.unlink()
                 if progress:
                     pbar.update(entry['size'])
 
@@ -669,8 +667,8 @@ def remove_papyrus(
         # Update the local versions.json registry if all bioactivity data
         # is gone (conservative: only deregister when the root folder is empty)
         remaining_files = [
-            f for f in os.listdir(papyrus_version_root.base.as_posix())
-            if not f.startswith('.')
+            f for f in papyrus_version_root.base.iterdir()
+            if not f.name.startswith('.')
         ]
         if not remaining_files:
             _update_versions_json(papyrus_root_mod, pv, add=False)

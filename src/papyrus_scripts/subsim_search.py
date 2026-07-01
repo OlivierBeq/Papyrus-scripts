@@ -12,6 +12,7 @@ import warnings
 from abc import ABC
 from collections import defaultdict
 from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -153,7 +154,7 @@ def _build_result_df(
     return df.with_columns(pl.Series(score_col, scores))
 
 
-def sort_db_file(filename: str, verbose: bool = False) -> None:
+def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
     """Sort an FPSubSim2 HDF5 file by fingerprint popcount.
 
     Sorting enables the efficient popcount-range pruning used by FPSim2 during
@@ -165,10 +166,11 @@ def sort_db_file(filename: str, verbose: bool = False) -> None:
     if verbose:
         print('Optimizing FPSubSim2 file.')
 
-    tmp_filename = filename + '_tmp'
-    if os.path.isfile(tmp_filename):
-        os.remove(tmp_filename)
-    os.rename(filename, tmp_filename)
+    filename = Path(filename)
+    tmp_filename = filename.with_name(filename.name + '_tmp')
+    if tmp_filename.is_file():
+        tmp_filename.unlink()
+    filename.rename(tmp_filename)
 
     filters = tb.Filters(complib='blosc', complevel=1, shuffle=True, bitshuffle=True)
     stats: dict = {'groups': 0, 'leaves': 0, 'links': 0, 'bytes': 0, 'hardlinks': 0}
@@ -232,7 +234,7 @@ def sort_db_file(filename: str, verbose: bool = False) -> None:
 
     if verbose:
         print('Cleaning up temporary files.')
-    os.remove(tmp_filename)
+    tmp_filename.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -254,8 +256,8 @@ class FPSubSim2:
         _check_optional_deps()
         self.version: PapyrusVersion | None = None
         self.is3d: bool | None = None
-        self.sd_file: str | None = None
-        self.h5_filename: str | None = None
+        self.sd_file: Path | None = None
+        self.h5_filename: Path | None = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -265,9 +267,9 @@ class FPSubSim2:
             self,
             is3d: bool = False,
             version: str | PapyrusVersion = 'latest',
-            outfile: str | None = None,
+            outfile: str | Path | None = None,
             fingerprint: Fingerprint | list[Fingerprint] | None = None,
-            root_folder: str | None = None,
+            root_folder: str | Path | None = None,
             progress: bool = True,
             njobs: int = 1,
     ) -> None:
@@ -292,13 +294,13 @@ class FPSubSim2:
         self.is3d = is3d
 
         if root_folder is not None:
-            os.environ['PYSTOW_HOME'] = os.path.abspath(root_folder)
+            os.environ['PYSTOW_HOME'] = str(Path(root_folder).resolve())
 
         structure_dir = pystow.join(
             'papyrus', self.version.pystow_path_key, 'structures'
         )
         filenames = locate_file(
-            structure_dir.as_posix(),
+            structure_dir,
             rf'\d+\.\d+_combined_{3 if is3d else 2}D_set_'
             rf'with{"out" if not is3d else ""}_stereochemistry\.sd.*',
         )
@@ -320,8 +322,8 @@ class FPSubSim2:
 
     def create(
             self,
-            sd_file: str,
-            outfile: str | None = None,
+            sd_file: str | Path,
+            outfile: str | Path | None = None,
             fingerprint: Fingerprint | list[Fingerprint] = None,
             progress: bool = True,
             total: int | None = None,
@@ -337,12 +339,14 @@ class FPSubSim2:
         :param njobs: worker processes (``-1`` = all, ``1`` = single-process)
         :raises ValueError: if *njobs* is invalid
         """
-        self.sd_file = sd_file
+        self.sd_file = Path(sd_file)
         fingerprint = _validate_fingerprints(fingerprint)
 
         dim_tag = '3D' if self.is3d else '2D'
         version_str = str(self.version) if self.version is not None else 'custom'
-        self.h5_filename = outfile or f'Papyrus_{version_str}_FPSubSim2_{dim_tag}.h5'
+        self.h5_filename = Path(outfile) if outfile is not None else Path(
+            f'Papyrus_{version_str}_FPSubSim2_{dim_tag}.h5'
+        )
 
         if not isinstance(njobs, int) or njobs < -1:
             raise ValueError('njobs must be -1 or a positive integer.')
@@ -406,13 +410,14 @@ class FPSubSim2:
     # Load
     # ------------------------------------------------------------------
 
-    def load(self, fpsubsim_path: str) -> None:
+    def load(self, fpsubsim_path: str | Path) -> None:
         """Load an existing FPSubSim2 database file.
 
         :param fpsubsim_path: path to the ``.h5`` database
         :raises ValueError: if *fpsubsim_path* does not exist
         """
-        if not os.path.isfile(fpsubsim_path):
+        fpsubsim_path = Path(fpsubsim_path)
+        if not fpsubsim_path.is_file():
             raise ValueError(f'File does not exist: {fpsubsim_path!r}')
         self.h5_filename = fpsubsim_path
 
@@ -582,7 +587,7 @@ class FPSubSim2:
 
         :raises ValueError: if the database file does not exist yet
         """
-        if not os.path.isfile(self.h5_filename):
+        if self.h5_filename is None or not self.h5_filename.is_file():
             raise ValueError('Database file must be created first.')
         with tb.open_file(self.h5_filename, mode='r') as h5file:
             padding = h5file.root.substructure_info.substruct_lib.attrs.padding
@@ -607,7 +612,7 @@ class FPSubSim2:
         :raises ValueError: if the database does not exist or the signature is
             not found in the database
         """
-        if not os.path.isfile(self.h5_filename):
+        if self.h5_filename is None or not self.h5_filename.is_file():
             raise ValueError('Database file must be created first.')
         available = self.available_fingerprints
         if fp_signature is None:
@@ -765,7 +770,7 @@ def _worker_process(
 
 
 def _writer_process(
-        h5_filename: str,
+        h5_filename: str | Path,
         output_queue: multiprocessing.Queue,
         table_paths: dict,
         total: int | None,
@@ -836,7 +841,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
 
     def __init__(
             self,
-            fp_filename: str,
+            fp_filename: str | Path,
             fp_signature: str,
             in_memory_fps: bool = True,
             fps_sort: bool = False,
@@ -987,7 +992,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
 class _MappingMixin:
     """Mixin that provides molecule-ID → Papyrus-identifier lookup."""
 
-    fp_filename: str  # supplied by concrete subclass
+    fp_filename: str | Path  # supplied by concrete subclass
 
     def _get_mapping(self, ids: list[int] | int) -> pl.DataFrame:
         """Return a DataFrame with Papyrus identifiers for the given integer *ids*.
@@ -1027,7 +1032,7 @@ class BaseMultiFpEngine(_MappingMixin, BaseEngine, ABC):
 
     def __init__(
             self,
-            fp_filename: str,
+            fp_filename: str | Path,
             fp_signature: str,
             storage_backend: str,
             in_memory_fps: bool,
@@ -1061,7 +1066,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
 
     def __init__(
             self,
-            fp_filename: str,
+            fp_filename: str | Path,
             fp_signature: str,
             in_memory_fps: bool = True,
             fps_sort: bool = False,
@@ -1128,7 +1133,7 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
 
     def __init__(
             self,
-            fp_filename: str,
+            fp_filename: str | Path,
             fp_signature: str,
             storage_backend: str = 'pytables',
             kernel: str = 'raw',
@@ -1197,7 +1202,7 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
         which stores the ``mol_mappings`` table used by :meth:`GetMatches`.
     """
 
-    def __init__(self, fp_filename: str) -> None:
+    def __init__(self, fp_filename: str | Path) -> None:
         _check_optional_deps()
         # Initialise SubstructLibrary with the standard molecule holders.
         super().__init__(CachedMolHolder(), PatternHolder())

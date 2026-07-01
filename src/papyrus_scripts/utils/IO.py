@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import builtins
-import glob
 import gzip
 import hashlib
 import importlib
@@ -29,7 +28,7 @@ from tqdm.auto import tqdm
 # Low-level file helpers
 # ---------------------------------------------------------------------------
 
-def sha256sum(filename: str, blocksize: int = 65536) -> str:
+def sha256sum(filename: str | Path, blocksize: int = 65536) -> str:
     """Return the SHA-256 hex digest of a file."""
     digest = hashlib.sha256()
     with open(filename, "rb") as fh:
@@ -38,7 +37,7 @@ def sha256sum(filename: str, blocksize: int = 65536) -> str:
     return digest.hexdigest()
 
 
-def assert_sha256sum(filename: str, sha256: str, blocksize: int = 65536) -> bool:
+def assert_sha256sum(filename: str | Path, sha256: str, blocksize: int = 65536) -> bool:
     """Return True if the file's SHA-256 matches *sha256*, False otherwise.
 
     :param filename: path to the file to check
@@ -51,18 +50,18 @@ def assert_sha256sum(filename: str, sha256: str, blocksize: int = 65536) -> bool
     return sha256sum(filename, blocksize) == sha256
 
 
-def write_jsonfile(data: object, json_outfile: str) -> None:
+def write_jsonfile(data: object, json_outfile: str | Path) -> None:
     """Serialise *data* to *json_outfile* with readable indentation."""
     with open(json_outfile, 'w') as fh:
         json.dump(data, fh, indent=4)
 
 
-def read_jsonfile(json_infile: str) -> dict | list:
+def read_jsonfile(json_infile: str | Path) -> dict | list:
     """Deserialise *json_infile* and return the resulting object.
 
     Returns an empty dict if the file does not exist.
     """
-    if not os.path.isfile(json_infile):
+    if not Path(json_infile).is_file():
         return {}
     with open(json_infile) as fh:
         return json.load(fh)
@@ -112,7 +111,7 @@ class TypeDecoder(json.JSONDecoder):
 # Disk-space helpers
 # ---------------------------------------------------------------------------
 
-def enough_disk_space(destination: str, required: int, margin: float = 0.10) -> bool:
+def enough_disk_space(destination: str | Path, required: int, margin: float = 0.10) -> bool:
     """Check whether *destination*'s drive has enough headroom.
 
     :param destination: folder (or file path) whose drive is checked
@@ -123,7 +122,7 @@ def enough_disk_space(destination: str, required: int, margin: float = 0.10) -> 
     return free - required > margin * total
 
 
-def get_disk_space(destination: str) -> int:
+def get_disk_space(destination: str | Path) -> int:
     """Return free bytes on the drive containing *destination*.
 
     :param destination: folder to check
@@ -144,7 +143,7 @@ def get_papyrus_links(offline: bool = False) -> dict:
 
     :param offline: skip the network request and use the cached file only
     """
-    local_file = os.path.join(os.path.dirname(__file__), 'links.json')
+    local_file = Path(__file__).parent / 'links.json'
     if not offline:
         url = "https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/db-links/links.json"
         try:
@@ -166,7 +165,7 @@ def get_papyrus_aliases(offline: bool = False) -> pd.DataFrame:
 
     :param offline: skip the network request and use the cached file only
     """
-    local_file = os.path.join(os.path.dirname(__file__), 'aliases.json')
+    local_file = Path(__file__).parent / 'aliases.json'
     if not offline:
         url = "https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/db-links/aliases.json"
         try:
@@ -471,9 +470,7 @@ def get_latest_online_version() -> PapyrusVersion:
 def _set_root_folder(root_folder: str | Path | None = None):
     """Set the root folder for Papyrus data tree."""
     if root_folder is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(
-            root_folder if isinstance(root_folder, str) else root_folder.as_posix()
-        )
+        os.environ['PYSTOW_HOME'] = str(Path(root_folder).resolve())
     elif os.environ.get('PYSTOW_HOME') is not None:
         del os.environ['PYSTOW_HOME']
 
@@ -485,7 +482,7 @@ def get_downloaded_versions(root_folder: str | Path | None = None) -> list[Papyr
         (default: pystow's home directory)
     """
     _set_root_folder(root_folder)
-    version_json = pystow.join('papyrus', name='versions.json').as_posix()
+    version_json = pystow.join('papyrus', name='versions.json')
     raw_versions: list = read_jsonfile(version_json)
     if not raw_versions:
         return []
@@ -585,7 +582,7 @@ def papyrus_version_module(pv: PapyrusVersion, root_folder: str | Path | None = 
 # Downloaded-file inventory
 # ---------------------------------------------------------------------------
 
-def get_downloaded_papyrus_files(root_folder: str | None = None) -> pd.DataFrame:
+def get_downloaded_papyrus_files(root_folder: str | Path | None = None) -> pd.DataFrame:
     """Return a DataFrame describing which Papyrus files have been downloaded.
 
     Columns: ``version`` (canonical string), ``short_name``, ``file_name``,
@@ -622,14 +619,12 @@ def get_downloaded_papyrus_files(root_folder: str | None = None) -> pd.DataFrame
 
     rows = []
     for fi in file_infos:
-        pattern = os.path.join(
-            papyrus_version_module(fi.pv).base.as_posix(), '**', fi.file_name,
-        )
+        matches = papyrus_version_module(fi.pv).base.glob(f'**/{fi.file_name}')
         rows.append({
             'version': fi.pv.version,
             'short_name': fi.short_name,
             'file_name': fi.file_name,
-            'downloaded': len(glob.glob(pattern, recursive=True)) > 0,
+            'downloaded': next(matches, None) is not None,
         }
         )
     return pd.DataFrame(rows)
@@ -639,7 +634,7 @@ def get_downloaded_papyrus_files(root_folder: str | None = None) -> pd.DataFrame
 # File-location helper
 # ---------------------------------------------------------------------------
 
-def locate_file(dirpath: str, regex_pattern: str) -> list[str]:
+def locate_file(dirpath: str | Path, regex_pattern: str) -> list[Path]:
     """Return all files in *dirpath* whose names match *regex_pattern*.
 
     :param dirpath: directory to search (non-recursive)
@@ -647,12 +642,13 @@ def locate_file(dirpath: str, regex_pattern: str) -> list[str]:
     :raises NotADirectoryError: if *dirpath* does not exist
     :raises FileNotFoundError: if no matching file is found
     """
-    if not os.path.isdir(dirpath):
+    dirpath = Path(dirpath)
+    if not dirpath.is_dir():
         raise NotADirectoryError(f'Directory does not exist: {dirpath}')
     matches = [
-        os.path.join(dirpath, fname)
-        for fname in os.listdir(dirpath)
-        if re.search(regex_pattern, fname) and not fname.endswith(':ZoneIdentifier')
+        entry
+        for entry in dirpath.iterdir()
+        if re.search(regex_pattern, entry.name) and not entry.name.endswith(':ZoneIdentifier')
     ]
     if not matches:
         raise FileNotFoundError(f'No file matching {regex_pattern!r} found in {dirpath}')
@@ -669,7 +665,7 @@ def get_num_rows_in_file(
         descriptor_name: str | None = None,
         version: str | PapyrusVersion = 'latest',
         plusplus: bool = True,
-        root_folder: str | None = None,
+        root_folder: str | Path | None = None,
 ) -> int:
     """Return the number of data rows in a Papyrus file.
 
@@ -698,7 +694,7 @@ def get_num_rows_in_file(
     pv = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
     _set_root_folder(root_folder)
 
-    json_file = papyrus_version_module(pv).join(name='data_size.json').as_posix()
+    json_file = papyrus_version_module(pv).join(name='data_size.json')
     sizes = read_jsonfile(json_file)
 
     if filetype == 'bioactivities':
@@ -721,8 +717,8 @@ def get_num_rows_in_file(
 # ---------------------------------------------------------------------------
 
 def convert_xz_to_gz(
-        input_file: str,
-        output_file: str,
+        input_file: str | Path,
+        output_file: str | Path,
         compression_level: int | None = 9,
         progress: bool = False,
 ) -> None:
@@ -758,8 +754,8 @@ def convert_xz_to_gz(
 
 
 def convert_gz_to_xz(
-        input_file: str,
-        output_file: str,
+        input_file: str | Path,
+        output_file: str | Path,
         compression_level: int = lzma.PRESET_DEFAULT,
         extreme: bool = False,
         progress: bool = False,

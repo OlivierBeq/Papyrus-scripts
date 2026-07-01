@@ -3,9 +3,9 @@
 """Command line interface of the Papyrus-scripts"""
 
 import sys
-import os
 import inspect
 from collections import defaultdict
+from pathlib import Path
 
 import click
 import pystow
@@ -378,20 +378,19 @@ def convert(indir, version, format, level, extreme):
         version = list(version)
     # resolve version to a PapyrusVersion, then use its on-disk folder name
     pv = process_data_version(version, indir)
-    version_dir = os.path.join(
-        indir if indir is not None else str(pystow.utils.get_base('')),
-        'papyrus',
-        pv.version_old_fmt,
-    )
+    version_dir = (
+        Path(indir) if indir is not None else Path(pystow.utils.get_base(''))
+    ) / 'papyrus' / pv.version_old_fmt
 
     if format is None:
         counts = defaultdict(list)
-        for root, _, files in os.walk(version_dir):
-            for name in files:
-                if name.lower().endswith('.xz'):
-                    counts['gzip'].append(os.path.join(root, name))
-                elif name.lower().endswith('.gz'):
-                    counts['xz'].append(os.path.join(root, name))
+        for filepath in version_dir.rglob('*'):
+            if not filepath.is_file():
+                continue
+            if filepath.name.lower().endswith('.xz'):
+                counts['gzip'].append(filepath)
+            elif filepath.name.lower().endswith('.gz'):
+                counts['xz'].append(filepath)
         if len(counts['gzip']) > len(counts['xz']):
             format = 'gzip'
         elif counts['xz']:
@@ -401,18 +400,16 @@ def convert(indir, version, format, level, extreme):
                 'Equal number of LZMA and GZIP files — please specify the output format.'
             )
 
-    for root, _, files in os.walk(version_dir):
-        for name in files:
-            filepath = os.path.join(root, name)
-            if format == 'gzip' and name.endswith('.xz'):
-                # Bug-fix: original used rstrip('xz') which strips individual
-                # characters, not the suffix. Use removesuffix instead.
-                out = filepath.removesuffix('.xz') + '.gz'
-                convert_xz_to_gz(filepath, out, compression_level=level, progress=True)
-                os.remove(filepath)
-            elif format == 'xz' and name.endswith('.gz'):
-                out = filepath.removesuffix('.gz') + '.xz'
-                convert_gz_to_xz(filepath, out, compression_level=level,
-                                 extreme=extreme, progress=True
-                                 )
-                os.remove(filepath)
+    for filepath in version_dir.rglob('*'):
+        if not filepath.is_file():
+            continue
+        if format == 'gzip' and filepath.name.endswith('.xz'):
+            out = filepath.with_suffix('.gz')
+            convert_xz_to_gz(filepath, out, compression_level=level, progress=True)
+            filepath.unlink()
+        elif format == 'xz' and filepath.name.endswith('.gz'):
+            out = filepath.with_suffix('.xz')
+            convert_gz_to_xz(filepath, out, compression_level=level,
+                             extreme=extreme, progress=True
+                             )
+            filepath.unlink()
