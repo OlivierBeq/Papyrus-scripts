@@ -40,8 +40,7 @@ from prodec.Transform import Transform
 
 from .reader import read_molecular_descriptors, read_protein_descriptors
 from .preprocess import yscrambling
-from .neuralnet import (BaseNN,
-                        SingleTaskNNClassifier,
+from .neuralnet import (SingleTaskNNClassifier,
                         SingleTaskNNRegressor,
                         MultiTaskNNRegressor,
                         MultiTaskNNClassifier
