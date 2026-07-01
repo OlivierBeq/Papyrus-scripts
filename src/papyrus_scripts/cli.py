@@ -2,8 +2,9 @@
 
 """Command line interface of the Papyrus-scripts"""
 
-import sys
+import ast
 import inspect
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -11,12 +12,17 @@ import click
 import pystow
 
 from .download import download_papyrus, remove_papyrus
+from .fingerprint import Fingerprint, get_fp_from_name
 from .matchRCSB import get_matches, update_rcsb_data
 from .reader import read_papyrus
-from .utils.IO import (get_num_rows_in_file, process_data_version, convert_gz_to_xz, convert_xz_to_gz,
-                       papyrus_version_module)
 from .subsim_search import FPSubSim2
-from .fingerprint import Fingerprint, get_fp_from_name
+from .utils.IO import (
+    convert_gz_to_xz,
+    convert_xz_to_gz,
+    get_num_rows_in_file,
+    papyrus_version_module,
+    process_data_version,
+)
 
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
 
@@ -337,9 +343,10 @@ def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerp
                           f'are {", ".join(fp_correct_values[fp_name])}'
                           )
                 try:
-                    fp_param[param_name] = eval(param_value)
-                except Exception:
-                    print(f'Parameters were wrongly formatted: {param_value}')
+                    fp_param[param_name] = ast.literal_eval(param_value)
+                except (ValueError, SyntaxError) as e:
+                    print(f'Parameter {param_name!r} for fingerprint {fp_name!r} is not a '
+                         f'valid Python literal: {param_value!r} ({e})')
                     sys.exit()
             fingerprints.append(get_fp_from_name(fp_name, **fp_param))
         for version_ in version:
