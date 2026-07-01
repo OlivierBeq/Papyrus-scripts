@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional, Union, Iterator, List
+from typing import Optional, Iterator
 from functools import partial
 
 import pystow
@@ -14,82 +14,142 @@ from tqdm.auto import tqdm
 from prodec import Descriptor, Transform
 
 from .utils.mol_reader import MolSupplier
-from .utils.IO import locate_file, process_data_version, TypeDecoder, PapyrusVersion
+from .utils.IO import PapyrusSource, TypeDecoder
 
 
-def read_papyrus(is3d: bool = False, version: str | PapyrusVersion = 'latest', plusplus: bool = True,
-                 chunksize: Optional[int] = None, source_path: Optional[str] = None
-                 ) -> Union[Iterator[pd.DataFrame], pd.DataFrame]:
+def _get_dtypes(source: PapyrusSource) -> dict:
+    """Load the data types definition file for the specific source version."""
+    with open(source.path_data_types(), 'r') as jsonfile:
+        return json.load(jsonfile, cls=TypeDecoder)
 
-    """Read the Papyrus dataset.
 
-    :param is3d: whether to consider stereochemistry or not (default: False)
-    :param version: version of the dataset to be read
-    :param plusplus: read the Papyrus++ curated subset of very high quality
-    :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
-    :return: the Papyrus activity dataset
+def _read_tsv_chunked(file_path: str, chunksize: Optional[int], dtypes: dict, low_memory: bool = True) -> Iterator[
+    pd.DataFrame]:
+    """Reads a TSV file, yielding chunks."""
+    return pd.read_csv(file_path, sep='\t', chunksize=chunksize, dtype=dtypes, low_memory=low_memory)
+
+
+def _consume_iterator(iterator: Iterator[pd.DataFrame]) -> pd.DataFrame:
+    """Consumes an iterator of DataFrames into a single DataFrame."""
+    return pd.concat(list(iterator), ignore_index=True)
+
+
+def _filter_by_ids(
+        data_iterator: Iterator[pd.DataFrame] | pd.DataFrame,
+        ids: Optional[list[str]],
+        id_column: str
+) -> Iterator[pd.DataFrame] | pd.DataFrame:
     """
-    # Papyrus++ with stereo does not exist
-    if is3d and plusplus:
-        raise ValueError('Papyrus++ is only available without stereochemistry.')
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Load data types
-    dtype_file = source_path.join(name='data_types.json').as_posix()
-    with open(dtype_file, 'r') as jsonfile:
-        dtypes = json.load(jsonfile, cls=TypeDecoder)['papyrus']
-    # Find the file
-    filenames = locate_file(source_path.base.as_posix(),
-                            r'\d+\.\d+' + (r'\+\+' if plusplus else '') + '_combined_set_'
-                            f'with{"out" if not is3d else ""}' + r'_stereochemistry\.tsv.*')
-    return pd.read_csv(filenames[0], sep='\t', chunksize=chunksize, dtype=dtypes, low_memory=True)
+    Filters a DataFrame or a DataFrame iterator by a list of IDs.
+    Returns an iterator if the input is an iterator, or a DataFrame otherwise.
+    """
+    if ids is None:
+        return data_iterator
+
+    id_set = set(ids)
+
+    def _filter_generator():
+        # Iterate manually to apply filter per chunk
+        if isinstance(data_iterator, pd.DataFrame):
+            # Should not happen given the 'if check' above, but for safety
+            yield data_iterator[data_iterator[id_column].isin(id_set)]
+        else:
+            for chunk in data_iterator:
+                filtered_chunk = chunk[chunk[id_column].isin(id_set)]
+                if not filtered_chunk.empty:
+                    yield filtered_chunk
+
+    if isinstance(data_iterator, pd.DataFrame):
+        return data_iterator[data_iterator[id_column].isin(id_set)]
+
+    return _filter_generator()
 
 
-def read_protein_set(source_path: Optional[str] = None, version: str | PapyrusVersion = 'latest') -> pd.DataFrame:
-    """Read the protein targets of the Papyrus dataset.
+def read_papyrus(
+    source: PapyrusSource,
+    chunksize: Optional[int] = None
+) -> Iterator[pd.DataFrame] | pd.DataFrame:
+    """
+    Read the Papyrus bioactivity dataset.
 
-        :param source_path: folder containing the molecular descriptor datasets
-        :param version: version of the dataset to be read
-        :return: the set of protein targets in the Papyrus dataset
-        """
-    version = process_data_version(version=version, root_folder=source_path)
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Find the file
-    filenames = locate_file(source_path.base.as_posix(), r'\d+\.\d+_combined_set_protein_targets\.tsv.*')
-    return pd.read_csv(filenames[0], sep='\t', keep_default_na=False)
+    :param source: Configuration object for the Papyrus data source.
+    :param chunksize: Number of lines per chunk. If None, reads the entire file.
+    :return: A DataFrame or an iterator of DataFrames of the Papyrus activity dataset.
+    """
+    # 1. Get File Path via Source
+    file_path = source.path_bioactivity()
+    # 2. Load Dtypes
+    all_dtypes = _get_dtypes(source)
+    dtypes = all_dtypes.get('papyrus', {})
+    # 3. Read Data
+    data_iterator = _read_tsv_chunked(file_path, chunksize, dtypes)
+    if chunksize is None:
+        return _consume_iterator(data_iterator)
+    return data_iterator
 
 
-def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
-                               version: str | PapyrusVersion = 'latest', chunksize: Optional[int] = None,
-                               source_path: Optional[str] = None,
-                               ids: Optional[List[str]] = None, verbose: bool = True):
+
+def read_protein_set(source: PapyrusSource) -> pd.DataFrame:
+    """
+    Read the protein targets of the Papyrus dataset.
+
+    :param source: Configuration object for the Papyrus data source.
+    :return: DataFrame of protein targets.
+    """
+    file_path = source.path_proteins()
+    return pd.read_csv(file_path, sep='\t', keep_default_na=False)
+
+
+def read_molecular_descriptors(
+    source: PapyrusSource,
+    desc_type: str,
+    chunksize: Optional[int] = None,
+    ids: Optional[list[str]] = None,
+    verbose: bool = True
+) -> Iterator[pd.DataFrame] | pd.DataFrame:
     """Get molecular descriptors
 
-    :param desc_type: type of descriptor {'mold2', 'mordred', 'cddd', 'fingerprint', 'moe', 'all'}
-    :param is3d: whether to load descriptors of the dataset containing stereochemistry
-    :param version: version of the dataset to be read
+    :param source: Configuration object for the Papyrus data source.
+    :param desc_type: Type of descriptor {'mold2', 'mordred', 'cddd', 'fingerprint', 'all'}.
     :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
     :param ids: identifiers of the molecules which descriptors should be loaded
-                if is3d=True, then identifiers are InChIKeys, otherwise connectivities
+                if source.is3d=True, then identifiers are InChIKeys, otherwise connectivities
     :param verbose: whether to show progress
     :return: the dataframe of molecular descriptors
     """
-    if desc_type not in ['mold2', 'mordred', 'cddd', 'fingerprint', 'moe', 'all']:
-        raise ValueError("descriptor type not supported")
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
+    id_column = 'InChIKey' if source.is3d else 'connectivity'
+    desc_type_lower = desc_type.lower()
+    # Define metadata for each descriptor type based on 2D vs 3D
+    # Map: key -> (filename_identifier, dtype_json_key)
+    descriptor_map = {
+        'mold2': ('mold2', 'mold2'),
+        'cddd': ('CDDDs', 'CDDD'),
+    }
+    if source.is3d:
+        descriptor_map['mordred'] = ('mordred3D', 'mordred_3D')
+        descriptor_map['fingerprint'] = ('E3FP', 'E3FP')
+    else:
+        descriptor_map['mordred'] = ('mordred2D', 'mordred_2D')
+        descriptor_map['fingerprint'] = ('ECFP6', 'ECFP6')
+    # Validate Input
+    valid_keys = list(descriptor_map.keys()) + ['all']
+    if desc_type_lower not in valid_keys:
+        raise ValueError(f"Descriptor type '{desc_type}' not supported. Choose from {valid_keys}")
     # Load data types
+    all_dtypes = _get_dtypes(source)
+    if desc_type_lower == 'all':
+        # Recursive call to load each specific type
+        iterators = []
+        for key in descriptor_map.keys():
+            # Call self for specific type, force chunksize=None to get DataFrame,
+            # wrap in iterator for uniform handling in _join
+            df = read_molecular_descriptors(source, key, chunksize=None, ids=None, verbose=False)
+            iterators.append(iter([df]))
+
+        full_df = _join_molecular_descriptors(*iterators, on=id_column)
+        return _filter_by_ids(full_df, ids, id_column)
+
+
     dtype_file = source_path.join(name='data_types.json').as_posix()
     with open(dtype_file, 'r') as jsonfile:
         dtypes = json.load(jsonfile, cls=TypeDecoder)
@@ -183,8 +243,8 @@ def _join_molecular_descriptors(*descriptors: Iterator, on: str = 'connectivity'
         raise StopIteration
 
 
-def _filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
-                                  ids: Optional[List[str]], id_name: str):
+def _filter_molecular_descriptors(data: pd.DataFrame | Iterator,
+                                  ids: Optional[list[str]], id_name: str):
     if isinstance(data, pd.DataFrame):
         if ids is None:
             return _iterate_filter_descriptors(data, None, None)
@@ -193,7 +253,7 @@ def _filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
         return _iterate_filter_descriptors(data, ids, id_name)
 
 
-def _iterate_filter_descriptors(data: Iterator, ids: Optional[List[str]], id_name: Optional[str]):
+def _iterate_filter_descriptors(data: Iterator, ids: Optional[list[str]], id_name: Optional[str]):
     for chunk in data:
         if ids is None:
             yield chunk
@@ -201,10 +261,10 @@ def _iterate_filter_descriptors(data: Iterator, ids: Optional[List[str]], id_nam
             yield chunk[chunk[id_name].isin(ids)]
 
 
-def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'unirep',
+def read_protein_descriptors(desc_type: str | Descriptor | Transform = 'unirep',
                              version: str | PapyrusVersion = 'latest', chunksize: Optional[int] = None,
                              source_path: Optional[str] = None,
-                             ids: Optional[List[str]] = None, verbose: bool = True,
+                             ids: Optional[list[str]] = None, verbose: bool = True,
                              **kwargs):
     """Get protein descriptors
 
@@ -312,7 +372,7 @@ def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'uni
 
 def read_molecular_structures(is3d: bool = False, version: str | PapyrusVersion = 'latest',
                               chunksize: Optional[int] = None, source_path: Optional[str] = None,
-                              ids: Optional[List[str]] = None, verbose: bool = True):
+                              ids: Optional[list[str]] = None, verbose: bool = True):
     """Get molecular structures
 
     :param is3d: whether to load descriptors of the dataset containing stereochemistry
@@ -355,7 +415,7 @@ def read_molecular_structures(is3d: bool = False, version: str | PapyrusVersion 
 
 
 def _structures_iterator(sd_file: str, chunksize: int,
-                         ids: Optional[List[str]] = None,
+                         ids: Optional[list[str]] = None,
                          is3d: bool = False, verbose: bool = True) -> Iterator[pd.DataFrame]:
     if not isinstance(chunksize, int) or chunksize < 1:
         raise ValueError('Chunksize must be a non-null positive integer.')

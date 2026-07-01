@@ -18,7 +18,8 @@ import requests
 import shutil
 import lzma
 import gzip
-from typing import List, Optional
+from typing import Optional
+from dataclasses import dataclass, field
 
 import pystow
 import pandas as pd
@@ -154,7 +155,7 @@ def get_downloaded_papyrus_files(root_folder: str = None) -> pd.DataFrame:
     return data
 
 
-def get_latest_downloaded_version(root_folder: str = None) -> List[str]:
+def get_latest_downloaded_version(root_folder: str = None) -> list[str]:
     """Identify the latest version of the downloaded Papyrus data
 
     :param root_folder: folder containing the bioactivity dataset (default: pystow's home folder)
@@ -166,7 +167,7 @@ def get_latest_downloaded_version(root_folder: str = None) -> List[str]:
     return sorted(versions, key=lambda s: [int(u) for u in s.split('.')])[-1]
 
 
-def get_online_versions() -> List[str]:
+def get_online_versions() -> list[str]:
     """Identify the versions of the Papyrus data available online
 
     :return: a list of the versions available
@@ -466,3 +467,176 @@ class PapyrusVersion:
 
     def __repr__(self):
         return f'<PapyrusVersion version={self.version} / {self.version_old_fmt}, revision={self.revision}>'
+
+
+def version_to_tuple(v: str) -> tuple[int, ...]:
+    """
+    Converts a version string (e.g., '2022.04.1') to a tuple of integers
+    (2022, 4, 1) for reliable sorting.
+    """
+    try:
+        # Remove any non-numeric suffixes if necessary, though Papyrus uses clean numbers
+        return tuple(map(int, v.split('.')))
+    except ValueError:
+        return (0, 0, 0)  # Fallback for non-standard aliases
+
+
+@dataclass
+class PapyrusSource:
+    """
+    Unified configuration for locating and identifying Papyrus data.
+
+    This class handles:
+    1. Identification: Resolving 'latest', legacy ('05.4'), abd new versions ('2022.04.1').
+    2. Location: Managing storage paths via pystow.
+    3. Retrieval: Providing helper methods to get absolute file paths for specific data types.
+    """
+    # --- Identification Inputs ---
+    version: str = 'latest'
+
+    # --- Configuration Inputs ---
+    is3d: bool = False
+    plusplus: bool = True
+    source_path: Optional[str] = None
+
+    # --- Filter Inputs (for locating versions by metadata) ---
+    chembl_version: Optional[int] = None
+    chembl: Optional[bool] = None
+    excape: Optional[bool] = None
+    sharma: Optional[bool] = None
+    christmann: Optional[bool] = None
+    klaeger: Optional[bool] = None
+    merget: Optional[bool] = None
+    pickett: Optional[bool] = None
+
+    # --- Internal State (Resolved post-init) ---
+    _version_id: str = field(init=False, repr=False)  # Legacy ID (e.g., "05.4")
+    _version_dir: str = field(init=False, repr=False)  # Directory Name (e.g., "2022.04")
+    _root_path: pystow.Module = field(init=False, repr=False)
+
+    def __post_init__(self):
+        """Resolve the version string and configure file paths."""
+        self._resolve_version()
+        self._setup_paths()
+
+    def _resolve_version(self):
+        """
+        Resolves the user input (version string or filter flags) against the
+        available aliases to find a concrete version directory.
+        """
+        # Load aliases (assumes get_papyrus_aliases is available in IO.py)
+        aliases = get_papyrus_aliases(offline=True)
+
+        # Ensure 'alias' and 'version' columns are treated as strings for comparison
+        aliases['alias'] = aliases['alias'].astype(str)
+        aliases['version'] = aliases['version'].astype(str)
+
+        # 1. Handle "latest" request
+        if self.version.lower() == 'latest':
+            # Sort by tuple conversion to handle '2022.04.1' > '2022.04' correctly
+            unique_aliases = aliases['alias'].unique()
+            sorted_aliases = sorted(unique_aliases, key=version_to_tuple)
+            self.version = sorted_aliases[-1]
+            # We proceed to query this resolved version below to get metadata
+
+        # 2. Build the query
+        # Check if input matches the alias column OR the legacy version column
+        # e.g., input "05.4" matches version="05.4", input "2022.04" matches alias="2022.04"
+        query_parts = [f'(alias == "{self.version}" or version == "{self.version}")']
+
+        # Add optional metadata filters if they are set (e.g., chembl=True)
+        flags = ['chembl', 'excape', 'sharma', 'christmann', 'klaeger', 'merget', 'pickett']
+        for flag in flags:
+            val = getattr(self, flag)
+            if val is not None:
+                query_parts.append(flag if val else f"not {flag}")
+
+        if self.chembl_version:
+            query_parts.append(f'chembl_version == "{self.chembl_version}"')
+
+        final_query = " and ".join(query_parts)
+
+        # 3. Execute Query
+        subset = aliases.query(final_query)
+
+        if subset.empty:
+            raise ValueError(f'No Papyrus version matches the criteria: {final_query}')
+        elif len(subset) > 1:
+            # If "latest" resolved to a specific version, this shouldn't happen,
+            # but if flags were ambiguous, warn user.
+            raise ValueError(f'The provided information matches multiple versions:\n{subset}\n'
+                             'Please specify a unique version string.'
+                             )
+
+        row = subset.iloc[0]
+
+        # 4. Set internal state
+        self._version_id = row['version']  # The old ID, useful for legacy checks if needed
+        self._version_dir = row['alias']  # The new folder name (e.g. 2022.04.1)
+
+        # Canonicalize the public version attribute to the directory name
+        self.version = self._version_dir
+
+    def _setup_paths(self):
+        """Configures the pystow root module based on the resolved version."""
+        if self.source_path:
+            os.environ['PYSTOW_HOME'] = os.path.abspath(self.source_path)
+
+        # Point to .../papyrus/<alias>/ (e.g., .../papyrus/2022.04.1/)
+        self._root_path = pystow.module('papyrus', self._version_dir)
+
+    @property
+    def root(self) -> pystow.Module:
+        """Access the pystow module for this version."""
+        return self._root_path
+
+    # --- Path Helpers ---
+    # These methods encapsulate the Regex logic, keeping it consistent across the library.
+    # The Regex r'\d+(?:\.\d+)+' matches 2 or more dot-separated numbers
+    # (e.g., "05.4", "2022.04", "2022.04.1").
+
+    def path_data_types(self) -> str:
+        """Return path to data_types.json."""
+        return self.root.join(name='data_types.json').as_posix()
+
+    def path_bioactivity(self) -> str:
+        """Return path to the combined bioactivity TSV file."""
+        if self.is3d and self.plusplus:
+            raise ValueError('Papyrus++ is only available without stereochemistry.')
+
+        stereo_suffix = 'with' if self.is3d else 'without'
+        pp_suffix = r'\+\+' if self.plusplus else ''
+        version_pattern = r'\d+(?:\.\d+)+'
+
+        pattern = rf'{version_pattern}{pp_suffix}_combined_set_{stereo_suffix}_stereochemistry\.tsv.*'
+        return locate_file(self.root.base.as_posix(), pattern)[0]
+
+    def path_proteins(self) -> str:
+        """Return path to the protein targets TSV file."""
+        version_pattern = r'\d+(?:\.\d+)+'
+        pattern = rf'{version_pattern}_combined_set_protein_targets\.tsv.*'
+        return locate_file(self.root.base.as_posix(), pattern)[0]
+
+    def path_structures(self) -> str:
+        """Return path to the SD structure file."""
+        version_pattern = r'\d+(?:\.\d+)+'
+        stereo_suffix = f'with{"" if self.is3d else "out"}_stereochemistry'
+        pattern = rf'{version_pattern}_combined_{3 if self.is3d else 2}D_set_{stereo_suffix}\.sd.*'
+        return locate_file(self.root.join('structures').as_posix(), pattern)[0]
+
+    def path_descriptor(self, descriptor_name: str, dtype_key: Optional[str] = None) -> str:
+        """
+        Return path to a molecular descriptor TSV file.
+        :param descriptor_name: The specific descriptor identifier in the filename (e.g. 'mold2', 'mordred2D').
+        :param dtype_key: Ignored here, used in readers for type lookups.
+        """
+        version_pattern = r'\d+(?:\.\d+)+'
+        pattern = rf'{version_pattern}_combined_{3 if self.is3d else 2}D_moldescs_{descriptor_name}\.tsv.*'
+        return locate_file(self.root.join('descriptors').as_posix(), pattern)[0]
+
+    def path_protein_descriptor(self, descriptor_name: str) -> str:
+        """Return path to a protein descriptor/embedding TSV file."""
+        version_pattern = r'\d+(?:\.\d+)+'
+        # Pattern handles legacy naming variations (prot_embeddings vs protdescs)
+        pattern = rf'(?:{version_pattern}_combined_prot_embeddings_{descriptor_name}\.tsv.*)|(?:{version_pattern}_combined_protdescs_{descriptor_name}\.tsv.*)'
+        return locate_file(self.root.join('descriptors').as_posix(), pattern)[0]
