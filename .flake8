@@ -4,9 +4,8 @@
 # Adapted from https://github.com/pybel/pybel #
 ###############################################
 
-# This config can't go in setup.cfg because Python's ConfigParser
-# used by setup.pg will interpolate on all of Scott's beautiful % signs
-# that make the pretty colored output
+# This config can't go in pyproject.toml because flake8 does not
+# support that file format natively.
 
 [flake8]
 ignore =
