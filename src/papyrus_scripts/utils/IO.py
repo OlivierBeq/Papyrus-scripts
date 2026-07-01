@@ -303,7 +303,24 @@ class PapyrusVersion:
         subset = self.aliases.query(query) if query else self.aliases
 
         if subset.empty:
-            raise ValueError('No Papyrus version matches the supplied information.')
+            # For 3-part canonical strings (e.g. '2022.04.1'), aliases.json may only
+            # carry the latest revision.  Fall back to the alias row and override the
+            # revision so older revisions can still be constructed.
+            _fallback_handled = False
+            if version is not None and version.count('.') == 2:
+                parts = version.split('.')
+                split_alias = '.'.join(parts[:2])
+                split_revision = parts[2]
+                alias_rows = self.aliases[
+                    (self.aliases['version'] == split_alias) | (self.aliases['alias'] == split_alias)
+                ]
+                if not alias_rows.empty:
+                    row = alias_rows.iloc[0].copy()
+                    row['revision'] = split_revision
+                    subset = pd.DataFrame([row])
+                    _fallback_handled = True
+            if not _fallback_handled:
+                raise ValueError('No Papyrus version matches the supplied information.')
         if len(subset) > 1:
             raise ValueError(
                 'The supplied information matches multiple versions:\n\n'
@@ -326,6 +343,13 @@ class PapyrusVersion:
                 )
                 setattr(self, attr, str(value))
 
+        # True only when the caller passed an old-format string (e.g. '05.4').
+        # Used by pystow_path_key to preserve backward-compatible folder names.
+        self._input_is_old_fmt: bool = (
+            version is not None
+            and version in self.aliases['version'].values
+        )
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -339,6 +363,19 @@ class PapyrusVersion:
     def version_old_fmt(self) -> str:
         """Old-style version string (e.g. ``'05.4'``); only used internally for pystow path construction."""
         return self._version_old_fmt
+
+    @property
+    def pystow_path_key(self) -> str:
+        """Key for the pystow directory that stores this version's files.
+
+        Returns the old-format string (e.g. ``'05.4'``) when the version was
+        originally specified in old format — preserving the on-disk layout
+        created by the previous PyPI release.  Otherwise returns the canonical
+        new-format string (e.g. ``'2022.04.2'``), which always includes the
+        revision number so that different revisions of the same alias never
+        share a folder.
+        """
+        return self._version_old_fmt if self._input_is_old_fmt else self.version
 
     @property
     def is_latest(self) -> bool:

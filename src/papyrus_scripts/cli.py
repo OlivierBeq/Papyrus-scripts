@@ -53,7 +53,7 @@ def main():
               required=False, default=['none'], nargs=1, show_default=True, multiple=True,
               help=("Type of descriptors to download. 'mold2' (777 2D Mold2 descriptors), "
                     "'cddd': (512 2D continuous data-driven descriptors), "
-                    "'mordred': (1613 2D or 1826 3D mordred descriptors) ,\n""
+                    "'mordred': (1613 2D or 1826 3D mordred descriptors) ,\n"
                     "'fingerprint' (2048 bits 2D RDKit Morgan fingerprint with radius 3 "
                     "or 2048 bits extended 3-dimensional fingerprints of level 5), "
                     "'unirep' (6660 UniRep deep-learning protein sequence representations "
@@ -66,7 +66,12 @@ def main():
 @click.option('--force', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Force download if disk space is low.'
               )
-def download(output_directory, version, more, stereo, structs, descs, force):
+@click.option('--all-revisions', 'all_revisions', is_flag=True, required=False, default=False,
+              show_default=True,
+              help='When set, "all" and two-part version aliases expand to every known '
+                   'revision rather than only the latest revision per version.'
+              )
+def download(output_directory, version, more, stereo, structs, descs, force, all_revisions):
     """CLI to download the Papyrus data."""
     if isinstance(version, tuple):
         version = list(version)
@@ -82,6 +87,7 @@ def download(output_directory, version, more, stereo, structs, descs, force):
         descriptors=descs,
         progress=True,
         disk_margin=0.0 if force else 0.1,
+        all_revisions=all_revisions,
     )
 
 
@@ -128,8 +134,13 @@ def download(output_directory, version, more, stereo, structs, descs, force):
 @click.option('--force', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Skip confirmation when removing the root directory.'
               )
+@click.option('--all-revisions', 'all_revisions', is_flag=True, required=False, default=False,
+              show_default=True,
+              help='When set, "all" and two-part version aliases expand to every known '
+                   'revision rather than only the latest revision per version.'
+              )
 def clean(output_directory, version, papyruspp, stereo, bioactivities, proteins,
-          structs, descs, other_files, remove_version, remove_root, force):
+          structs, descs, other_files, remove_version, remove_root, force, all_revisions):
     """CLI to remove the Papyrus data."""
     if isinstance(version, tuple):
         version = list(version)
@@ -150,6 +161,7 @@ def clean(output_directory, version, papyruspp, stereo, bioactivities, proteins,
         papyrus_root=remove_root,
         force=force,
         progress=True,
+        all_revisions=all_revisions,
     )
 
 

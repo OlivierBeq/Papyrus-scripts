@@ -14,7 +14,7 @@ import requests
 from tqdm.auto import tqdm
 
 from .utils.IO import (PapyrusVersion, get_disk_space, enough_disk_space,
-                       assert_sha256sum, get_papyrus_links, get_latest_online_version,
+                       assert_sha256sum, get_papyrus_links,
                        get_downloaded_versions, read_jsonfile, write_jsonfile)
 
 USER_AGENT = None  # "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
@@ -36,19 +36,37 @@ def _set_pystow_home(outdir: Optional[Union[str, Path]]) -> None:
         )
 
 
-def _resolve_versions(version: Union[str, List[str]], files: dict) -> List[PapyrusVersion]:
+def _resolve_versions(
+    version: Union[str, List[str]],
+    files: dict,
+    all_revisions: bool = False,
+) -> List[PapyrusVersion]:
     """Normalise the *version* argument into a sorted, deduplicated list of :class:`PapyrusVersion` objects.
 
     Accepts any combination of new-format canonical strings (``'2022.04.2'``),
-    new-format alias strings (``'2022.04'``), ``'latest'``, and ``'all'``.
+    new-format alias strings (``'2022.04'``), old-format strings (``'05.4'``),
+    ``'latest'``, and ``'all'``.
 
     :param version: raw version argument passed by the caller
     :param files: the links dictionary returned by :func:`get_papyrus_links`,
-        used to enumerate available versions and to resolve ``'latest'``
+        used to enumerate available versions
+    :param all_revisions: when True, ``'all'`` expands to every revision present
+        in *files*; a two-part alias string expands to all its revisions.
+        When False (default), ``'all'`` expands to only the latest revision of
+        each version alias, and a two-part alias resolves to its latest revision.
     :raises ValueError: if an unrecognised version string is supplied
     """
-    available_old_fmts = list(files.keys())
-    latest_pv = get_latest_online_version()
+    _aliases = PapyrusVersion.aliases
+
+    # Derive the latest version from the local aliases table — no network call.
+    _latest_alias = _aliases['alias'].max()
+    _latest_rev = _aliases[_aliases['alias'] == _latest_alias]['revision'].max()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        latest_pv = PapyrusVersion(version=f'{_latest_alias}.{_latest_rev}')
+
+    # Canonical keys only (skip legacy '05.X'-style keys for user-facing messages).
+    canonical_keys = [k for k in files if k.count('.') == 2]
 
     if not isinstance(version, list):
         version = [version]
@@ -57,24 +75,83 @@ def _resolve_versions(version: Union[str, List[str]], files: dict) -> List[Papyr
     for v in version:
         if v == 'latest':
             resolved.append(latest_pv)
+
         elif v == 'all':
-            resolved.extend(PapyrusVersion(version=av) for av in available_old_fmts)
+            if all_revisions:
+                # Every canonical key in links.json that aliases.json can resolve.
+                for key in canonical_keys:
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter('ignore')
+                            resolved.append(PapyrusVersion(version=key))
+                    except ValueError:
+                        warnings.warn(
+                            f'{key!r} is in links.json but has no entry in aliases.json; skipping.',
+                            UserWarning,
+                            stacklevel=3,
+                        )
+            else:
+                # Default: latest revision of each known alias only.
+                latest_rows = (
+                    _aliases
+                    .assign(_r=_aliases['revision'].astype(int))
+                    .sort_values('_r')
+                    .groupby('alias', sort=False)
+                    .last()
+                    .reset_index()
+                )
+                for _, row in latest_rows.iterrows():
+                    canonical = f"{row['alias']}.{row['revision']}"
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        pv = PapyrusVersion(version=canonical)
+                    if pv.version in files or pv.version_old_fmt in files:
+                        resolved.append(pv)
+
+        elif all_revisions and v.count('.') < 2:
+            # Two-part alias or old-format string: expand all known revisions.
+            # Resolve the two-part string to its canonical alias (e.g. '2022.04').
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    _probe = PapyrusVersion(version=v)
+                alias = _probe._version
+            except ValueError:
+                alias = v  # try as-is; will fail at the key-check below if invalid
+            # Use links.json as the authoritative list of available revisions for
+            # this alias (aliases.json only carries the latest revision per alias).
+            prefix = alias + '.'
+            matching_keys = sorted(
+                [k for k in canonical_keys if k.startswith(prefix)],
+                key=lambda k: int(k.split('.')[-1]),
+            )
+            if not matching_keys:
+                valid = ['latest', 'all'] + canonical_keys
+                raise ValueError(
+                    f'version must be one of [{", ".join(valid)}], got {v!r}'
+                )
+            for key in matching_keys:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    pv = PapyrusVersion(version=key)
+                resolved.append(pv)
+
         else:
             try:
                 pv = PapyrusVersion(version=v)
             except ValueError:
-                valid = ['latest', 'all'] + available_old_fmts
+                valid = ['latest', 'all'] + canonical_keys
                 raise ValueError(
                     f'version must be one of [{", ".join(valid)}], got {v!r}'
                 )
             if pv.version not in files and pv.version_old_fmt not in files:
-                valid = ['latest', 'all'] + available_old_fmts
+                valid = ['latest', 'all'] + canonical_keys
                 raise ValueError(
                     f'version must be one of [{", ".join(valid)}], got {v!r}'
                 )
             resolved.append(pv)
 
-    # Deduplicate while preserving sort order (oldest first)
+    # Deduplicate while preserving sort order (oldest first).
     seen: set = set()
     unique: List[PapyrusVersion] = []
     for pv in sorted(set(resolved)):
@@ -153,12 +230,11 @@ def _update_versions_json(
     """
     json_file = papyrus_root.join(name='versions.json').as_posix()
     existing: list = read_jsonfile(json_file) if os.path.isfile(json_file) else []
-    # Work with old-format strings for the JSON file (unchanged on disk).
-    old_fmt = pv.version_old_fmt
+    path_key = pv.pystow_path_key
     if add:
-        updated = sorted(set(existing + [old_fmt]))
+        updated = sorted(set(existing + [path_key]))
     else:
-        updated = sorted(v for v in existing if v != old_fmt)
+        updated = sorted(v for v in existing if v != path_key)
     write_jsonfile(updated, json_file)
 
 
@@ -209,7 +285,8 @@ def download_papyrus(outdir: Optional[str] = None,
                      descriptors: Optional[Union[str, List[str]]] = 'all',
                      progress: bool = True,
                      disk_margin: float = 0.10,
-                     update_links: bool = True) -> None:
+                     update_links: bool = True,
+                     all_revisions: bool = False) -> None:
     """Download the Papyrus data.
 
     :param outdir: directory where Papyrus data is stored (default: pystow's directory)
@@ -222,11 +299,14 @@ def download_papyrus(outdir: Optional[str] = None,
     :param progress: should progress be displayed
     :param disk_margin: percent of free disk space to keep
     :param update_links: Should links be updated (allows new versions to be fetched)
+    :param all_revisions: when False (default), ``'all'`` and two-part alias strings
+        expand to only the latest revision of each version; when True, all revisions
+        present in the links file are included
     """
     _set_pystow_home(outdir)
 
     files = get_papyrus_links(offline=not update_links)
-    versions = _resolve_versions(version, files)
+    versions = _resolve_versions(version, files, all_revisions=all_revisions)
 
     if descriptors is None:
         descriptors = []
@@ -236,9 +316,8 @@ def download_papyrus(outdir: Optional[str] = None,
     papyrus_root = pystow.module('papyrus')
 
     for pv in versions:
-        old_fmt = pv.version_old_fmt
         version_files = _get_version_files(files, pv)
-        papyrus_version_root = pystow.module('papyrus', old_fmt)
+        papyrus_version_root = pystow.module('papyrus', pv.pystow_path_key)
 
         # ------------------------------------------------------------------
         # Build the set of logical file-type keys to download
@@ -401,6 +480,7 @@ def remove_papyrus(
         papyrus_root: bool = False,
         force: bool = False,
         progress: bool = True,
+        all_revisions: bool = False,
 ) -> None:
     """Remove locally downloaded Papyrus data.
 
@@ -424,11 +504,14 @@ def remove_papyrus(
         unless *force* is True
     :param force: skip interactive confirmation prompts
     :param progress: display progress bars and status messages
+    :param all_revisions: when False (default), ``'all'`` and two-part alias
+        strings expand to only the latest revision of each version; when True,
+        all revisions present in the links file are included
     """
     _set_pystow_home(outdir)
 
     files = get_papyrus_links()
-    versions = _resolve_versions(version, files)
+    versions = _resolve_versions(version, files, all_revisions=all_revisions)
 
     if not isinstance(descriptors, list):
         descriptors = [descriptors]
@@ -452,9 +535,8 @@ def remove_papyrus(
         return
 
     for pv in versions:
-        old_fmt = pv.version_old_fmt
         version_files = _get_version_files(files, pv)
-        papyrus_version_root = pystow.module('papyrus', old_fmt)
+        papyrus_version_root = pystow.module('papyrus', pv.pystow_path_key)
 
         # --------------------------------------------------------------
         # Per-version nuclear option: wipe one version folder

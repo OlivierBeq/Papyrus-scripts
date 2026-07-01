@@ -560,16 +560,22 @@ class PapyrusDataset:
             force: bool = False,
             progress: bool = True,
             source_path: Optional[str] = None,
+            all_revisions: bool = False,
     ) -> None:
         """Remove locally downloaded Papyrus data.
 
         All arguments map directly to :func:`~download.remove_papyrus`; see
         that function for full documentation.
         """
-        pv = _ensure_papyrus_version(version)
+        # 'latest' and 'all' are sentinels handled by remove_papyrus directly.
+        if isinstance(version, str) and version in ('latest', 'all'):
+            version_arg = version
+        else:
+            pv = _ensure_papyrus_version(version)
+            version_arg = pv.version
         download.remove_papyrus(
             outdir=source_path,
-            version=pv.version,
+            version=version_arg,
             papyruspp=remove_papyruspp,
             bioactivities=remove_bioactivities,
             proteins=remove_proteins,
@@ -582,6 +588,7 @@ class PapyrusDataset:
             papyrus_root=remove_papyrus_root,
             force=force,
             progress=progress,
+            all_revisions=all_revisions,
         )
 
     # ------------------------------------------------------------------
@@ -781,13 +788,13 @@ class FPSubSim2Engine:
         is3d = self.papyrus_params['is3d']
         dim_tag = '3D' if is3d else '2D'
         stereo = 'without' if not is3d else 'with'
-        name = (f'{pv.version_old_fmt}_combined_set_'
+        name = (f'{pv.pystow_path_key}_combined_set_'
                 f'{stereo}_stereochemistry_FPSubSim2_{dim_tag}.h5')
 
         if self.papyrus_params['source_path'] is not None:
             os.environ['PYSTOW_HOME'] = os.path.abspath(self.papyrus_params['source_path'])
 
-        path = pystow.module('papyrus', pv.version_old_fmt).join(name=name).as_posix()
+        path = pystow.module('papyrus', pv.pystow_path_key).join(name=name).as_posix()
 
         parent = os.path.dirname(path)
         if not os.path.isdir(parent):
