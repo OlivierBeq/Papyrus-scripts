@@ -114,8 +114,16 @@ def equalize_cell_size_in_column(
     col: pl.Series | list,
     fill_mode: str = 'internal',
     fill_value: object = '',
-) -> pl.Series:
+) -> pl.Series | list:
     """Equalise the number of values in each list-containing cell of a column.
+
+    Fully vectorised via Polars' native ``list`` expressions when *col* is
+    already a list-typed :class:`~polars.Series` (e.g. the result of
+    ``Series.str.split``) or a uniformly scalar-typed one - the common cases.
+    A plain Python list mixing scalar and list elements still needs one
+    linear pass to tell the two apart (Polars has no dtype for that), but
+    that pass is a cheap type check, not the row-by-row padding/truncation
+    the previous implementation did in Python.
 
     :param col: a :class:`~polars.Series` or list whose elements are lists
     :param fill_mode: ``'internal'`` repeats the last value, ``'external'``
@@ -123,26 +131,44 @@ def equalize_cell_size_in_column(
     :param fill_value: value used when *fill_mode* is ``'external'``
     :raises ValueError: if *fill_mode* is not recognised
     """
-    values = col.to_list() if isinstance(col, pl.Series) else list(col)
-    lengths = [len(x) if isinstance(x, list) else 1 for x in values]
+    is_series_in = isinstance(col, pl.Series)
+    series = col if is_series_in else pl.Series(col, strict=False)
 
-    if len(set(lengths)) == 1:
-        return pl.Series(values) if isinstance(col, pl.Series) else values
+    if series.dtype == pl.Object:
+        # Genuinely mixed scalar/list Python data: the dtype alone can't
+        # distinguish scalars from lists, so one linear pass is unavoidable.
+        values = series.to_list()
+        lengths = [len(v) if isinstance(v, list) else 1 for v in values]
+        if len(set(lengths)) == 1:
+            return series if is_series_in else values
+        series = pl.Series([v if isinstance(v, list) else [v] for v in values])
+    elif series.dtype != pl.List:
+        # Uniformly scalar-typed: every cell trivially has length 1, so the
+        # "already equal" shortcut always holds.
+        return series if is_series_in else series.to_list()
 
-    vals = [v if isinstance(v, list) else [v] for v in values]
-    max_len = max(lengths)
-    min_len = min(lengths)
+    lengths = series.list.len()
+    if lengths.len() == 0 or lengths.n_unique() == 1:
+        return series if is_series_in else series.to_list()
 
-    if fill_mode == 'external':
-        result = [e + [fill_value] * (max_len - len(e)) for e in vals]
+    max_len = lengths.max()
+    min_len = lengths.min()
+
+    if fill_mode == 'trim':
+        result = series.list.head(min_len)
+    elif fill_mode == 'external':
+        pad = pl.Series([[fill_value] * max_len])
+        result = series.list.concat(pad).list.head(max_len)
     elif fill_mode == 'internal':
-        result = [e + [e[-1]] * (max_len - len(e)) for e in vals]
-    elif fill_mode == 'trim':
-        result = [e[:min_len] for e in vals]
+        last = series.list.last()
+        pad = pl.DataFrame({'x': last}).select(
+            pl.concat_list([pl.col('x')] * max_len).alias('pad'),
+        )['pad']
+        result = series.list.concat(pad).list.head(max_len)
     else:
         raise ValueError("fill_mode must be one of ['internal', 'external', 'trim']")
 
-    return pl.Series(result) if isinstance(col, pl.Series) else result
+    return result if is_series_in else result.to_list()
 
 
 # ---------------------------------------------------------------------------
@@ -536,8 +562,10 @@ def keep_protein_class(
     lvl_independent = any('l?' in d for d in classes)
 
     # Build a (targets × classification-levels) DataFrame from the protein table.
+    # Passing the split Series directly (not .to_list()) lets
+    # equalize_cell_size_in_column take its fully-vectorised List-dtype path.
     classifications = equalize_cell_size_in_column(
-        protein_data['Classification'].str.split(';').to_list(), 'external', '',
+        protein_data['Classification'].str.split(';'), 'external', '',
     )
     if isinstance(classifications, pl.Series):
         classifications = classifications.to_list()

@@ -456,6 +456,47 @@ class TestEqualizeCellSize(unittest.TestCase):
         with self.assertRaises(ValueError):
             pp.equalize_cell_size_in_column(col, fill_mode='bogus')
 
+    def test_equalize_column_already_equal_length_returns_unchanged(self):
+        col = pl.Series([[1, 2], [3, 4]])
+        result = pp.equalize_cell_size_in_column(col, fill_mode='internal')
+        self.assertEqual(result.to_list(), [[1, 2], [3, 4]])
+
+    def test_equalize_column_all_scalar_series_returns_unchanged(self):
+        # A uniformly scalar-typed Series (no cell is itself a list) takes
+        # the fast "already equal length" shortcut without ever touching
+        # the list-padding logic.
+        col = pl.Series([1, 2, 3])
+        result = pp.equalize_cell_size_in_column(col, fill_mode='internal')
+        self.assertEqual(result.to_list(), [1, 2, 3])
+
+    def test_equalize_column_mixed_scalar_and_list_python_input(self):
+        # A plain Python list mixing scalar and list cells - the one case
+        # that still needs a linear Python-level pass to distinguish cells,
+        # since Polars has no dtype for "some cells are lists, some aren't".
+        result = pp.equalize_cell_size_in_column([1, [2, 3], 4], fill_mode='external', fill_value=0)
+        self.assertIsInstance(result, list)
+        self.assertEqual(result, [[1, 0], [2, 3], [4, 0]])
+
+    def test_equalize_column_all_scalar_list_input_returns_unchanged(self):
+        result = pp.equalize_cell_size_in_column([1, 2, 3], fill_mode='internal')
+        self.assertEqual(result, [1, 2, 3])
+
+    def test_equalize_column_empty_series_returns_unchanged(self):
+        col = pl.Series([], dtype=pl.List(pl.Utf8))
+        result = pp.equalize_cell_size_in_column(col, fill_mode='external')
+        self.assertEqual(result.to_list(), [])
+
+    def test_equalize_column_from_str_split_stays_vectorized(self):
+        # Mirrors keep_protein_class's real usage: a Series produced by
+        # Series.str.split, passed straight through (no .to_list() detour).
+        col = pl.Series(['Enzyme;Kinase', 'Receptor', 'Enzyme;Protease;Serine']).str.split(';')
+        result = pp.equalize_cell_size_in_column(col, fill_mode='external', fill_value='')
+        self.assertIsInstance(result, pl.Series)
+        self.assertEqual(
+            result.to_list(),
+            [['Enzyme', 'Kinase', ''], ['Receptor', '', ''], ['Enzyme', 'Protease', 'Serine']],
+        )
+
 
 class TestKeepSimilarDissimilarSubstructure(unittest.TestCase):
     """These tests mock FPSubSim2 entirely: building a real database is out of scope."""
