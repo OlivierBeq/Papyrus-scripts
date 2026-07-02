@@ -42,8 +42,25 @@ def _validate_data_type(data: object) -> None:
 # Papyrus++ column-injection helper
 # ---------------------------------------------------------------------------
 
+#: dtypes process_groups() computes for these columns - the raw Papyrus++
+#: file ships them pre-existing but as plain String (CSV default), so a row
+#: that skips re-aggregation (kept as-is) and a row that goes through
+#: process_groups() (genuinely Float64/Int64) would otherwise disagree on
+#: dtype when the two are later concatenated.
+_PCHEMBL_STAT_DTYPES = {
+    'pchembl_value_Mean': pl.Float64,
+    'pchembl_value_StdDev': pl.Float64,
+    'pchembl_value_SEM': pl.Float64,
+    'pchembl_value_N': pl.Int64,
+    'pchembl_value_Median': pl.Float64,
+    'pchembl_value_MAD': pl.Float64,
+}
+
+
 def _with_papyruspp_columns(data: DataInput) -> tuple[DataInput, list[str]]:
-    """Add ``Activity_class`` and ``type_other`` null columns when absent.
+    """Add ``Activity_class`` and ``type_other`` null columns when absent,
+    and normalise any pre-existing ``pchembl_value_*`` statistic columns to
+    the dtypes :func:`process_groups` computes.
 
     Returns the (possibly augmented) DataFrame/LazyFrame and the list of
     column names that were added, so callers can drop them afterwards.
@@ -54,6 +71,15 @@ def _with_papyruspp_columns(data: DataInput) -> tuple[DataInput, list[str]]:
         if col not in schema:
             data = data.with_columns(pl.lit(None).cast(pl.Utf8).alias(col))
             added.append(col)
+
+    cast_exprs = [
+        pl.col(col).cast(dtype, strict=False)
+        for col, dtype in _PCHEMBL_STAT_DTYPES.items()
+        if col in schema and schema[col] != dtype
+    ]
+    if cast_exprs:
+        data = data.with_columns(cast_exprs)
+
     return data, added
 
 
@@ -304,11 +330,36 @@ def _unnest_and_filter(
 
     excluded = df.select(['Activity_ID'] + [c for c in excl_cols if c != 'Activity_ID'])
 
-    # Split each semicolon-delimited column into a list, then explode all at once.
-    included = (
+    # Split each semicolon-delimited column into a list. Real rows aren't
+    # guaranteed to have the same number of ';'-separated values across all
+    # split_cols (e.g. one source with two replicate pchembl_value
+    # measurements) - Polars requires matching per-row list lengths to
+    # explode multiple columns together, so pad every column's list to that
+    # row's own max length by repeating its last value before exploding.
+    # A genuinely null cell (e.g. type_other absent for this row) splits to
+    # null, not a length-1 list - fill_null([None]) gives it a well-defined
+    # length so it participates correctly in the per-row padding below,
+    # instead of leaving a bare null that later breaks explode's requirement
+    # that all exploded columns agree on length.
+    split = (
         df.select(['Activity_ID'] + split_cols)
-        .with_columns([pl.col(c).cast(pl.Utf8).str.split(';') for c in split_cols])
+        .with_columns([
+            pl.col(c).cast(pl.Utf8).str.split(';').fill_null([None])
+            for c in split_cols
+        ])
+    )
+    row_max_len = pl.max_horizontal([pl.col(c).list.len() for c in split_cols])
+    included = (
+        split.with_columns([
+            pl.col(c).list.concat(pl.col(c).list.last().repeat_by(row_max_len)).list.head(row_max_len)
+            for c in split_cols
+        ])
         .explode(split_cols)
+        # On a genuinely empty frame, the padding expressions above lose
+        # their inner dtype (infer List(Null) regardless of upstream casts,
+        # a Polars empty-input quirk) - re-cast after exploding, where a
+        # cast reliably sticks even with zero rows.
+        .with_columns([pl.col(c).cast(pl.Utf8, strict=False) for c in split_cols])
     )
 
     included = included.filter(keep_mask())
@@ -373,38 +424,36 @@ def keep_source(
     ordered_columns = list(data.collect_schema())
     data, added     = _with_papyruspp_columns(data)
     source_pattern  = '|'.join(map(re.escape, source))
+    # Real source values carry version/year suffixes (e.g. 'ChEMBL34',
+    # 'Christmann2016'), so matching must be substring-based throughout -
+    # not just for detecting whether a multi-source row is worth unnesting.
+    matches = pl.col('source').str.to_lowercase().str.contains(source_pattern)
+    is_multi = pl.col('source').str.contains(';')
 
     # Binary-class records with a single matching source — keep as-is.
     preserved_binary = data.filter(
-        pl.col('Activity_class').is_not_null()
-        & pl.col('source').str.to_lowercase().is_in(source),
+        pl.col('Activity_class').is_not_null() & ~is_multi & matches,
     )
     # Binary-class records with multiple sources — must be unnested first.
     multi_binary = data.filter(
-        pl.col('Activity_class').is_not_null()
-        & pl.col('source').str.contains(';')
-        & pl.col('source').str.to_lowercase().str.contains(source_pattern),
+        pl.col('Activity_class').is_not_null() & is_multi & matches,
     )
     # Continuous records.
     cont = data.filter(pl.col('Activity_class').is_null())
 
     binary_data = _unnest_and_filter(
         multi_binary.drop(added),
-        keep_mask=lambda: pl.col('source').str.to_lowercase().is_in(source),
+        keep_mask=lambda: pl.col('source').str.to_lowercase().str.contains(source_pattern),
         ordered_columns=[c for c in ordered_columns if c not in added],
         aggregate=False,
     )
 
-    preserved = cont.filter(pl.col('source').str.to_lowercase().is_in(source))
-    multi_cont = cont.filter(
-        ~pl.col('source').str.to_lowercase().is_in(source)
-        & pl.col('source').str.contains(';')
-        & pl.col('source').str.to_lowercase().str.contains(source_pattern),
-    )
+    preserved = cont.filter(~is_multi & matches)
+    multi_cont = cont.filter(is_multi & matches)
 
     filtered = _unnest_and_filter(
         multi_cont.drop(added),
-        keep_mask=lambda: pl.col('source').str.to_lowercase().is_in(source),
+        keep_mask=lambda: pl.col('source').str.to_lowercase().str.contains(source_pattern),
         ordered_columns=[c for c in ordered_columns if c not in added],
         aggregate=True,
     )

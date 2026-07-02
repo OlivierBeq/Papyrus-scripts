@@ -2,7 +2,9 @@
 
 """Reading functions for the Papyrus dataset."""
 
+import io
 import json
+import lzma
 import os
 from functools import reduce
 from pathlib import Path
@@ -22,6 +24,22 @@ from .utils.IO import (
     process_data_version,
 )
 from .utils.mol_reader import MolSupplier
+
+
+def _open_source(filepath: str | Path) -> str | Path | io.BytesIO:
+    """Return a readable source for *filepath*, decompressing ``.xz`` in memory.
+
+    Polars' CSV reader natively decompresses ``.gz`` but not ``.xz`` (LZMA) -
+    Papyrus ships every file ``.xz``-compressed, so handing the raw compressed
+    bytes to ``pl.read_csv``/``pl.scan_csv`` as if they were plain text raises
+    ``ComputeError: invalid utf-8 sequence``. Non-``.xz`` paths are returned
+    unchanged (``.gz`` and uncompressed files are read natively).
+    """
+    filepath = Path(filepath)
+    if filepath.suffix == '.xz':
+        with lzma.open(filepath, 'rb') as fh:
+            return io.BytesIO(fh.read())
+    return filepath
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +169,10 @@ def _read_one_mol_descriptor(
     read_kw: dict = dict(separator='\t')
     if schema:
         read_kw['schema_overrides'] = schema
+    source = _open_source(files[0])
     data: DataOrChunks = (
-        pl.scan_csv(files[0], **read_kw) if lazy
-        else pl.read_csv(files[0], **read_kw)
+        pl.scan_csv(source, **read_kw) if lazy
+        else pl.read_csv(source, **read_kw)
     )
     if ids is not None:
         data = data.filter(pl.col(id_col).is_in(ids))
@@ -195,9 +214,10 @@ def read_papyrus(
 
     filenames = locate_file(source_mod.base, pattern)
     read_kw   = dict(separator='\t', schema_overrides=schema)
+    source    = _open_source(filenames[0])
     if chunksize is None:
-        return pl.read_csv(filenames[0], **read_kw)
-    return pl.scan_csv(filenames[0], **read_kw)
+        return pl.read_csv(source, **read_kw)
+    return pl.scan_csv(source, **read_kw)
 
 
 def read_protein_set(
@@ -217,7 +237,7 @@ def read_protein_set(
         r'\d+\.\d+_combined_set_protein_targets\.tsv.*',
     )
     # null_values=[] keeps empty strings as empty strings (no implicit NA).
-    return pl.read_csv(filenames[0], separator='\t', null_values=[])
+    return pl.read_csv(_open_source(filenames[0]), separator='\t', null_values=[])
 
 
 def read_molecular_descriptors(
@@ -443,7 +463,7 @@ def _read_unirep(
     schema: dict,
     ids: list[str] | None,
 ) -> pl.DataFrame:
-    df = pl.read_csv(filepath, separator='\t', schema_overrides=schema)
+    df = pl.read_csv(_open_source(filepath), separator='\t', schema_overrides=schema)
     if 'TARGET_NAME' in df.columns:
         df = df.rename({'TARGET_NAME': 'target_id'})
     if ids is not None:
@@ -455,7 +475,7 @@ def _read_custom_protein_descriptors(
     filepath: str | Path,
     ids: list[str] | None,
 ) -> pl.DataFrame:
-    df = pl.read_csv(filepath, separator='\t')
+    df = pl.read_csv(_open_source(filepath), separator='\t')
     if 'TARGET_NAME' in df.columns:
         df = df.rename({'TARGET_NAME': 'target_id'})
     if ids is not None:

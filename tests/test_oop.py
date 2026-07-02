@@ -212,7 +212,7 @@ class TestPapyrusDataset(unittest.TestCase):
                              .to_dataframe(False))
         self.assertEqual(oop_data_proteins['Organism'].unique().to_list(), ['Mus musculus (Mouse)'])
 
-    def test_sharma_klaeger_christman_egfr_specific_mutants_no_chirality(self):
+    def test_sharma_klaeger_christmann_egfr_specific_mutants_no_chirality(self):
         # 1) Obtain data through the functional API
         fn_data = self._read_papyrus()
         # Keep data related to the human EGFR from its accession
@@ -222,7 +222,7 @@ class TestPapyrusDataset(unittest.TestCase):
         # Keep only molecules without chiral centers
         fn_filter3 = preprocess.keep_contains(fn_filter2, 'InChIKey', 'UHFFFAOYSA')
         # Keep data from the Sharma, Klaeger and Christmann-Franck datasets
-        fn_filter4 = preprocess.keep_source(fn_filter3, ['sharma', 'klaeger', 'christman'])
+        fn_filter4 = preprocess.keep_source(fn_filter3, ['sharma', 'klaeger', 'christmann'])
         # Keep only molecules without chiral centers
         fn_filter5 = preprocess.keep_not_contains(fn_filter4, 'InChIKey', '-O$', regex=True)
         # Aggregate the data
@@ -232,7 +232,7 @@ class TestPapyrusDataset(unittest.TestCase):
                         .keep_accession('P00533')
                         .isin('target_id', ['P00533_L858R', 'P00533_L861Q'])
                         .contains('InChIKey', 'UHFFFAOYSA')
-                        .keep_source(['sharma', 'klaeger', 'christman'])
+                        .keep_source(['sharma', 'klaeger', 'christmann'])
                         .not_contains('InChIKey', '-O$', regex=True)
                         .aggregate(progress=(not self.plusplus)))
         # 3) Ensure datasets are equal

@@ -6,10 +6,8 @@ import ast
 import inspect
 import sys
 from collections import defaultdict
-from pathlib import Path
 
 import click
-import pystow
 
 from .download import download_papyrus, remove_papyrus
 from .fingerprint import Fingerprint, get_fp_from_name
@@ -385,9 +383,7 @@ def convert(indir, version, format, level, extreme):
         version = list(version)
     # resolve version to a PapyrusVersion, then use its on-disk folder name
     pv = process_data_version(version, indir)
-    version_dir = (
-        Path(indir) if indir is not None else Path(pystow.utils.get_base(''))
-    ) / 'papyrus' / pv.version_old_fmt
+    version_dir = papyrus_version_module(pv, indir).base
 
     if format is None:
         counts = defaultdict(list)

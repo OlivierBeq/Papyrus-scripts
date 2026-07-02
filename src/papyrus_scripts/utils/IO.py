@@ -606,15 +606,17 @@ def papyrus_version_module(pv: PapyrusVersion, root_folder: str | Path | None = 
     """Return the pystow :class:`~pystow.Module` for *pv*'s on-disk folder.
 
     This is the single place in the codebase that translates a
-    :class:`PapyrusVersion` into the ``_version_old_fmt`` string required by
-    pystow for path construction.
+    :class:`PapyrusVersion` into the ``pystow_path_key`` string required by
+    pystow for path construction - matching the folder name ``download_papyrus``
+    actually writes to (old-format only when *pv* was itself specified in old
+    format; the canonical new-format string otherwise).
 
     :param pv: resolved :class:`PapyrusVersion`
     :param root_folder: folder containing the bioactivity dataset
         (default: pystow's home folder)
     """
     _set_root_folder(root_folder)
-    return pystow.module('papyrus', pv.version_old_fmt)
+    return pystow.module('papyrus', pv.pystow_path_key)
 
 
 # ---------------------------------------------------------------------------
