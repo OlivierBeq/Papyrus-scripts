@@ -8,6 +8,7 @@ from collections.abc import Generator, Iterator
 from pathlib import Path
 
 import pandas as pd
+import polars as pl
 import pystow
 import requests
 from pandas.io.parsers import TextFileReader as PandasTextFileReader
@@ -198,14 +199,17 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     return pdb_data
 
 
-def get_matches(data: pd.DataFrame | PandasTextFileReader | Iterator,
+def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFileReader | Iterator,
                 root_folder: str | Path | None = None,
                 verbose: bool = True,
                 total: int | None = None,
                 update: bool = True) -> pd.DataFrame | Generator:
     """
 
-    :param data: Papyrus data to be mapped with PDB identifiers
+    :param data: Papyrus data to be mapped with PDB identifiers. A
+        :class:`~polars.DataFrame`/:class:`~polars.LazyFrame` (the type
+        produced by the rest of this library) is converted to pandas
+        internally, since the matching/merge logic below is pandas-based.
     :param root_folder: Directory where Papyrus bioactivity data is stored (default: pystow's home folder)
     :param verbose: show progress if data is and Iterator or a PandasTextFileReader
     :param total: Total number of chunks for progress display
@@ -214,6 +218,10 @@ def get_matches(data: pd.DataFrame | PandasTextFileReader | Iterator,
     """
     if isinstance(data, (PandasTextFileReader, Iterator)):
         return _chunked_get_matches(data, root_folder, verbose, total)
+    if isinstance(data, pl.LazyFrame):
+        data = data.collect()
+    if isinstance(data, pl.DataFrame):
+        data = data.to_pandas()
     if isinstance(data, pd.DataFrame):
         if 'connectivity' in data.columns:
             identifier = 'InChI_2D'

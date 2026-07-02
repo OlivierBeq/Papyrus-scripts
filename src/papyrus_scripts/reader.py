@@ -282,9 +282,8 @@ def read_protein_descriptors(
     :param desc_type: ``'unirep'``, ``'custom'``, or a ProDEC
         :class:`~prodec.Descriptor` / :class:`~prodec.Transform`
     :param version: dataset version to read (ignored for ``'custom'``)
-    :param chunksize: when not ``None``, use streaming internally.
-        The numeric value is no longer used — any non-``None`` value enables
-        lazy scanning.
+    :param chunksize: currently has no effect; the returned DataFrame is
+        always fully materialised. Kept for API stability.
     :param source_path: for ``'unirep'``/ProDEC: root directory for Papyrus
         data.  For ``'custom'``: path to a TSV file.
     :param ids: target identifiers to retain; ``None`` keeps all
@@ -296,7 +295,7 @@ def read_protein_descriptors(
             raise ValueError(
                 'source_path must point to an existing file when desc_type="custom"'
             )
-        return _read_custom_protein_descriptors(source_path, chunksize is not None, ids)
+        return _read_custom_protein_descriptors(source_path, ids)
 
     if isinstance(desc_type, (Descriptor, Transform)):
         pv           = _resolve_version(version, source_path)
@@ -332,7 +331,6 @@ def read_protein_descriptors(
         return _read_unirep(
             unirep_files[0],
             schema=schemas.get('unirep', {}),
-            lazy=chunksize is not None,
             ids=ids,
         )
 
@@ -443,11 +441,9 @@ def _read_structures_chunked(
 def _read_unirep(
     filepath: str | Path,
     schema: dict,
-    lazy: bool,
     ids: list[str] | None,
 ) -> pl.DataFrame:
-    read_kw = dict(separator='\t', schema_overrides=schema)
-    df = pl.scan_csv(filepath, **read_kw).collect() if lazy else pl.read_csv(filepath, **read_kw)
+    df = pl.read_csv(filepath, separator='\t', schema_overrides=schema)
     if 'TARGET_NAME' in df.columns:
         df = df.rename({'TARGET_NAME': 'target_id'})
     if ids is not None:
@@ -457,11 +453,9 @@ def _read_unirep(
 
 def _read_custom_protein_descriptors(
     filepath: str | Path,
-    lazy: bool,
     ids: list[str] | None,
 ) -> pl.DataFrame:
-    read_kw = dict(separator='\t')
-    df = pl.scan_csv(filepath, **read_kw).collect() if lazy else pl.read_csv(filepath, **read_kw)
+    df = pl.read_csv(filepath, separator='\t')
     if 'TARGET_NAME' in df.columns:
         df = df.rename({'TARGET_NAME': 'target_id'})
     if ids is not None:

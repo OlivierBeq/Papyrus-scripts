@@ -503,13 +503,17 @@ def keep_accession(
     """Keep only rows whose target ID matches the given UniProt accession(s).
 
     :param data: bioactivity DataFrame or LazyFrame
-    :param accession: accession code(s) to retain, e.g. ``'P30542'``.
+    :param accession: accession code(s) to retain, e.g. ``'P30542'``;
+        ``'all'`` or ``'any'`` keeps every accession.
         Mutation suffixes are supported (e.g. ``'P30542_V52A'``).
     """
     if isinstance(accession, str):
         accession = [accession]
-    pattern = '|'.join(re.escape(a) for a in accession)
-    return data.filter(pl.col('target_id').str.to_lowercase().str.contains(pattern.lower()))
+    accession_lower = [a.lower() for a in accession]
+    if 'all' in accession_lower or 'any' in accession_lower:
+        return data
+    pattern = '|'.join(re.escape(a) for a in accession_lower)
+    return data.filter(pl.col('target_id').str.to_lowercase().str.contains(pattern))
 
 
 def keep_protein_class(

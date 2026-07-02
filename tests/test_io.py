@@ -233,18 +233,102 @@ class TestProcessDataVersion(unittest.TestCase):
         self.assertTrue(IO.is_local_version_available('05.4', root_folder=self._tmpdir.name))
         self.assertFalse(IO.is_local_version_available('05.6', root_folder=self._tmpdir.name))
 
-    def test_latest_does_not_fall_back_to_locally_downloaded_latest(self):
-        # KNOWN DISCREPANCY (not fixed here, flagged for the maintainer):
-        # PapyrusVersion(version='latest') resolves against the *globally* known
-        # aliases table regardless of what's downloaded, and process_data_version
-        # never calls get_latest_downloaded_version() as a fallback - despite its
-        # own docstring claiming 'latest' "resolves to the newest downloaded
-        # version." As a result, requesting 'latest' raises instead of resolving
-        # to the newest *locally downloaded* version whenever the globally newest
-        # release (05.7/2024.09.2) hasn't been downloaded yet.
+    def test_latest_falls_back_to_locally_downloaded_latest(self):
+        # Regression test: process_data_version('latest') used to construct
+        # PapyrusVersion(version='latest'), which resolves against the
+        # *globally* known aliases table regardless of what's downloaded -
+        # contradicting its own docstring's claim that 'latest' "resolves to
+        # the newest downloaded version." Requesting 'latest' used to raise
+        # ValueError whenever the globally newest release (05.7/2024.09.2)
+        # hadn't been downloaded yet, even though older versions were present.
         self._write_downloaded_versions(['05.4', '05.5'])  # 05.7 is the true latest release
-        with self.assertRaises(ValueError):
-            IO.process_data_version('latest', root_folder=self._tmpdir.name)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', FutureWarning)
+            v = IO.process_data_version('latest', root_folder=self._tmpdir.name)
+        self.assertEqual(v.version_old_fmt, '05.5')
+
+
+class TestGetNumRowsInFile(unittest.TestCase):
+    """get_num_rows_in_file reads pystow's home directory, so PYSTOW_HOME is
+    redirected to a throwaway tmp dir for the duration of each test.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._old_pystow_home = os.environ.get('PYSTOW_HOME')
+        self._version_dir = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        self._version_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        if self._old_pystow_home is None:
+            os.environ.pop('PYSTOW_HOME', None)
+        else:
+            os.environ['PYSTOW_HOME'] = self._old_pystow_home
+        self._tmpdir.cleanup()
+
+    def _write_data_size(self, sizes):
+        path = self._version_dir / 'data_size.json'
+        with open(path, 'w') as fh:
+            json.dump(sizes, fh)
+
+    def test_bioactivities_plusplus_canonical_key(self):
+        self._write_data_size({'papyrus_++': 42})
+        n = IO.get_num_rows_in_file(
+            'bioactivities', is3D=False, version='05.4', plusplus=True,
+            root_folder=self._tmpdir.name,
+        )
+        self.assertEqual(n, 42)
+
+    def test_bioactivities_plusplus_legacy_key(self):
+        self._write_data_size({'papyrus++': 42})
+        n = IO.get_num_rows_in_file(
+            'bioactivities', is3D=False, version='05.4', plusplus=True,
+            root_folder=self._tmpdir.name,
+        )
+        self.assertEqual(n, 42)
+
+    def test_bioactivities_plusplus_missing_key_raises(self):
+        # Regression test: this branch used to silently return None via
+        # sizes.get('papyrus_++', sizes.get('papyrus++')) when both keys
+        # were absent, unlike every other branch in this function, which
+        # uses direct indexing and raises a clear KeyError on a missing key.
+        self._write_data_size({'papyrus_2D': 10})
+        with self.assertRaises(KeyError):
+            IO.get_num_rows_in_file(
+                'bioactivities', is3D=False, version='05.4', plusplus=True,
+                root_folder=self._tmpdir.name,
+            )
+
+    def test_root_folder_is_actually_used(self):
+        # Regression test: get_num_rows_in_file called
+        # papyrus_version_module(pv) without forwarding root_folder, whose
+        # own default (root_folder=None) triggers _set_root_folder(None),
+        # which *deletes* the PYSTOW_HOME env var this function had just set
+        # two lines earlier - so data_size.json was always read from the
+        # default pystow home, silently ignoring the caller's root_folder.
+        self._write_data_size({'papyrus_2D': 7})
+        n = IO.get_num_rows_in_file(
+            'bioactivities', is3D=False, version='05.4', plusplus=False,
+            root_folder=self._tmpdir.name,
+        )
+        self.assertEqual(n, 7)
+
+    def test_structures_and_descriptors_respect_root_folder(self):
+        self._write_data_size({
+            'structures_2D': 5, 'structures_3D': 6,
+            'mold2': 8, 'cddd': 9, 'ECFP6': 11, 'E3FP': 12,
+            'mordred_2D': 13, 'mordred_3D': 14,
+        })
+        self.assertEqual(
+            IO.get_num_rows_in_file('structures', is3D=False, version='05.4',
+                                     root_folder=self._tmpdir.name),
+            5,
+        )
+        self.assertEqual(
+            IO.get_num_rows_in_file('descriptors', is3D=False, version='05.4',
+                                     descriptor_name='mold2', root_folder=self._tmpdir.name),
+            8,
+        )
 
 
 if __name__ == '__main__':

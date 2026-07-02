@@ -134,11 +134,7 @@ def model_metrics(model, y_true, x_test) -> dict:
         if len(model.classes_) == 2:
             tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=model.classes_).ravel()
             values = {}
-            try:
-                mcc = MCC(y_true, y_pred)
-                values['MCC'] = mcc
-            except RuntimeWarning:
-                pass
+            values['MCC'] = MCC(y_true, y_pred)
             values[':'.join(str(x) for x in model.classes_)] = ':'.join([str(int(sum(y_true == class_)))
                                                                          for class_ in model.classes_])
             values['ACC'] = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) != 0 else 0
@@ -171,11 +167,7 @@ def model_metrics(model, y_true, x_test) -> dict:
             values = {}
             for contingency_matrix in multilabel_confusion_matrix(y_true, y_pred):
                 tn, fp, fn, tp = contingency_matrix.ravel()
-                try:
-                    mcc = MCC(y_true, y_pred)
-                    values['%s|MCC' % model.classes_[i]] = mcc
-                except RuntimeWarning:
-                    pass
+                values['%s|MCC' % model.classes_[i]] = MCC(y_true, y_pred)
                 values['%s|number' % model.classes_[i]] = int(sum(y_true == model.classes_[i]))
                 values['%s|ACC' % model.classes_[i]] = (tp + tn) / (tp + tn + fp + fn) \
                     if (tp + tn + fp + fn) != 0\
@@ -276,7 +268,7 @@ def train_test_proportional_group_split(data: pd.DataFrame,
     if verbose:
         print(f'Best group permutation corresponds to {proportion:.2%} of the data')
     # Get test set assignment
-    assignment = np.where(group in best for group in groups)
+    assignment = np.array([group in best for group in groups])
     opposite = np.logical_not(assignment)
     # Get training groups
     t_groups = [x for x in groups if x not in best]
@@ -599,7 +591,7 @@ def qsar(data: pd.DataFrame,
             kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
         else:
             kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
-        performance, cv_models = crossvalidate_model(training_set, model, kfold, training_groups)
+        performance, cv_models = crossvalidate_model(training_set, model, kfold, training_groups, verbose=verbose)
         full_model = cv_models['Full model']
         X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
         performance.loc['Test set'] = model_metrics(full_model, y_test, X_test)
@@ -834,7 +826,7 @@ def pcm(data: pd.DataFrame,
         kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
     else:
         kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
-    performance, cv_models = crossvalidate_model(training_set, model, kfold, training_groups, verbose=True)
+    performance, cv_models = crossvalidate_model(training_set, model, kfold, training_groups, verbose=verbose)
     full_model = cv_models['Full model']
     X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
     performance.loc['Test set'] = model_metrics(full_model, y_test, X_test)

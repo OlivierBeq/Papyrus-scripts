@@ -9,10 +9,11 @@ without any network access.
 """
 
 import unittest
+from unittest.mock import patch
 
 import polars as pl
 
-from src.papyrus_scripts.oop import PapyrusDataset
+from src.papyrus_scripts.oop import PapyrusDataset, PapyrusMoleculeSet, PapyrusProteinSet
 
 
 def make_dataset():
@@ -77,6 +78,30 @@ class TestPapyrusDataFilterKeepSourceAndType(unittest.TestCase):
         result = self.dataset._filter(njobs=2, progress=True).keep_activity_type(activity_types='ic50')
         ids = sorted(result.papyrus_bioactivity_data['Activity_ID'])
         self.assertEqual(ids, ['A1', 'A2'])
+
+
+class TestDerivedSetReprShowsRealCount(unittest.TestCase):
+    """Regression test: PapyrusMoleculeSet/PapyrusProteinSet.__repr__ checked
+    isinstance(self.data, pd.DataFrame), but self.data is always a polars
+    DataFrame (never pandas) for these two classes - the check never matched,
+    so __repr__ always claimed "<iterator of X>" even for a concrete,
+    already-materialised DataFrame.
+    """
+
+    def test_molecule_set_repr_shows_count_for_materialized_dataframe(self):
+        df = pl.DataFrame({'connectivity': ['C1', 'C2'], 'mol': [None, None]})
+        params = {'is3d': False, 'version': None, 'plusplus': True,
+                  'chunksize': None, 'source_path': None}
+        with patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=2):
+            mset = PapyrusMoleculeSet(df, params)
+        self.assertEqual(repr(mset), 'PapyrusMoleculeSet<2 molecules>')
+
+    def test_protein_set_repr_shows_count_for_materialized_dataframe(self):
+        df = pl.DataFrame({'target_id': ['P1', 'P2']})
+        params = {'is3d': False, 'version': None, 'plusplus': True,
+                  'chunksize': None, 'source_path': None}
+        pset = PapyrusProteinSet(df, params, num_proteins=2)
+        self.assertEqual(repr(pset), 'PapyrusProteinSet<2 proteins>')
 
 
 if __name__ == '__main__':

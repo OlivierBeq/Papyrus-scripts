@@ -573,10 +573,14 @@ def process_data_version(
     :raises IOError: if no Papyrus data has been downloaded at all
     :raises ValueError: if *version* is not among the downloaded versions
     """
-    pv = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
     downloaded = get_downloaded_versions(root_folder)
     if not downloaded:
         raise OSError('No Papyrus data found locally (did you download it first?)')
+    if isinstance(version, str) and version == 'latest':
+        # get_downloaded_versions() returns oldest-first: newest is last.
+        pv = downloaded[-1]
+    else:
+        pv = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
     if pv not in downloaded:
         available = ', '.join(v.version for v in downloaded)
         raise ValueError(
@@ -727,14 +731,19 @@ def get_num_rows_in_file(
         )
 
     pv = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
-    _set_root_folder(root_folder)
 
-    json_file = papyrus_version_module(pv).join(name='data_size.json')
+    json_file = papyrus_version_module(pv, root_folder=root_folder).join(name='data_size.json')
     sizes = read_jsonfile(json_file)
 
     if filetype == 'bioactivities':
         if plusplus:
-            return sizes.get('papyrus_++', sizes.get('papyrus++'))
+            if 'papyrus_++' in sizes:
+                return sizes['papyrus_++']
+            if 'papyrus++' in sizes:
+                return sizes['papyrus++']
+            raise KeyError(
+                "Neither 'papyrus_++' nor 'papyrus++' found in data_size.json"
+            )
         return sizes['papyrus_3D'] if is3D else sizes['papyrus_2D']
     if filetype == 'structures':
         return sizes['structures_3D'] if is3D else sizes['structures_2D']

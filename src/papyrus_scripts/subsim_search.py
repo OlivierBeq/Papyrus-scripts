@@ -517,7 +517,7 @@ class FPSubSim2:
         input_queue = multiprocessing.Queue()
         output_queue = multiprocessing.Queue()
 
-        n_workers = (multiprocessing.cpu_count() - 2) if njobs == -1 else max(njobs - 1, 1)
+        n_workers = max(multiprocessing.cpu_count() - 2, 1) if njobs == -1 else max(njobs - 1, 1)
 
         reader = multiprocessing.Process(
             target=_reader_process,

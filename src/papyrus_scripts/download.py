@@ -567,12 +567,12 @@ def remove_papyrus(
                 )
                 if confirmation != 'Y':
                     print('Removal was aborted.')
-                    return
+                    continue
             shutil.rmtree(papyrus_version_root.base)
             if progress:
                 print(f'Version {pv} of Papyrus was successfully removed.')
             _update_versions_json(papyrus_root_mod, pv, add=False)
-            return
+            continue
 
         # --------------------------------------------------------------
         # Build the set of logical file-type keys to remove
@@ -641,7 +641,7 @@ def remove_papyrus(
             )
 
         if not present:
-            return
+            continue
 
         # --------------------------------------------------------------
         # Remove files

@@ -113,7 +113,7 @@ class UniprotMatch:
                         print(f"Retrying in {self._polling_interval}s")
                     time.sleep(self._polling_interval)
                 else:
-                    raise Exception(request["jobStatus"])
+                    raise Exception(j["jobStatus"])
             else:
                 return bool(j["results"] or j["failedIds"])
 

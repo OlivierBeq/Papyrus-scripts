@@ -85,8 +85,13 @@ class TestGetFpFromName(unittest.TestCase):
         self.assertEqual(f.length, 128)
 
     def test_unknown_name_raises_value_error(self):
-        with self.assertRaises(ValueError):
+        # Regression test: the error message used to be a raw string
+        # (r'Fingerprint {fp_name} not available'), so {fp_name} was never
+        # interpolated and the message showed the literal placeholder
+        # instead of the actual, unrecognised name.
+        with self.assertRaises(ValueError) as ctx:
             fp.get_fp_from_name('NotAFingerprint')
+        self.assertIn('NotAFingerprint', str(ctx.exception))
 
     @unittest.skipIf(FPSIM2_AVAILABLE and PYBEL_AVAILABLE,
                      'requires openbabel and/or FPSim2 to be missing')

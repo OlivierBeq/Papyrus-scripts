@@ -154,6 +154,16 @@ class TestKeepAccession(unittest.TestCase):
         result = pp.keep_accession(self.df, ['P30542', 'P00533'])
         self.assertEqual(sorted(result['target_id']), ['P00533_L858R', 'P30542_WT'])
 
+    def test_default_all_returns_input_untouched(self):
+        # Regression test: 'all' (the documented default) used to be treated
+        # as a literal substring to search for, silently returning 0 rows.
+        result = pp.keep_accession(self.df)
+        self.assertEqual(sorted(result['target_id']), sorted(self.df['target_id']))
+
+    def test_explicit_any_returns_input_untouched(self):
+        result = pp.keep_accession(self.df, 'any')
+        self.assertEqual(sorted(result['target_id']), sorted(self.df['target_id']))
+
     def test_invalid_data_type_raises(self):
         with self.assertRaises(AttributeError):
             pp.keep_accession([1, 2, 3], 'P30542')

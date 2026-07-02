@@ -6,20 +6,19 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from collections.abc import Iterator
-
 import pandas as pd
+import polars as pl
 import prodec
 import pystow
 
-from . import download, reader, preprocess, subsim_search
+from . import download, preprocess, reader, subsim_search
 from .fingerprint import Fingerprint, MorganFingerprint
 from .matchRCSB import get_matches as get_pdb_matches
 from .utils import IO
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -399,13 +398,13 @@ class PapyrusDataset:
     # Materialisation
     # ------------------------------------------------------------------
 
-    def aggregate(self, progress: bool = False) -> pd.DataFrame:
-        """Materialise all lazy filters into a single :class:`~pandas.DataFrame`.
+    def aggregate(self, progress: bool = False) -> pl.DataFrame:
+        """Materialise all lazy filters into a single :class:`~polars.DataFrame`.
 
         :param progress: show a tqdm progress bar while consuming chunks
         :returns: a DataFrame of the filtered data
         """
-        if isinstance(self.papyrus_bioactivity_data, pd.DataFrame):
+        if isinstance(self.papyrus_bioactivity_data, pl.DataFrame):
             return self.papyrus_bioactivity_data
         total = _num_chunks(self.papyrus_params['num_rows'], self.papyrus_params['chunksize'])
         return preprocess.consume_chunks(
@@ -413,15 +412,15 @@ class PapyrusDataset:
         )
 
     #: Alias for :meth:`aggregate`.
-    def agg(self, progress: bool = False) -> pd.DataFrame:
+    def agg(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
-    def consume_chunks(self, progress: bool = False) -> pd.DataFrame:
+    def consume_chunks(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
-    def to_dataframe(self, progress: bool = False) -> pd.DataFrame:
+    def to_dataframe(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
@@ -457,9 +456,7 @@ class PapyrusDataset:
         :returns: a :class:`PapyrusProteinSet`
         """
         ids = self.aggregate(progress=progress)['target_id'].unique()
-        proteins = self.papyrus_protein_data[
-            self.papyrus_protein_data['target_id'].isin(ids)
-        ]
+        proteins = self.papyrus_protein_data.filter(pl.col('target_id').is_in(ids))
         return PapyrusProteinSet(proteins, self.papyrus_params, num_proteins=len(proteins))
 
     def match_rcsb_pdb(self, update: bool = True, progress: bool = False) -> PapyrusPDBProteinSet:
@@ -913,7 +910,7 @@ class PapyrusMoleculeSet:
 
     def __init__(
             self,
-            df: pd.DataFrame | Iterator,
+            df: pl.DataFrame | Iterator,
             papyrus_params: dict,
     ) -> None:
         self.data = df
@@ -929,25 +926,25 @@ class PapyrusMoleculeSet:
     # Materialisation
     # ------------------------------------------------------------------
 
-    def aggregate(self, progress: bool = False) -> pd.DataFrame:
-        """Materialise all structures into a single :class:`~pandas.DataFrame`.
+    def aggregate(self, progress: bool = False) -> pl.DataFrame:
+        """Materialise all structures into a single :class:`~polars.DataFrame`.
 
         :param progress: show a progress bar
         """
-        if isinstance(self.data, pd.DataFrame):
+        if isinstance(self.data, pl.DataFrame):
             return self.data
         total = _num_chunks(self.num_rows, self.papyrus_params['chunksize'])
         return preprocess.consume_chunks(generator=self.data, progress=progress, total=total)
 
-    def agg(self, progress: bool = False) -> pd.DataFrame:
+    def agg(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
-    def consume_chunks(self, progress: bool = False) -> pd.DataFrame:
+    def consume_chunks(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
-    def to_dataframe(self, progress: bool = False) -> pd.DataFrame:
+    def to_dataframe(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
@@ -998,7 +995,7 @@ class PapyrusMoleculeSet:
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
-        if not isinstance(self.data, pd.DataFrame):
+        if not isinstance(self.data, pl.DataFrame):
             return f'{type(self).__name__}<iterator of molecules>'
         return f'{type(self).__name__}<{len(self.data)} molecules>'
 
@@ -1065,7 +1062,7 @@ class PapyrusProteinSet(ProteinSet):
 
     def __init__(
             self,
-            df: pd.DataFrame | Iterator,
+            df: pl.DataFrame | Iterator,
             papyrus_params: dict,
             num_proteins: int,
     ) -> None:
@@ -1077,25 +1074,25 @@ class PapyrusProteinSet(ProteinSet):
     # Materialisation
     # ------------------------------------------------------------------
 
-    def aggregate(self, progress: bool = False) -> pd.DataFrame:
-        """Materialise the protein targets into a :class:`~pandas.DataFrame`.
+    def aggregate(self, progress: bool = False) -> pl.DataFrame:
+        """Materialise the protein targets into a :class:`~polars.DataFrame`.
 
         :param progress: show a progress bar
         """
-        if isinstance(self.data, pd.DataFrame):
+        if isinstance(self.data, pl.DataFrame):
             return self.data
         total = _num_chunks(self.num_rows, self.papyrus_params['chunksize'])
         return preprocess.consume_chunks(generator=self.data, progress=progress, total=total)
 
-    def agg(self, progress: bool = False) -> pd.DataFrame:
+    def agg(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
-    def consume_chunks(self, progress: bool = False) -> pd.DataFrame:
+    def consume_chunks(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
-    def to_dataframe(self, progress: bool = False) -> pd.DataFrame:
+    def to_dataframe(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
@@ -1104,7 +1101,7 @@ class PapyrusProteinSet(ProteinSet):
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
-        if not isinstance(self.data, pd.DataFrame):
+        if not isinstance(self.data, pl.DataFrame):
             return f'{type(self).__name__}<iterator of proteins>'
         return f'{type(self).__name__}<{len(self.data)} proteins>'
 

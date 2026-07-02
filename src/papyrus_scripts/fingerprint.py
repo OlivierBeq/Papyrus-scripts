@@ -229,5 +229,5 @@ def get_fp_from_name(fp_name, **kwargs):
             # every other, unrelated fingerprint type.
             continue
     if fp_name not in fps.keys():
-        raise ValueError(r'Fingerprint {fp_name} not available')
+        raise ValueError(f'Fingerprint {fp_name!r} not available')
     return fps[fp_name](**kwargs)
