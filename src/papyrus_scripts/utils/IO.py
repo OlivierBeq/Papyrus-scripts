@@ -171,9 +171,28 @@ _NUMPY_TO_POLARS: dict = {
     np.object_: pl.Utf8,
 }
 
+#: The Papyrus data_types.json files actually shipped with every release
+#: store dtypes as plain lowercase type-name strings (e.g. "float", "int"),
+#: never as the TypeEncoder/__type__ hydrated form TypeDecoder expects - so
+#: without this table every value fell through to the `return pl.Utf8`
+#: default below regardless of its real dtype, silently forcing every
+#: schema-driven column (all Papyrus++ columns, every descriptor column) to
+#: String/Utf8 on read.
+_TYPE_NAME_TO_POLARS: dict = {
+    'str':    pl.Utf8,
+    'object': pl.Utf8,
+    'float':  pl.Float64,
+    'int':    pl.Int64,
+    'bool':   pl.Boolean,
+}
+
 
 def to_polars_dtype(t) -> pl.DataType:
-    """Convert a Python builtin or NumPy type to the nearest Polars dtype."""
+    """Convert a Python builtin/NumPy type, or its lowercase name as a
+    string, to the nearest Polars dtype.
+    """
+    if isinstance(t, str):
+        return _TYPE_NAME_TO_POLARS.get(t, pl.Utf8)
     if t in _BUILTIN_TO_POLARS:
         return _BUILTIN_TO_POLARS[t]
     for np_type, pl_type in _NUMPY_TO_POLARS.items():

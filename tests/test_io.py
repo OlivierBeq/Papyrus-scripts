@@ -14,7 +14,64 @@ import unittest
 import warnings
 from pathlib import Path
 
+import polars as pl
+
 from src.papyrus_scripts.utils import IO
+
+
+class TestDataTypeNameStringSchema(unittest.TestCase):
+    """Regression test: every data_types.json Papyrus actually ships uses
+    plain lowercase type-name strings (e.g. "float", "int"), never the
+    TypeEncoder/__type__-hydrated form TypeDecoder produces. to_polars_dtype
+    only recognised real Python type objects (str, float, numpy dtypes, ...)
+    - a plain string like "float" matched neither _BUILTIN_TO_POLARS'
+    type-object keys nor any numpy type, so it silently fell through to the
+    `return pl.Utf8` default regardless of its actual meaning. This forced
+    *every* schema-driven column (every Papyrus++ column, every descriptor
+    column read via read_molecular_descriptors/read_protein_descriptors) to
+    String on read, since data_types.json is quoted in that plain-string
+    format for 100% of real Papyrus releases.
+    """
+
+    def test_string_type_names_map_to_correct_dtypes(self):
+        self.assertEqual(IO.to_polars_dtype('str'), pl.Utf8)
+        self.assertEqual(IO.to_polars_dtype('object'), pl.Utf8)
+        self.assertEqual(IO.to_polars_dtype('float'), pl.Float64)
+        self.assertEqual(IO.to_polars_dtype('int'), pl.Int64)
+        self.assertEqual(IO.to_polars_dtype('bool'), pl.Boolean)
+
+    def test_unrecognised_string_falls_back_to_utf8(self):
+        self.assertEqual(IO.to_polars_dtype('some_unknown_type'), pl.Utf8)
+
+    def test_real_python_types_still_supported(self):
+        # Must not regress the pre-existing type-object path (still used by
+        # TypeDecoder-hydrated __type__ markers, and NumPy dtypes).
+        import numpy as np
+        self.assertEqual(IO.to_polars_dtype(float), pl.Float64)
+        self.assertEqual(IO.to_polars_dtype(np.float32), pl.Float32)
+
+    def test_to_polars_schema_maps_a_full_column_dict(self):
+        schema = IO.to_polars_schema({
+            'Activity_ID': 'str', 'pchembl_value_Mean': 'float', 'N': 'int',
+        })
+        self.assertEqual(schema, {
+            'Activity_ID': pl.Utf8, 'pchembl_value_Mean': pl.Float64, 'N': pl.Int64,
+        })
+
+    def test_load_data_type_schemas_reads_real_shipped_format(self):
+        with tempfile.TemporaryDirectory() as d:
+            version_dir = Path(d) / 'papyrus' / '2022.04.2'
+            version_dir.mkdir(parents=True)
+            with open(version_dir / 'data_types.json', 'w') as fh:
+                json.dump({
+                    'papyrus': {'Activity_ID': 'str', 'pchembl_value_Mean': 'float'},
+                    'ECFP6': {'connectivity': 'str', 'ECFP6_1': 'int'},
+                }, fh)
+            pv = IO.PapyrusVersion(version='2022.04.2')
+            module = IO.papyrus_version_module(pv, root_folder=d)
+            schemas = IO.load_data_type_schemas(module)
+        self.assertEqual(schemas['papyrus']['pchembl_value_Mean'], pl.Float64)
+        self.assertEqual(schemas['ECFP6']['ECFP6_1'], pl.Int64)
 
 
 class TestTypeEncoderDecoder(unittest.TestCase):

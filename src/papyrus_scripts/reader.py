@@ -100,19 +100,26 @@ def _resolve_version(
 # Molecular-descriptor helpers
 # ---------------------------------------------------------------------------
 
+#: {key: (pattern_tmpl, schema_key_tmpl, dims)} - *dims* lists which of
+#: {False (2D), True (3D)} Papyrus actually ships for this descriptor type.
+#: mold2/CDDD are 2D-only tools - Papyrus never publishes a 3D variant of
+#: either (confirmed against links.json: only '2D_mold2'/'2D_cddd' exist,
+#: no '3D_mold2'/'3D_cddd') - so desc_type='all' must skip them for
+#: is3d=True instead of unconditionally trying (and failing to find) a file
+#: that structurally never exists for this dataset.
 _MOL_DESC_REGISTRY = {
-    'mold2':       (r'\d+\.\d+_combined_{dim}D_moldescs_mold2\.tsv.*',             'mold2'),
-    'mordred':     (r'\d+\.\d+_combined_{dim}D_moldescs_mordred{dim_int}D\.tsv.*', 'mordred_{dim_int}D'),
-    'cddd':        (r'\d+\.\d+_combined_{dim}D_moldescs_CDDDs\.tsv.*',             'CDDD'),
-    'fingerprint': (r'\d+\.\d+_combined_{dim}D_moldescs_{fp}\.tsv.*',              '{fp}'),
-    'moe':         (r'\d+\.\d+_combined_{dim}D_moldescs_MOE\.tsv.*',               None),
+    'mold2':       (r'\d+\.\d+_combined_{dim}D_moldescs_mold2\.tsv.*',             'mold2',              (False,)),
+    'mordred':     (r'\d+\.\d+_combined_{dim}D_moldescs_mordred{dim_int}D\.tsv.*', 'mordred_{dim_int}D', (False, True)),
+    'cddd':        (r'\d+\.\d+_combined_{dim}D_moldescs_CDDDs\.tsv.*',             'CDDD',               (False,)),
+    'fingerprint': (r'\d+\.\d+_combined_{dim}D_moldescs_{fp}\.tsv.*',              '{fp}',               (False, True)),
+    'moe':         (r'\d+\.\d+_combined_{dim}D_moldescs_MOE\.tsv.*',               None,                 (False, True)),
 }
 
 _VALID_DESC_TYPES = frozenset(_MOL_DESC_REGISTRY) | {'all'}
 
 
 def _resolve_mol_desc_pattern(key: str, is3d: bool):
-    pattern_tmpl, schema_key_tmpl = _MOL_DESC_REGISTRY[key]
+    pattern_tmpl, schema_key_tmpl, _dims = _MOL_DESC_REGISTRY[key]
     dim     = '3' if is3d else '2'
     dim_int = 3   if is3d else 2
     fp      = 'E3FP' if is3d else 'ECFP6'
@@ -247,8 +254,9 @@ def read_molecular_descriptors(
     if desc_type != 'all':
         return _read_one_mol_descriptor(desc_type, is3d, desc_dir, schemas, lazy, ids, id_col)
 
-    all_keys = [k for k in _MOL_DESC_REGISTRY if k != 'moe'] + ['moe']
-    frames   = [
+    available = [k for k, (_, _, dims) in _MOL_DESC_REGISTRY.items() if is3d in dims]
+    all_keys  = [k for k in available if k != 'moe'] + [k for k in available if k == 'moe']
+    frames    = [
         _read_one_mol_descriptor(k, is3d, desc_dir, schemas, lazy, ids, id_col)
         for k in all_keys
     ]
