@@ -38,6 +38,7 @@ dependencies = [
     "numpy>=2.0.0",
     "pandas",
     "polars",
+    "pyarrow",
     "rdkit",
     "requests",
     "tqdm",

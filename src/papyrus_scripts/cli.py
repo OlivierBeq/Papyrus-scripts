@@ -5,7 +5,6 @@
 import ast
 import inspect
 import sys
-from collections import defaultdict
 
 import click
 
@@ -75,7 +74,13 @@ def main():
               help='When set, "all" and two-part version aliases expand to every known '
                    'revision rather than only the latest revision per version.'
               )
-def download(output_directory, version, more, stereo, structs, descs, force, all_revisions):
+@click.option('--keep-xz', 'keep_xz', is_flag=True, required=False, default=False,
+              show_default=True,
+              help='Keep downloaded .xz files as-is instead of converting them to Parquet '
+                   '(and deleting the .xz originals). Needed if you intend to transform '
+                   'compression with the "convert" command.'
+              )
+def download(output_directory, version, more, stereo, structs, descs, force, all_revisions, keep_xz):
     """CLI to download the Papyrus data."""
     if isinstance(version, tuple):
         version = list(version)
@@ -92,6 +97,7 @@ def download(output_directory, version, more, stereo, structs, descs, force, all
         progress=True,
         disk_margin=0.0 if force else 0.1,
         all_revisions=all_revisions,
+        keep_xz=keep_xz,
     )
 
 
@@ -385,18 +391,28 @@ def convert(indir, version, format, level, extreme):
     pv = process_data_version(version, indir)
     version_dir = papyrus_version_module(pv, indir).base
 
+    xz_files = [f for f in version_dir.rglob('*') if f.is_file() and f.name.lower().endswith('.xz')]
+    gz_files = [f for f in version_dir.rglob('*') if f.is_file() and f.name.lower().endswith('.gz')]
+
+    # Converting to Gzip needs the .xz originals - download_papyrus() deletes
+    # them by default after converting tabular files to Parquet, so their
+    # absence alongside .parquet files means they must be re-fetched rather
+    # than simply being missing/not-yet-downloaded.
+    if not xz_files and format in (None, 'gzip'):
+        parquet_files = [f for f in version_dir.rglob('*.parquet') if f.is_file()]
+        if parquet_files:
+            raise FileNotFoundError(
+                f'No .xz files found in {version_dir}, but {len(parquet_files)} .parquet '
+                f'file(s) are present: download_papyrus() already converted the tabular '
+                f'.xz files to Parquet and deleted the originals. Re-download with '
+                f"download_papyrus(..., keep_xz=True) (or the CLI's "
+                f'`papyrus download --keep-xz` flag) to retain the .xz files needed here.'
+            )
+
     if format is None:
-        counts = defaultdict(list)
-        for filepath in version_dir.rglob('*'):
-            if not filepath.is_file():
-                continue
-            if filepath.name.lower().endswith('.xz'):
-                counts['gzip'].append(filepath)
-            elif filepath.name.lower().endswith('.gz'):
-                counts['xz'].append(filepath)
-        if len(counts['gzip']) > len(counts['xz']):
+        if len(xz_files) > len(gz_files):
             format = 'gzip'
-        elif counts['xz']:
+        elif gz_files:
             format = 'xz'
         else:
             raise ValueError(

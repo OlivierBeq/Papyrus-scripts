@@ -14,10 +14,12 @@ from tqdm.auto import tqdm
 from .utils.IO import (
     PapyrusVersion,
     assert_sha256sum,
+    convert_xz_to_parquet,
     enough_disk_space,
     get_disk_space,
     get_downloaded_versions,
     get_papyrus_links,
+    load_data_type_schemas,
     new_session,
     read_jsonfile,
     write_jsonfile,
@@ -26,6 +28,42 @@ from .utils.IO import (
 # Download / integrity constants
 _CHUNKSIZE = 1_048_576  # 1 MB per streaming chunk
 _RETRIES = 3
+
+#: Maps a logical file-type key to the section of data_types.json holding
+#: its column dtypes, for file types whose dtypes are known ahead of time.
+#: Absent keys (e.g. 'proteins', 'proteins_prodec') convert with inferred
+#: dtypes instead.
+_SCHEMA_KEY_BY_FTYPE = {
+    'papyrus++':       'papyrus',
+    '2D_papyrus':      'papyrus',
+    '3D_papyrus':      'papyrus',
+    '2D_mold2':        'mold2',
+    '2D_cddd':         'CDDD',
+    '2D_mordred':      'mordred_2D',
+    '3D_mordred':      'mordred_3D',
+    '2D_fingerprint':  'ECFP6',
+    '3D_fingerprint':  'E3FP',
+    'proteins_unirep': 'unirep',
+}
+
+#: File types whose reader keeps empty-string cells distinct from nulls
+#: (reader.read_protein_set passes null_values=[] for this reason) - the
+#: Parquet conversion must apply the same null-value handling, since once a
+#: cell is written as a genuine Parquet null the empty-string/null
+#: distinction can no longer be recovered at read time.
+_NULL_VALUES_BY_FTYPE = {'proteins': []}
+
+
+def _parquet_sibling(fpath: Path) -> Path | None:
+    """Return the ``.parquet`` path that a downloaded ``.tsv.xz`` file
+    converts to, or None if *fpath* is not a convertible tabular file.
+
+    Structure files (``.sd.xz``) and non-data files (zips, JSON, text) are
+    not tabular and are never converted.
+    """
+    if fpath.name.lower().endswith('.tsv.xz'):
+        return fpath.with_suffix('.parquet')
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +326,8 @@ def download_papyrus(outdir: str | Path | None = None,
                      progress: bool = True,
                      disk_margin: float = 0.10,
                      update_links: bool = True,
-                     all_revisions: bool = False) -> None:
+                     all_revisions: bool = False,
+                     keep_xz: bool = False) -> None:
     """Download the Papyrus data.
 
     :param outdir: directory where Papyrus data is stored (default: pystow's directory)
@@ -304,6 +343,15 @@ def download_papyrus(outdir: str | Path | None = None,
     :param all_revisions: when False (default), ``'all'`` and two-part alias strings
         expand to only the latest revision of each version; when True, all revisions
         present in the links file are included
+    :param keep_xz: by default (False), every downloaded tabular ``.tsv.xz``
+        file (bioactivities, protein targets, descriptors) is losslessly
+        converted to ``.parquet`` and the ``.xz`` original is deleted, so
+        ``papyrus_scripts.reader`` can lazily scan Parquet instead of
+        decompressing LZMA on every read. Set to True to keep the ``.xz``
+        files as-is (e.g. if you intend to transcode them with
+        :func:`~papyrus_scripts.utils.IO.convert_xz_to_gz` /
+        :func:`~papyrus_scripts.utils.IO.convert_gz_to_xz`, which require
+        the compressed originals to be present).
     """
     _set_pystow_home(outdir)
 
@@ -436,6 +484,14 @@ def download_papyrus(outdir: str | Path | None = None,
                         pbar.update(dsize)
                     continue
 
+                # Skip if already converted to Parquet by a previous call
+                # (the .xz original was deliberately deleted in that case).
+                parquet_path = _parquet_sibling(fpath)
+                if parquet_path is not None and parquet_path.is_file():
+                    if progress:
+                        pbar.update(dsize)
+                    continue
+
                 # Attempt download with up to _RETRIES tries
                 success = False
                 remaining = _RETRIES
@@ -479,6 +535,31 @@ def download_papyrus(outdir: str | Path | None = None,
 
         if progress:
             pbar.close()
+
+        # ------------------------------------------------------------------
+        # Convert freshly downloaded tabular files to Parquet, lazily
+        # ------------------------------------------------------------------
+        if not keep_xz:
+            schemas = {}
+            dtype_file = papyrus_version_root.join(name='data_types.json')
+            if dtype_file.is_file():
+                schemas = load_data_type_schemas(papyrus_version_root)
+
+            for ftype in downloads:
+                schema = schemas.get(_SCHEMA_KEY_BY_FTYPE.get(ftype))
+                null_values = _NULL_VALUES_BY_FTYPE.get(ftype)
+                for entry in _iter_entries(version_files[ftype]):
+                    fpath = _file_path(papyrus_version_root, ftype, entry['name'])
+                    parquet_path = _parquet_sibling(fpath)
+                    if parquet_path is None or not fpath.is_file():
+                        continue
+                    if not parquet_path.is_file():
+                        convert_xz_to_parquet(
+                            fpath, parquet_path,
+                            separator='\t', schema_overrides=schema,
+                            null_values=null_values, progress=progress,
+                        )
+                    fpath.unlink()
 
         # Register this version in the local versions.json
         _update_versions_json(papyrus_root, pv, add=True)

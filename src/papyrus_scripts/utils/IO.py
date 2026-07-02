@@ -18,7 +18,9 @@ import warnings
 from collections import namedtuple
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import polars as pl
 import pystow
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -140,6 +142,63 @@ class TypeDecoder(json.JSONDecoder):
             # here - it would raise AttributeError for any builtin type.
             return getattr(builtins, type_)
         return getattr(importlib.import_module(module), type_)
+
+
+# ---------------------------------------------------------------------------
+# Dtype-conversion helpers
+# ---------------------------------------------------------------------------
+
+_BUILTIN_TO_POLARS: dict = {
+    str:   pl.Utf8,
+    float: pl.Float64,
+    int:   pl.Int64,
+    bool:  pl.Boolean,
+}
+
+_NUMPY_TO_POLARS: dict = {
+    np.float32: pl.Float32,
+    np.float64: pl.Float64,
+    np.int8:    pl.Int8,
+    np.int16:   pl.Int16,
+    np.int32:   pl.Int32,
+    np.int64:   pl.Int64,
+    np.uint8:   pl.UInt8,
+    np.uint16:  pl.UInt16,
+    np.uint32:  pl.UInt32,
+    np.uint64:  pl.UInt64,
+    np.bool_:   pl.Boolean,
+    np.str_:    pl.Utf8,
+    np.object_: pl.Utf8,
+}
+
+
+def to_polars_dtype(t) -> pl.DataType:
+    """Convert a Python builtin or NumPy type to the nearest Polars dtype."""
+    if t in _BUILTIN_TO_POLARS:
+        return _BUILTIN_TO_POLARS[t]
+    for np_type, pl_type in _NUMPY_TO_POLARS.items():
+        if t is np_type or (isinstance(t, type) and issubclass(t, np_type)):
+            return pl_type
+    return pl.Utf8
+
+
+def to_polars_schema(dtypes: dict) -> dict:
+    """Convert a ``{col: python_type}`` map to a ``{col: polars_dtype}`` schema."""
+    return {col: to_polars_dtype(t) for col, t in dtypes.items()}
+
+
+def load_data_type_schemas(source_module: pystow.Module) -> dict:
+    """Read a version folder's ``data_types.json`` and return ``{section: {col: polars_dtype}}``.
+
+    :param source_module: pystow module for the specific Papyrus version
+    """
+    dtype_file = source_module.join(name='data_types.json')
+    with open(dtype_file) as fh:
+        raw = json.load(fh, cls=TypeDecoder)
+    return {
+        key: to_polars_schema(val) if isinstance(val, dict) else val
+        for key, val in raw.items()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +719,7 @@ def get_downloaded_papyrus_files(root_folder: str | Path | None = None) -> pd.Da
 
     rows = []
     for fi in file_infos:
-        matches = papyrus_version_module(fi.pv).base.glob(f'**/{fi.file_name}')
+        matches = papyrus_version_module(fi.pv, root_folder=root_folder).base.glob(f'**/{fi.file_name}')
         rows.append({
             'version': fi.pv.version,
             'short_name': fi.short_name,
@@ -797,6 +856,72 @@ def convert_xz_to_gz(
             written = oh.write(chunk)
             if progress:
                 pbar.update(written)
+
+
+def convert_xz_to_parquet(
+        input_file: str | Path,
+        output_file: str | Path,
+        separator: str = '\t',
+        schema_overrides: dict | None = None,
+        null_values: list | str | None = None,
+        progress: bool = False,
+) -> None:
+    """Losslessly convert an LZMA-compressed CSV/TSV file to Parquet.
+
+    Polars has no native ``.xz`` reader, so *input_file* is first streamed
+    (chunk by chunk, never fully buffered in memory - some Papyrus files
+    decompress to several GB) to a temporary plain-text file sitting next to
+    *output_file*. The Parquet file is then written with a single
+    ``pl.scan_csv(...).sink_parquet(...)`` pipeline - Polars' streaming
+    engine only stays active across this pipeline when ``sink_parquet`` is
+    called immediately after ``scan_csv``; inserting any other Polars
+    operation between the two forces an eager collect first, defeating the
+    point for multi-gigabyte descriptor files.
+
+    :param input_file: path to the source ``.xz`` file
+    :param output_file: path to write the ``.parquet`` file
+    :param separator: field separator of the decompressed CSV/TSV content
+    :param schema_overrides: ``{column: polars_dtype}`` overrides forwarded
+        to ``pl.scan_csv``; when omitted, dtypes are inferred from the
+        full decompressed file
+    :param null_values: values to treat as null, forwarded to ``pl.scan_csv``
+        (pass ``[]`` to keep empty strings as empty strings instead of null)
+    :param progress: display a progress bar during decompression
+    """
+    input_file = Path(input_file)
+    output_file = Path(output_file)
+    tmp_file = output_file.with_name(output_file.name + '.decompressing')
+    chunksize = 10 * 1_048_576  # 10 MB
+    try:
+        with (
+            lzma.open(input_file, 'rb') as fh,
+            open(tmp_file, 'wb') as oh,
+        ):
+            if progress:
+                pbar = tqdm(desc='Decompressing', unit='B', unit_scale=True)
+                size = fh.seek(0, 2)
+                fh.seek(0, 0)
+                pbar.total = size
+            while True:
+                chunk = fh.read(chunksize)
+                if not chunk:
+                    if progress:
+                        pbar.close()
+                    break
+                written = oh.write(chunk)
+                if progress:
+                    pbar.update(written)
+
+        scan_kw: dict = dict(
+            separator=separator,
+            schema_overrides=schema_overrides,
+            infer_schema_length=None if schema_overrides is None else 100,
+        )
+        if null_values is not None:
+            scan_kw['null_values'] = null_values
+        pl.scan_csv(tmp_file, **scan_kw).sink_parquet(output_file)
+    finally:
+        tmp_file.unlink(missing_ok=True)
 
 
 def convert_gz_to_xz(

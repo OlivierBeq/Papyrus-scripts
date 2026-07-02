@@ -3,22 +3,19 @@
 """Reading functions for the Papyrus dataset."""
 
 import io
-import json
 import lzma
 import os
 from functools import reduce
 from pathlib import Path
 from collections.abc import Generator
 
-import numpy as np
 import polars as pl
-import pystow
 from prodec import Descriptor, Transform
 from tqdm.auto import tqdm
 
 from .utils.IO import (
     PapyrusVersion,
-    TypeDecoder,
+    load_data_type_schemas,
     locate_file,
     papyrus_version_module,
     process_data_version,
@@ -42,6 +39,33 @@ def _open_source(filepath: str | Path) -> str | Path | io.BytesIO:
     return filepath
 
 
+def _prefer_parquet(files: list[Path]) -> Path:
+    """Return the ``.parquet`` file among *files* if one is present, else the first match.
+
+    ``download_papyrus`` converts tabular ``.tsv.xz`` files to ``.parquet``
+    by default and deletes the ``.xz`` original, but with ``keep_xz=True``
+    (or data downloaded before this conversion existed) only the compressed
+    original is present - both are matched by the same ``locate_file``
+    patterns since they share the ``.tsv`` stem, so the caller must pick.
+    """
+    for f in files:
+        if f.suffix == '.parquet':
+            return f
+    return files[0]
+
+
+def _scan_tabular(filepath: Path, **read_kw) -> pl.LazyFrame:
+    """Return a lazy scan of a Papyrus tabular file.
+
+    Scans a pre-converted ``.parquet`` file directly (dtypes are embedded,
+    *read_kw* is unused); otherwise falls back to lazily scanning the
+    compressed ``.xz``/``.gz`` original via :func:`_open_source`.
+    """
+    if filepath.suffix == '.parquet':
+        return pl.scan_parquet(filepath)
+    return pl.scan_csv(_open_source(filepath), **read_kw)
+
+
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
@@ -51,49 +75,6 @@ DataOrChunks = pl.DataFrame | pl.LazyFrame
 
 #: Anything accepted as a ``version`` argument.
 VersionArg = str | PapyrusVersion
-
-
-# ---------------------------------------------------------------------------
-# Dtype-conversion helpers
-# ---------------------------------------------------------------------------
-
-_BUILTIN_TO_POLARS: dict = {
-    str:   pl.Utf8,
-    float: pl.Float64,
-    int:   pl.Int64,
-    bool:  pl.Boolean,
-}
-
-_NUMPY_TO_POLARS: dict = {
-    np.float32: pl.Float32,
-    np.float64: pl.Float64,
-    np.int8:    pl.Int8,
-    np.int16:   pl.Int16,
-    np.int32:   pl.Int32,
-    np.int64:   pl.Int64,
-    np.uint8:   pl.UInt8,
-    np.uint16:  pl.UInt16,
-    np.uint32:  pl.UInt32,
-    np.uint64:  pl.UInt64,
-    np.bool_:   pl.Boolean,
-    np.str_:    pl.Utf8,
-    np.object_: pl.Utf8,
-}
-
-
-def _to_polars_dtype(t) -> pl.DataType:
-    """Convert a Python builtin or NumPy type to the nearest Polars dtype."""
-    if t in _BUILTIN_TO_POLARS:
-        return _BUILTIN_TO_POLARS[t]
-    for np_type, pl_type in _NUMPY_TO_POLARS.items():
-        if t is np_type or (isinstance(t, type) and issubclass(t, np_type)):
-            return pl_type
-    return pl.Utf8
-
-
-def _to_polars_schema(dtypes: dict) -> dict:
-    """Convert a ``{col: python_type}`` map to a ``{col: polars_dtype}`` schema."""
-    return {col: _to_polars_dtype(t) for col, t in dtypes.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -113,17 +94,6 @@ def _resolve_version(
     """Set pystow home and validate *version* against local data."""
     _set_pystow_home(source_path)
     return process_data_version(version=version, root_folder=source_path)
-
-
-def _load_schemas(source_module: pystow.Module) -> dict:
-    """Read ``data_types.json`` and return ``{section: {col: polars_dtype}}``."""
-    dtype_file = source_module.join(name='data_types.json')
-    with open(dtype_file) as fh:
-        raw = json.load(fh, cls=TypeDecoder)
-    return {
-        key: _to_polars_schema(val) if isinstance(val, dict) else val
-        for key, val in raw.items()
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -169,14 +139,11 @@ def _read_one_mol_descriptor(
     read_kw: dict = dict(separator='\t')
     if schema:
         read_kw['schema_overrides'] = schema
-    source = _open_source(files[0])
-    data: DataOrChunks = (
-        pl.scan_csv(source, **read_kw) if lazy
-        else pl.read_csv(source, **read_kw)
-    )
+    picked = _prefer_parquet(files)
+    data: pl.LazyFrame = _scan_tabular(picked, **read_kw)
     if ids is not None:
         data = data.filter(pl.col(id_col).is_in(ids))
-    return data
+    return data if lazy else data.collect()
 
 
 # ---------------------------------------------------------------------------
@@ -205,19 +172,17 @@ def read_papyrus(
         raise ValueError('Papyrus++ is only available without stereochemistry.')
 
     pv         = _resolve_version(version, source_path)
-    source_mod = papyrus_version_module(pv)
-    schema     = _load_schemas(source_mod).get('papyrus', {})
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+    schema     = load_data_type_schemas(source_mod).get('papyrus', {})
 
     stereo_tag = 'with' if is3d else 'without'
     pp_tag     = r'\+\+' if plusplus else ''
     pattern    = rf'\d+\.\d+{pp_tag}_combined_set_{stereo_tag}_stereochemistry\.tsv.*'
 
     filenames = locate_file(source_mod.base, pattern)
-    read_kw   = dict(separator='\t', schema_overrides=schema)
-    source    = _open_source(filenames[0])
-    if chunksize is None:
-        return pl.read_csv(source, **read_kw)
-    return pl.scan_csv(source, **read_kw)
+    picked    = _prefer_parquet(filenames)
+    data      = _scan_tabular(picked, separator='\t', schema_overrides=schema)
+    return data if chunksize is not None else data.collect()
 
 
 def read_protein_set(
@@ -230,14 +195,17 @@ def read_protein_set(
     :param version: dataset version to read
     """
     pv         = _resolve_version(version, source_path)
-    source_mod = papyrus_version_module(pv)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
 
     filenames = locate_file(
         source_mod.base,
         r'\d+\.\d+_combined_set_protein_targets\.tsv.*',
     )
-    # null_values=[] keeps empty strings as empty strings (no implicit NA).
-    return pl.read_csv(_open_source(filenames[0]), separator='\t', null_values=[])
+    picked = _prefer_parquet(filenames)
+    # null_values=[] keeps empty strings as empty strings (no implicit NA) -
+    # only takes effect on the .xz/.gz fallback path; the Parquet file (when
+    # present) was already written with the same null_values by download_papyrus.
+    return _scan_tabular(picked, separator='\t', null_values=[]).collect()
 
 
 def read_molecular_descriptors(
@@ -270,8 +238,8 @@ def read_molecular_descriptors(
         )
 
     pv         = _resolve_version(version, source_path)
-    source_mod = papyrus_version_module(pv)
-    schemas    = _load_schemas(source_mod)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+    schemas    = load_data_type_schemas(source_mod)
     desc_dir   = source_mod.join('descriptors')
     id_col     = 'InChIKey' if is3d else 'connectivity'
     lazy       = chunksize is not None
@@ -320,7 +288,7 @@ def read_protein_descriptors(
     if isinstance(desc_type, (Descriptor, Transform)):
         pv           = _resolve_version(version, source_path)
         protein_data = read_protein_set(
-            source_path=papyrus_version_module(pv).base, version=pv,
+            source_path=papyrus_version_module(pv, root_folder=source_path).base, version=pv,
         )
         protein_data = protein_data.rename({'TARGET_NAME': 'target_id'})
         if ids is not None:
@@ -341,15 +309,15 @@ def read_protein_descriptors(
 
     if desc_type == 'unirep':
         pv         = _resolve_version(version, source_path)
-        source_mod = papyrus_version_module(pv)
-        schemas    = _load_schemas(source_mod)
+        source_mod = papyrus_version_module(pv, root_folder=source_path)
+        schemas    = load_data_type_schemas(source_mod)
         unirep_files = locate_file(
             source_mod.join('descriptors'),
             r'(?:\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*)'
             r'|(?:\d+\.\d+_combined_protdescs_unirep\.tsv.*)',
         )
         return _read_unirep(
-            unirep_files[0],
+            _prefer_parquet(unirep_files),
             schema=schemas.get('unirep', {}),
             ids=ids,
         )
@@ -383,7 +351,7 @@ def read_molecular_structures(
     :param verbose: show a progress bar
     """
     pv         = _resolve_version(version, source_path)
-    source_mod = papyrus_version_module(pv)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
 
     stereo_tag = '' if is3d else 'out'
     dim_tag    = 3  if is3d else 2
@@ -463,7 +431,7 @@ def _read_unirep(
     schema: dict,
     ids: list[str] | None,
 ) -> pl.DataFrame:
-    df = pl.read_csv(_open_source(filepath), separator='\t', schema_overrides=schema)
+    df = _scan_tabular(Path(filepath), separator='\t', schema_overrides=schema).collect()
     if 'TARGET_NAME' in df.columns:
         df = df.rename({'TARGET_NAME': 'target_id'})
     if ids is not None:
@@ -475,7 +443,7 @@ def _read_custom_protein_descriptors(
     filepath: str | Path,
     ids: list[str] | None,
 ) -> pl.DataFrame:
-    df = pl.read_csv(_open_source(filepath), separator='\t')
+    df = _scan_tabular(Path(filepath), separator='\t').collect()
     if 'TARGET_NAME' in df.columns:
         df = df.rename({'TARGET_NAME': 'target_id'})
     if ids is not None:
