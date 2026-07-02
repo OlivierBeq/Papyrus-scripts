@@ -80,6 +80,40 @@ class TestPapyrusDataFilterKeepSourceAndType(unittest.TestCase):
         self.assertEqual(ids, ['A1', 'A2'])
 
 
+class TestPapyrusDatasetDownloadUsesConsistentFolderKey(unittest.TestCase):
+    """Regression test: PapyrusDataset.__init__'s auto-download branch used
+    to pass pv.version (the canonical new-format string, e.g. '2022.04.2')
+    to download_papyrus, while every read afterwards (get_num_rows_in_file,
+    read_papyrus, read_protein_set) used the original pv object directly -
+    whose pystow_path_key is the *old*-format string (e.g. '05.4') when the
+    caller supplied an old-format version. download_papyrus would then
+    resolve its own PapyrusVersion from the canonical string and write to a
+    different folder ('2022.04.2') than every read looked under ('05.4'),
+    surfacing as a KeyError from a missing data_size.json after a
+    multi-gigabyte download had already completed. Fixed by passing
+    pv.pystow_path_key everywhere instead, so the write and every read agree.
+    """
+
+    def _run_init(self, version):
+        with (
+            patch('src.papyrus_scripts.oop.IO.is_local_version_available', return_value=False),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=0),
+            patch('src.papyrus_scripts.oop.reader.read_papyrus', return_value=pl.DataFrame()),
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()),
+        ):
+            PapyrusDataset(version=version, download_progress=False)
+        return mock_download
+
+    def test_old_format_version_downloads_under_old_format_folder_key(self):
+        mock_download = self._run_init('05.4')
+        self.assertEqual(mock_download.call_args.kwargs['version'], '05.4')
+
+    def test_new_format_version_downloads_under_new_format_folder_key(self):
+        mock_download = self._run_init('2022.04.2')
+        self.assertEqual(mock_download.call_args.kwargs['version'], '2022.04.2')
+
+
 class TestDerivedSetReprShowsRealCount(unittest.TestCase):
     """Regression test: PapyrusMoleculeSet/PapyrusProteinSet.__repr__ checked
     isinstance(self.data, pd.DataFrame), but self.data is always a polars

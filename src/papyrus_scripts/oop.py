@@ -102,7 +102,11 @@ class PapyrusDataset:
         if not IO.is_local_version_available(version=pv, root_folder=source_path):
             download.download_papyrus(
                 outdir=source_path,
-                version=pv.version,
+                # pystow_path_key (not .version) so the folder download_papyrus
+                # writes to matches what every read below looks up pv under -
+                # .version is the canonical new-format string, which would
+                # silently write to a different folder for an old-format pv.
+                version=pv.pystow_path_key,
                 nostereo=True, stereo=True, only_pp=False,
                 structures=True, descriptors='all',
                 progress=download_progress, disk_margin=0.0,
@@ -508,7 +512,10 @@ class PapyrusDataset:
         except FileNotFoundError:
             download.download_papyrus(
                 outdir=self.papyrus_params['source_path'],
-                version=self.papyrus_params['version'].version,
+                # pystow_path_key (not .version): must match the folder key
+                # every read in this class looks up self.papyrus_params['version']
+                # under, or an old-format pv silently downloads to the wrong folder.
+                version=self.papyrus_params['version'].pystow_path_key,
                 nostereo=not self.papyrus_params['is3d'],
                 stereo=self.papyrus_params['is3d'],
                 only_pp=self.papyrus_params['plusplus'],
@@ -979,7 +986,10 @@ class PapyrusMoleculeSet:
         except FileNotFoundError:
             download.download_papyrus(
                 outdir=self.papyrus_params['source_path'],
-                version=self.papyrus_params['version'].version,
+                # pystow_path_key (not .version): must match the folder key
+                # every read in this class looks up self.papyrus_params['version']
+                # under, or an old-format pv silently downloads to the wrong folder.
+                version=self.papyrus_params['version'].pystow_path_key,
                 nostereo=not self.papyrus_params['is3d'],
                 stereo=self.papyrus_params['is3d'],
                 only_pp=self.papyrus_params['plusplus'],
@@ -1041,7 +1051,10 @@ class ProteinSet(ABC):
         except FileNotFoundError:
             download.download_papyrus(
                 outdir=self.papyrus_params['source_path'],
-                version=self.papyrus_params['version'].version,
+                # pystow_path_key (not .version): must match the folder key
+                # every read in this class looks up self.papyrus_params['version']
+                # under, or an old-format pv silently downloads to the wrong folder.
+                version=self.papyrus_params['version'].pystow_path_key,
                 nostereo=not self.papyrus_params['is3d'],
                 stereo=self.papyrus_params['is3d'],
                 only_pp=self.papyrus_params['plusplus'],
