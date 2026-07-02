@@ -4,7 +4,9 @@
 
 import ast
 import inspect
+import os
 import sys
+from pathlib import Path
 
 import click
 
@@ -431,4 +433,62 @@ def convert(indir, version, format, level, extreme):
             convert_gz_to_xz(filepath, out, compression_level=level,
                              extreme=extreme, progress=True
                              )
-            filepath.unlink()
+            filepath.unlink()
+
+
+@main.command(
+    help='Run extensive reader.py tests against real, locally downloaded Papyrus data '
+         '(network/I-O heavy - opt-in, not part of the routine test suite).',
+    context_settings=CONTEXT_SETTINGS,
+)
+@click.option('-V', '--version', 'version', type=str, required=False, default='latest', nargs=1,
+              metavar='YYYY.MM[.R]', help='Version of the Papyrus data to test against (default: latest).'
+              )
+@click.option('-i', '--indir', 'indir', type=str, required=False, default=None, nargs=1,
+              metavar='INDIR', show_default=True,
+              help="Directory where Papyrus data is stored\n(default: pystow's home folder)."
+              )
+@click.option('--download', 'download', is_flag=True, required=False, default=False,
+              help='Download the version first (bioactivities, protein targets, structures, '
+                   'both stereo variants, all descriptors) if not already present locally.'
+              )
+@click.option('--sample-size', 'sample_size', type=int, required=False, default=25, show_default=True,
+              help='Rows/molecules sampled per bounded check, keeping large-file checks fast '
+                   'regardless of the true file size.'
+              )
+@click.option('-v', '--verbose', 'verbose', is_flag=True, required=False, default=False,
+              help='Verbose pytest output.'
+              )
+def test_real_data(version, indir, download, sample_size, verbose):
+    """CLI to run extensive reader.py tests against real, locally downloaded Papyrus data."""
+    try:
+        import pytest
+    except ImportError:
+        raise click.UsageError(
+            "pytest is required for this command: pip install 'papyrus-scripts[testing]'"
+        )
+
+    test_file = Path(__file__).resolve().parents[2] / 'tests' / 'test_reader_real_data.py'
+    if not test_file.is_file():
+        raise click.UsageError(
+            f'{test_file} not found - this command only works from a full source checkout '
+            'of the papyrus-scripts repository (test files are not packaged for distribution).'
+        )
+
+    if download:
+        download_papyrus(
+            outdir=indir, version=version,
+            nostereo=True, stereo=True, only_pp=False,
+            structures=True, descriptors='all',
+            progress=True,
+        )
+
+    pv = process_data_version(version, indir)
+
+    os.environ['PAPYRUS_REAL_DATA_VERSION'] = pv.pystow_path_key
+    if indir is not None:
+        os.environ['PAPYRUS_REAL_DATA_ROOT'] = str(indir)
+    os.environ['PAPYRUS_REAL_DATA_SAMPLE_SIZE'] = str(sample_size)
+
+    args = [str(test_file), '-v'] if verbose else [str(test_file)]
+    sys.exit(pytest.main(args))
