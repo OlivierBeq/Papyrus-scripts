@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-from .IO import USER_AGENT, new_session
+from .IO import get_user_agent, new_session
 
 
 def uniprot_mappings(query: str | list[str],
@@ -76,7 +76,7 @@ class UniprotMatch:
             self._session = new_session()
         else:
             self._session = requests.Session()
-            self._session.headers.update({'User-Agent': USER_AGENT})
+            self._session.headers.update({'User-Agent': get_user_agent()})
             self._session.mount("https://", HTTPAdapter(max_retries=retry))
 
     def _submit_id_mapping(self, from_db, to_db, ids, taxon=None):

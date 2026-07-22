@@ -26,6 +26,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pystow
 import requests
+from fake_useragent import UserAgent
 from requests.adapters import HTTPAdapter, Retry
 from tqdm.auto import tqdm
 
@@ -33,13 +34,34 @@ from tqdm.auto import tqdm
 # HTTP session helpers
 # ---------------------------------------------------------------------------
 
-#: Modern browser User-Agent. Public scientific APIs (RCSB PDB, UniProt, ...)
-#: rate-limit or reject requests carrying no User-Agent (or a clearly dead one)
-#: more aggressively than ones that look like an up-to-date browser.
-USER_AGENT = (
+#: Static fallback, only used if fake_useragent's bundled browser data can't
+#: be loaded (e.g. broken install). Public scientific APIs (RCSB PDB,
+#: UniProt, ...) rate-limit or reject requests carrying no User-Agent (or a
+#: clearly dead one) more aggressively than ones that look like an
+#: up-to-date browser.
+_FALLBACK_USER_AGENT = (
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 )
+
+#: Lazily instantiated so import of this module never fails/blocks on
+#: fake_useragent's own initialisation.
+_user_agent_factory: UserAgent | None = None
+
+
+def get_user_agent() -> str:
+    """Return a randomised, up-to-date browser User-Agent string.
+
+    Falls back to a static modern-browser string if ``fake_useragent``
+    cannot supply one (e.g. corrupted/missing bundled data).
+    """
+    global _user_agent_factory
+    try:
+        if _user_agent_factory is None:
+            _user_agent_factory = UserAgent()
+        return _user_agent_factory.random
+    except Exception:
+        return _FALLBACK_USER_AGENT
 
 
 def new_session(retries: int = 5, backoff_factor: float = 0.25,
@@ -55,7 +77,7 @@ def new_session(retries: int = 5, backoff_factor: float = 0.25,
     :param status_forcelist: HTTP status codes that trigger a retry
     """
     session = requests.Session()
-    session.headers.update({'User-Agent': USER_AGENT})
+    session.headers.update({'User-Agent': get_user_agent()})
     adapter = HTTPAdapter(max_retries=Retry(
         total=retries, backoff_factor=backoff_factor, status_forcelist=list(status_forcelist),
     ))

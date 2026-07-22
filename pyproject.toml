@@ -41,6 +41,7 @@ dependencies = [
     "pyarrow",
     "rdkit",
     "requests",
+    "fake-useragent",
     "tqdm",
     "mordred",
     "scikit-learn",
