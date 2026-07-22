@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -887,9 +889,139 @@ class PapyrusDataset:
 
 
 # ---------------------------------------------------------------------------
+# Filter-method generation
+# ---------------------------------------------------------------------------
+#
+# PapyrusDataFilter and FPSubSim2Engine each wrap a handful of preprocess.py
+# filter functions with a thin "supply data/context, call preprocess.*, wrap
+# the result back into a PapyrusDataset" body. Writing those bodies out by
+# hand duplicates every preprocess.py parameter list a second time, with no
+# signal if the two drift apart. _FilterSpec/_build_filter_method/
+# _generate_filters generate that body from preprocess.py's own signature
+# instead, so a new parameter on a preprocess.* function is picked up here
+# automatically.
+
+@dataclass(frozen=True)
+class _FilterSpec:
+    """Declarative description of one generated filter method.
+
+    Only ``target_name`` is required. Every other field defaults to "no
+    special handling": a pure passthrough of the preprocess.py signature,
+    with ``data`` always supplied from ``self.papyrus_bioactivity_data``.
+    A preprocess.py parameter added later without a matching entry here is
+    auto-exposed on the generated method - use ``context`` to keep an
+    internal-only parameter off the public surface instead.
+    """
+
+    #: name of the function in preprocess.py to delegate to
+    target_name: str
+    #: method name on the composition class, if it differs from target_name
+    name: str | None = None
+    #: {local (method-facing) param name: preprocess.py param name}, for
+    #: params whose public name differs between the two layers
+    renames: Mapping[str, str] = field(default_factory=dict)
+    #: {preprocess.py param name: attribute name on self} - params supplied
+    #: from instance state rather than by the caller (never publicly exposed)
+    context: Mapping[str, str] = field(default_factory=dict)
+    #: {local param name: zero-arg factory}, for params whose *public*
+    #: default must be None (avoiding a mutable/instance default in the
+    #: generated signature) and are resolved to a real value via factory()
+    #: only when the caller passes/leaves None
+    optional_defaults: Mapping[str, Callable[[], Any]] = field(default_factory=dict)
+    #: local param names whose preprocess.py default must be dropped (forced
+    #: required), because the OOP layer intentionally requires them
+    #: explicitly even though preprocess.py defaults them
+    required: frozenset = field(default_factory=frozenset)
+    #: optional callable run on self before delegating, e.g.
+    #: FPSubSim2Engine._ensure_loaded
+    pre_hook: Callable[[Any], None] | None = None
+
+
+def _build_filter_method(spec: _FilterSpec) -> Callable:
+    """Build a method delegating to ``preprocess.<target_name>`` with a real signature."""
+    target = getattr(preprocess, spec.target_name)
+    sig = inspect.signature(target)
+    excluded = {'data', *spec.context}
+
+    params = [inspect.Parameter('self', inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    for pname, p in sig.parameters.items():
+        if pname in excluded:
+            continue
+        local_name = next((k for k, v in spec.renames.items() if v == pname), pname)
+        annotation, default = p.annotation, p.default
+        if local_name in spec.optional_defaults:
+            default = None
+            if annotation is not inspect.Parameter.empty:
+                annotation = annotation | None
+        elif local_name in spec.required:
+            default = inspect.Parameter.empty
+        params.append(p.replace(name=local_name, default=default, annotation=annotation))
+
+    new_sig = inspect.Signature(params, return_annotation='PapyrusDataset')
+
+    def method(self, *args, **kwargs):
+        bound = new_sig.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        if spec.pre_hook is not None:
+            spec.pre_hook(self)
+        call_kwargs = {tname: getattr(self, attr) for tname, attr in spec.context.items()}
+        for local_name, value in bound.arguments.items():
+            if local_name == 'self':
+                continue
+            if local_name in spec.optional_defaults and value is None:
+                value = spec.optional_defaults[local_name]()
+            call_kwargs[spec.renames.get(local_name, local_name)] = value
+        # Re-resolve preprocess.<target_name> at call time (not the `target`
+        # captured above) so unittest.mock.patch on preprocess.* still works.
+        # Routed through _apply_lazy so a not-yet-downloaded (_LazyBioactivity)
+        # dataset stays lazy instead of eagerly resolving here.
+        target = getattr(preprocess, spec.target_name)
+        return self._wrap(_apply_lazy(self.papyrus_bioactivity_data, target, **call_kwargs))
+
+    method.__name__ = method.__qualname__ = spec.name or spec.target_name
+    method.__signature__ = new_sig
+    summary = (inspect.getdoc(target) or '').split('\n', 1)[0]
+    method.__doc__ = f'{summary}\n\nSee :func:`~preprocess.{spec.target_name}` for full parameter documentation.'
+    method.__module__ = __name__
+    return method
+
+
+def _generate_filters(specs: list[_FilterSpec]) -> Callable[[type], type]:
+    """Class decorator attaching one generated method per spec in *specs*."""
+    def decorator(cls: type) -> type:
+        for spec in specs:
+            m = _build_filter_method(spec)
+            setattr(cls, m.__name__, m)
+        return cls
+    return decorator
+
+
+# ---------------------------------------------------------------------------
 # PapyrusDataFilter
 # ---------------------------------------------------------------------------
 
+_PAPYRUS_DATA_FILTER_SPECS = [
+    _FilterSpec(target_name='keep_quality'),
+    _FilterSpec(target_name='keep_source'),
+    _FilterSpec(target_name='keep_type', name='keep_activity_type'),
+    _FilterSpec(target_name='keep_accession'),
+    _FilterSpec(
+        target_name='keep_protein_class',
+        context={'protein_data': 'papyrus_protein_data'},
+        required=frozenset({'classes'}),
+    ),
+    _FilterSpec(
+        target_name='keep_organism',
+        context={'protein_data': 'papyrus_protein_data'},
+    ),
+    _FilterSpec(target_name='keep_contains', name='contains'),
+    _FilterSpec(target_name='keep_not_contains', name='not_contains'),
+    _FilterSpec(target_name='keep_match', name='isin'),
+    _FilterSpec(target_name='keep_not_match', name='not_isin'),
+]
+
+
+@_generate_filters(_PAPYRUS_DATA_FILTER_SPECS)
 class PapyrusDataFilter:
     """Collection of filters applied to a :class:`PapyrusDataset`.
 
@@ -898,6 +1030,11 @@ class PapyrusDataFilter:
     filter method::
 
         dataset._filter(njobs=4, progress=True).keep_quality('medium')
+
+    Filter methods (``keep_quality``, ``keep_source``, ``keep_activity_type``,
+    ``keep_accession``, ``keep_protein_class``, ``keep_organism``,
+    ``contains``, ``not_contains``, ``isin``, ``not_isin``) are generated from
+    :mod:`preprocess`'s function signatures - see ``_PAPYRUS_DATA_FILTER_SPECS``.
     """
 
     def __init__(
@@ -937,85 +1074,54 @@ class PapyrusDataFilter:
             papyrus_params=self.papyrus_params,
         )
 
-    def _apply(self, fn, **kwargs) -> PapyrusDataset:
-        """Wrap ``fn(data=..., **kwargs)``, deferred if the bioactivity data isn't resolved yet.
-
-        Any :class:`_Deferred` value in *kwargs* (``protein_data`` for
-        :meth:`keep_protein_class`/:meth:`keep_organism`) is resolved at the
-        same point as the bioactivity data - so a not-yet-downloaded
-        dataset still downloads nothing for these either, until the
-        bioactivity data they're chained onto is actually materialised.
-        """
-        return self._wrap(_apply_lazy(self.papyrus_bioactivity_data, fn, **kwargs))
-
-    # ------------------------------------------------------------------
-    # Filters
-    # ------------------------------------------------------------------
-
-    def keep_quality(self, min_quality: str = 'high') -> PapyrusDataset:
-        return self._apply(preprocess.keep_quality, min_quality=min_quality)
-
-    def keep_source(self, source: list[str] | str = 'all') -> PapyrusDataset:
-        return self._apply(preprocess.keep_source, source=source)
-
-    def keep_activity_type(self, activity_types: list[str] | str = 'ic50') -> PapyrusDataset:
-        return self._apply(preprocess.keep_type, activity_types=activity_types)
-
-    def keep_accession(self, accession: list[str] | str = 'all') -> PapyrusDataset:
-        return self._apply(preprocess.keep_accession, accession=accession)
-
-    def keep_protein_class(
-            self,
-            classes: dict | list[dict] | None,
-            generic_regex: bool = False,
-    ) -> PapyrusDataset:
-        return self._apply(
-            preprocess.keep_protein_class,
-            protein_data=self.papyrus_protein_data,
-            classes=classes, generic_regex=generic_regex,
-        )
-
-    def keep_organism(
-            self,
-            organism: str | list[str] | None = 'Homo sapiens (Human)',
-            generic_regex: bool = False,
-    ) -> PapyrusDataset:
-        return self._apply(
-            preprocess.keep_organism,
-            protein_data=self.papyrus_protein_data,
-            organism=organism, generic_regex=generic_regex,
-        )
-
-    def contains(
-            self, column: str, value: str, case: bool = True, regex: bool = False,
-    ) -> PapyrusDataset:
-        return self._apply(
-            preprocess.keep_contains,
-            column=column, value=value, case=case, regex=regex,
-        )
-
-    def not_contains(
-            self, column: str, value: str, case: bool = True, regex: bool = False,
-    ) -> PapyrusDataset:
-        return self._apply(
-            preprocess.keep_not_contains,
-            column=column, value=value, case=case, regex=regex,
-        )
-
-    def isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
-        return self._apply(preprocess.keep_match, column=column, values=values)
-
-    def not_isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
-        return self._apply(preprocess.keep_not_match, column=column, values=values)
+    # Filter methods (keep_quality, keep_source, keep_activity_type,
+    # keep_accession, keep_protein_class, keep_organism, contains,
+    # not_contains, isin, not_isin) are attached by @_generate_filters above.
 
 
 # ---------------------------------------------------------------------------
 # FPSubSim2Engine
 # ---------------------------------------------------------------------------
 
+_FPSUBSIM2_SPECS = [
+    _FilterSpec(
+        target_name='keep_similar', name='keep_similar_molecules',
+        renames={'smiles': 'molecule_smiles', 'fp': 'fingerprint'},
+        context={'fpsubsim2_file': 'path'},
+        optional_defaults={'fp': lambda: MorganFingerprint()},
+        pre_hook=lambda self: self._ensure_loaded(),
+    ),
+    _FilterSpec(
+        target_name='keep_dissimilar', name='keep_dissimilar_molecules',
+        renames={'smiles': 'molecule_smiles', 'fp': 'fingerprint'},
+        context={'fpsubsim2_file': 'path'},
+        optional_defaults={'fp': lambda: MorganFingerprint()},
+        pre_hook=lambda self: self._ensure_loaded(),
+    ),
+    _FilterSpec(
+        target_name='keep_substructure', name='keep_substructure_molecules',
+        renames={'smiles': 'molecule_smiles'},
+        context={'fpsubsim2_file': 'path'},
+        pre_hook=lambda self: self._ensure_loaded(),
+    ),
+    _FilterSpec(
+        target_name='keep_not_substructure', name='keep_not_substructure_molecules',
+        renames={'smiles': 'molecule_smiles'},
+        context={'fpsubsim2_file': 'path'},
+        pre_hook=lambda self: self._ensure_loaded(),
+    ),
+]
+
+
+@_generate_filters(_FPSUBSIM2_SPECS)
 class FPSubSim2Engine:
     """Manages creation, loading, and querying of an FPSubSim2 similarity /
     substructure search database for a specific :class:`PapyrusDataset`.
+
+    Filter methods (``keep_similar_molecules``, ``keep_dissimilar_molecules``,
+    ``keep_substructure_molecules``, ``keep_not_substructure_molecules``) are
+    generated from :mod:`preprocess`'s function signatures - see
+    ``_FPSUBSIM2_SPECS``.
     """
 
     def __init__(self, papyrus_params: dict) -> None:
@@ -1113,63 +1219,9 @@ class FPSubSim2Engine:
             papyrus_params=self.papyrus_params,
         )
 
-    # ------------------------------------------------------------------
-    # Public filter methods
-    # ------------------------------------------------------------------
-
-    def keep_similar_molecules(
-            self,
-            smiles: str | list[str],
-            fp: Fingerprint | None = None,
-            threshold: float = 0.7,
-            cuda: bool = False,
-    ) -> PapyrusDataset:
-        """Keep samples similar to any of the query SMILES."""
-        self._ensure_loaded()
-        return self._wrap(_apply_lazy(
-            self.papyrus_bioactivity_data, preprocess.keep_similar,
-            molecule_smiles=smiles,
-            fpsubsim2_file=self.path,
-            fingerprint=fp if fp is not None else MorganFingerprint(),
-            threshold=threshold,
-            cuda=cuda,
-        ))
-
-    def keep_dissimilar_molecules(
-            self,
-            smiles: str | list[str],
-            fp: Fingerprint | None = None,
-            threshold: float = 0.7,
-            cuda: bool = False,
-    ) -> PapyrusDataset:
-        """Keep samples **not** similar to any of the query SMILES."""
-        self._ensure_loaded()
-        return self._wrap(_apply_lazy(
-            self.papyrus_bioactivity_data, preprocess.keep_dissimilar,
-            molecule_smiles=smiles,
-            fpsubsim2_file=self.path,
-            fingerprint=fp if fp is not None else MorganFingerprint(),
-            threshold=threshold,
-            cuda=cuda,
-        ))
-
-    def keep_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
-        """Keep samples that are substructures of any of the query SMILES."""
-        self._ensure_loaded()
-        return self._wrap(_apply_lazy(
-            self.papyrus_bioactivity_data, preprocess.keep_substructure,
-            molecule_smiles=smiles,
-            fpsubsim2_file=self.path,
-        ))
-
-    def keep_not_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
-        """Keep samples that are **not** substructures of any of the query SMILES."""
-        self._ensure_loaded()
-        return self._wrap(_apply_lazy(
-            self.papyrus_bioactivity_data, preprocess.keep_not_substructure,
-            molecule_smiles=smiles,
-            fpsubsim2_file=self.path,
-        ))
+    # Filter methods (keep_similar_molecules, keep_dissimilar_molecules,
+    # keep_substructure_molecules, keep_not_substructure_molecules) are
+    # attached by @_generate_filters above.
 
 
 # ---------------------------------------------------------------------------
