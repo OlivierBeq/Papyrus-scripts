@@ -2,7 +2,9 @@
 
 """Download utilities of the Papyrus scripts."""
 
+import multiprocessing as mp
 import os
+import queue
 import shutil
 import warnings
 import zipfile
@@ -52,6 +54,30 @@ _SCHEMA_KEY_BY_FTYPE = {
 #: cell is written as a genuine Parquet null the empty-string/null
 #: distinction can no longer be recovered at read time.
 _NULL_VALUES_BY_FTYPE = {'proteins': []}
+
+#: Maps a logical file-type key to the data_size.json key holding its
+#: (naive, physical-line) row count - used only to give the per-file
+#: conversion progress bar an approximate total to show; a missing key
+#: (e.g. this Papyrus release predates that entry) just means no total is
+#: shown, falling back to an open-ended running count.
+_SIZE_KEY_BY_FTYPE = {
+    'papyrus++':       'papyrus_++',
+    '2D_papyrus':      'papyrus_2D',
+    '3D_papyrus':      'papyrus_3D',
+    'proteins':        'papyrus_proteins',
+    '2D_mold2':        'mold2',
+    '2D_cddd':         'CDDD',
+    '2D_mordred':      'mordred_2D',
+    '3D_mordred':      'mordred_3D',
+    '2D_fingerprint':  'ECFP6',
+    '3D_fingerprint':  'E3FP',
+    'proteins_unirep': 'unirep',
+    'proteins_prodec': 'prodec',
+}
+
+#: Fixed progress-bar width (characters) for the download and conversion
+#: bars, so none of them grows to fill an entire wide terminal.
+_PBAR_NCOLS = 100
 
 
 def _parquet_sibling(fpath: Path) -> Path | None:
@@ -312,6 +338,131 @@ def _get_version_files(files: dict, pv: PapyrusVersion) -> dict:
     return entry
 
 
+#: Sentinel placed on the conversion queue to signal "no more files are
+#: coming, exit normally". A real task is always a dict, so plain ``None``
+#: can never be mistaken for it - and unlike a fresh ``object()``, ``None``
+#: survives a multiprocessing.Queue's pickle/unpickle round-trip as the
+#: exact same singleton, so `is` comparisons against it still work on the
+#: worker side of the process boundary (a distinct sentinel object does
+#: not: pickling it in put() and unpickling it in get() produces a new,
+#: unequal object each time, silently breaking an `is` check like this
+#: one's).
+_CONVERSION_DONE = None
+
+
+#: Messages put on the progress queue by _convert_worker, consumed by
+#: _drain_progress_queue in the parent process:
+#: ('start', desc, total_rows) - beginning a new file: reset the current
+#:     file's row count to 0 and record its description/total
+#: ('reset',)                  - conversion restarted from row 0 (dtype
+#:     drift healing) - reset the current file's row count, keep its total
+#: ('chunk', n)                - n more rows written for the current file
+#: ('done',)                   - current file finished; advance the
+#:     "files converted" bar by one
+#: 'start'/'reset'/'chunk' only ever update the *description* of the single
+#: "Converting files" bar (current file + its row progress) - never a
+#: second bar object; see download_papyrus's own comments for why.
+_PROGRESS_START = 'start'
+_PROGRESS_RESET = 'reset'
+_PROGRESS_CHUNK = 'chunk'
+_PROGRESS_DONE = 'done'
+
+
+def _convert_worker(
+        task_queue: mp.Queue,
+        error_queue: mp.Queue,
+        progress_queue: mp.Queue,
+        progress: bool,
+) -> None:
+    """Consume Parquet-conversion tasks from *task_queue*, one at a time, until the sentinel is read.
+
+    Runs in its own process so CPU-bound Parquet conversion overlaps with
+    the main process' network downloads instead of blocking them - the main
+    process pushes one task per tabular file as soon as that file finishes
+    downloading, then a final :data:`_CONVERSION_DONE` sentinel once every
+    file has been handled, at which point this process exits normally.
+
+    Renders no progress bars itself - reports progress via *progress_queue*
+    instead (see the module-level ``_PROGRESS_*`` constants for the message
+    protocol), for the parent process to render. Two independent processes
+    each rendering their own position-pinned tqdm bars (this worker's
+    former approach, alongside the parent's own download-progress bar) was
+    tried and reverted: even with a lock shared between them (tqdm's
+    documented pattern for coexisting bars across processes, which does
+    prevent byte-level interleaving/garbling of a single write), each
+    process' cursor-movement math is still computed independently, with no
+    shared notion of the terminal's actual current state - so one
+    process's bar redraw can scroll the terminal in a way the other has no
+    way of knowing about, and stray blank lines accumulate over time. A
+    single process owning every bar (tqdm's well-supported case) doesn't
+    have this failure mode at all.
+
+    Each task is a ``dict`` of keyword arguments for
+    :func:`~papyrus_scripts.utils.IO.convert_xz_to_parquet`, plus the
+    ``.xz`` original's path (``'fpath'``) - deleted once its conversion
+    succeeds, matching the previous single-process behaviour. Any exception
+    aborts the current file - including ``KeyboardInterrupt``: hitting
+    Ctrl+C delivers ``SIGINT`` to every process in the group, so this one
+    receives it too, independently of the parent. ``convert_xz_to_parquet``
+    already removes its own half-written output in that case (it writes
+    under a ``.converting`` suffix and only renames to the final name on
+    success), and that same temp path is removed here again as a backstop,
+    before this process reports the failure back to the parent via
+    *error_queue* and exits - it does not keep processing further tasks
+    after a failure.
+
+    :param task_queue: FIFO of conversion tasks, fed by the parent process
+    :param error_queue: used to report back a single value once this
+        process is about to exit: ``None`` for a clean run, or a short
+        string describing the exception that aborted it
+    :param progress_queue: conversion-progress messages for the parent to
+        render (see the ``_PROGRESS_*`` message protocol above); unused
+        when *progress* is False
+    :param progress: whether to report progress at all - when False, no
+        messages are put on *progress_queue*, avoiding the per-chunk
+        IPC/pickling cost of reporting progress nobody will render
+    """
+    try:
+        while True:
+            task = task_queue.get()
+            if task is _CONVERSION_DONE:
+                error_queue.put(None)
+                return
+            fpath: Path = task['fpath']
+            parquet_path: Path = task['parquet_path']
+            if progress:
+                progress_queue.put((_PROGRESS_START, task['desc'], task['total_rows']))
+            try:
+                convert_xz_to_parquet(
+                    fpath, parquet_path,
+                    separator='\t',
+                    schema_overrides=task['schema_overrides'],
+                    null_values=task['null_values'],
+                    on_progress=(
+                        (lambda n: progress_queue.put((_PROGRESS_CHUNK, n)))
+                        if progress else None
+                    ),
+                    on_reset=(
+                        (lambda: progress_queue.put((_PROGRESS_RESET,)))
+                        if progress else None
+                    ),
+                )
+                fpath.unlink()
+            except BaseException as exc:
+                parquet_path.with_name(parquet_path.name + '.converting').unlink(missing_ok=True)
+                error_queue.put(f'{type(exc).__name__}: {exc}')
+                return
+            if progress:
+                progress_queue.put((_PROGRESS_DONE,))
+    except BaseException:
+        # Make sure a crash/interrupt before even reaching the per-task
+        # try/except above (e.g. task_queue.get() itself interrupted) still
+        # reports something, rather than leaving the parent blocked forever
+        # on error_queue.get().
+        error_queue.put('worker exited unexpectedly')
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -361,6 +512,7 @@ def download_papyrus(outdir: str | Path | None = None,
         _old_fmt_keys = set(PapyrusVersion.aliases['version'].values)
         _stale = [v for v in (read_jsonfile(_versions_json) or []) if v in _old_fmt_keys]
         if _stale:
+            version_flags = ' '.join(f'--version {v}' for v in _stale)
             print(
                 '########## IMPORTANT NOTICE ##########\n'
                 'Papyrus-scripts now uses a new folder layout that includes the\n'
@@ -368,8 +520,8 @@ def download_papyrus(outdir: str | Path | None = None,
                 'Existing data downloaded with the previous format was found:\n'
                 f'  {", ".join(_stale)}\n'
                 'Please remove those old folders before downloading new data:\n'
-                '  papyrus clean --version all\n'
-                '(or remove_papyrus(version="all") from Python)\n'
+                f'  papyrus clean {version_flags} --remove_version\n'
+                f'(or remove_papyrus(version={_stale!r}, version_root=True) from Python)\n'
                 '######################################'
             )
 
@@ -460,106 +612,254 @@ def download_papyrus(outdir: str | Path | None = None,
             return
 
         # ------------------------------------------------------------------
-        # Download
+        # Download (each tabular file is converted to Parquet immediately
+        # after it finishes downloading, rather than only once every file
+        # has been downloaded - 'requirements' (the zip holding
+        # data_types.json) is processed first so the schema it provides is
+        # already on disk by the time the first tabular file needs it.
         # ------------------------------------------------------------------
+        ordered_ftypes = sorted(downloads, key=lambda ft: ft not in ('readme', 'requirements'))
+
         if progress:
             pbar = tqdm(
                 total=total,
-                desc=f'Downloading version {pv}',
+                desc=f'Downloading version {pv.version}',
                 unit='B',
                 unit_scale=True,
+                ncols=_PBAR_NCOLS,
             )
 
-        for ftype in downloads:
-            for entry in _iter_entries(version_files[ftype]):
-                dname = entry['name']
-                durl = entry['url']
-                dsize = entry['size']
-                dhash = entry['sha256']
-                fpath = _file_path(papyrus_version_root, ftype, dname)
+        schemas: dict = {}
+        sizes: dict = {}
+        metadata_loaded = False
 
-                # Skip if already present and intact
-                if fpath.is_file() and assert_sha256sum(fpath, dhash):
-                    if progress:
-                        pbar.update(dsize)
+        # Parquet conversion runs in its own process, fed one task per
+        # tabular file via a bounded FIFO queue (maxsize=1: the main
+        # process may get at most one file ahead of the converter, instead
+        # of piling up every .xz original on disk before any of them is
+        # converted) - so downloading file N+1 overlaps with converting
+        # file N rather than the two happening strictly one after another.
+        # The worker itself renders no progress bars - it reports progress
+        # via progress_queue instead (see _convert_worker's docstring), and
+        # this process renders at most one tqdm bar at a time, always at
+        # position 0 (tqdm's default, and its only reliably-behaved case;
+        # see _convert_worker's docstring for what non-zero positions did).
+        # While the download bar above is still active, conversion
+        # progress is only counted (files_converted), never displayed -
+        # only once that bar is closed does a second, equally
+        # position-0 "Converting files" bar get created to show (and catch
+        # up on) whatever conversion progress has happened since, live
+        # from then on.
+        converter_process: mp.Process | None = None
+        task_queue: mp.Queue | None = None
+        error_queue: mp.Queue | None = None
+        progress_queue: mp.Queue | None = None
+        converting_pbar: tqdm | None = None
+        files_converted = 0
+        download_finished = False
+        # Current file's row-level progress, folded into converting_pbar's
+        # description text (e.g. "Converting 2D_papyrus (12.3k/59.5M rows)")
+        # rather than a second tqdm bar - a large file's conversion can take
+        # several minutes, so some live feedback within it still matters,
+        # but a second bar object here would mean a second active position
+        # again (see this block's docstring above for why that's unsafe).
+        current_desc = ''
+        current_rows = 0
+        current_total: int | None = None
+
+        def _update_current_file_description() -> None:
+            total_str = f'{current_total:,}' if current_total is not None else '?'
+            converting_pbar.set_description(f'{current_desc} ({current_rows:,}/{total_str} rows)')
+
+        def _drain_progress_queue() -> None:
+            """Apply every conversion-progress message available right now, without blocking."""
+            nonlocal converting_pbar, files_converted, current_desc, current_rows, current_total
+            while True:
+                try:
+                    message = progress_queue.get_nowait()
+                except queue.Empty:
+                    return
+                kind = message[0]
+                if kind == _PROGRESS_START:
+                    _, current_desc, current_total = message
+                    current_rows = 0
+                elif kind == _PROGRESS_RESET:
+                    current_rows = 0
+                elif kind == _PROGRESS_CHUNK:
+                    current_rows += message[1]
+                elif kind == _PROGRESS_DONE:
+                    files_converted += 1
+                if not download_finished or converting_pbar is None:
                     continue
+                if kind == _PROGRESS_DONE:
+                    converting_pbar.update(1)
+                elif kind in (_PROGRESS_START, _PROGRESS_RESET, _PROGRESS_CHUNK):
+                    _update_current_file_description()
 
-                # Skip if already converted to Parquet by a previous call
-                # (the .xz original was deliberately deleted in that case).
-                parquet_path = _parquet_sibling(fpath)
-                if parquet_path is not None and parquet_path.is_file():
-                    if progress:
-                        pbar.update(dsize)
-                    continue
+        def _wait_for_converter() -> None:
+            """Block until the converter process exits, draining progress messages meanwhile."""
+            nonlocal converting_pbar, download_finished
+            download_finished = True
+            if progress and converting_pbar is None:
+                converting_pbar = tqdm(
+                    total=to_convert_total, initial=files_converted,
+                    desc='Converting files', unit=' file', ncols=_PBAR_NCOLS,
+                )
+                if current_desc:
+                    # Catch up: a file may already be mid-conversion by the
+                    # time the download bar closes and this one takes over.
+                    _update_current_file_description()
+            while converter_process.is_alive():
+                _drain_progress_queue()
+                converter_process.join(timeout=0.1)
+            _drain_progress_queue()
+            if converting_pbar is not None:
+                converting_pbar.close()
 
-                # Attempt download with up to _RETRIES tries
-                success = False
-                remaining = _RETRIES
-                while not success and remaining > 0:
-                    res = session.get(
-                        durl,
-                        stream=True,
-                        verify=True,
-                    )
-                    with open(fpath, 'wb') as fh:
-                        for chunk in res.iter_content(chunk_size=_CHUNKSIZE):
-                            fh.write(chunk)
-                            if progress:
-                                pbar.update(len(chunk))
+        if not keep_xz:
+            to_convert_total = 0
+            for ftype in ordered_ftypes:
+                for entry in _iter_entries(version_files[ftype]):
+                    fpath = _file_path(papyrus_version_root, ftype, entry['name'])
+                    parquet_path = _parquet_sibling(fpath)
+                    if parquet_path is not None and not parquet_path.is_file():
+                        to_convert_total += 1
 
-                    success = assert_sha256sum(fpath, dhash)
-                    if not success:
-                        remaining -= 1
-                        fpath.unlink()
+            task_queue = mp.Queue(maxsize=1)
+            error_queue = mp.Queue()
+            progress_queue = mp.Queue()
+            if progress:
+                converting_pbar = tqdm(
+                    total=to_convert_total, desc='Converting files', unit=' file',
+                    position=1, ncols=_PBAR_NCOLS,
+                )
+            converter_process = mp.Process(
+                target=_convert_worker,
+                args=(task_queue, error_queue, progress_queue, progress),
+                daemon=True,
+            )
+            converter_process.start()
+
+        try:
+            for ftype in ordered_ftypes:
+                for entry in _iter_entries(version_files[ftype]):
+                    dname = entry['name']
+                    durl = entry['url']
+                    dsize = entry['size']
+                    dhash = entry['sha256']
+                    fpath = _file_path(papyrus_version_root, ftype, dname)
+
+                    # Skip entirely if already converted to Parquet by a
+                    # previous call (the .xz original was deliberately
+                    # deleted in that case).
+                    parquet_path = _parquet_sibling(fpath)
+                    if parquet_path is not None and parquet_path.is_file():
                         if progress:
-                            msg = (
-                                    f'SHA256 mismatch for {dname}. '
-                                    + (f'Retrying ({remaining} left).'
-                                       if remaining > 0
-                                       else f'All {_RETRIES} attempts failed.')
+                            pbar.update(dsize)
+                        continue
+
+                    # Download unless already present and intact.
+                    if fpath.is_file() and assert_sha256sum(fpath, dhash):
+                        if progress:
+                            pbar.update(dsize)
+                    else:
+                        # Attempt download with up to _RETRIES tries
+                        success = False
+                        remaining = _RETRIES
+                        while not success and remaining > 0:
+                            res = session.get(
+                                durl,
+                                stream=True,
+                                verify=True,
                             )
-                            pbar.write(msg)
+                            with open(fpath, 'wb') as fh:
+                                for chunk in res.iter_content(chunk_size=_CHUNKSIZE):
+                                    fh.write(chunk)
+                                    if progress:
+                                        pbar.update(len(chunk))
+                                    if progress_queue is not None:
+                                        _drain_progress_queue()
 
-                if not success:
-                    if progress:
-                        pbar.close()
-                    raise OSError(f'Download failed for {dname}')
+                            success = assert_sha256sum(fpath, dhash)
+                            if not success:
+                                remaining -= 1
+                                fpath.unlink()
+                                if progress:
+                                    msg = (
+                                            f'SHA256 mismatch for {dname}. '
+                                            + (f'Retrying ({remaining} left).'
+                                               if remaining > 0
+                                               else f'All {_RETRIES} attempts failed.')
+                                    )
+                                    pbar.write(msg)
 
-                # Extract ZIP archives in-place
-                if dname.endswith('.zip'):
-                    dest = fpath.parent
-                    with zipfile.ZipFile(fpath) as zh:
-                        for name in zh.namelist():
-                            zh.extract(name, dest)
-                    fpath.unlink()
+                        if not success:
+                            if progress:
+                                pbar.close()
+                            raise OSError(f'Download failed for {dname}')
+
+                    # Extract ZIP archives in-place
+                    if dname.endswith('.zip'):
+                        dest = fpath.parent
+                        with zipfile.ZipFile(fpath) as zh:
+                            for name in zh.namelist():
+                                zh.extract(name, dest)
+                        fpath.unlink()
+                        continue
+
+                    # Queue this tabular file for conversion right away
+                    # rather than waiting for every other file to finish
+                    # downloading first.
+                    if not keep_xz and parquet_path is not None:
+                        if not metadata_loaded:
+                            dtype_file = papyrus_version_root.join(name='data_types.json')
+                            if dtype_file.is_file():
+                                schemas = load_data_type_schemas(papyrus_version_root)
+                                sizes = read_jsonfile(papyrus_version_root.join(name='data_size.json'))
+                                metadata_loaded = True
+                        task_queue.put({
+                            'fpath': fpath,
+                            'parquet_path': parquet_path,
+                            'schema_overrides': schemas.get(_SCHEMA_KEY_BY_FTYPE.get(ftype)),
+                            'null_values': _NULL_VALUES_BY_FTYPE.get(ftype),
+                            'total_rows': sizes.get(_SIZE_KEY_BY_FTYPE.get(ftype)),
+                            # ftype (e.g. 'papyrus++', '2D_mold2') rather
+                            # than fpath.name: the real filenames (e.g.
+                            # '05.6++_combined_set_without_stereochemistry
+                            # .tsv') are long enough to overflow the fixed
+                            # bar width (_PBAR_NCOLS) on their own, before
+                            # the bar itself even starts.
+                            'desc': f'Converting {ftype}',
+                        })
+        except BaseException:
+            # Downloading failed (or was interrupted) - still let the
+            # converter process drain and exit cleanly instead of leaving
+            # it running in the background, but propagate the original
+            # failure rather than whatever it reports back, if anything.
+            # pbar (if not already closed by the retry-exhausted branch
+            # above) must close before _wait_for_converter's own bar is
+            # created - both are position-0 tqdm bars, and only one may be
+            # active at a time (tqdm.close() is idempotent, so closing an
+            # already-closed pbar here is harmless).
+            if progress:
+                pbar.close()
+            if converter_process is not None:
+                task_queue.put(_CONVERSION_DONE)
+                _wait_for_converter()
+            raise
 
         if progress:
             pbar.close()
 
-        # ------------------------------------------------------------------
-        # Convert freshly downloaded tabular files to Parquet, lazily
-        # ------------------------------------------------------------------
-        if not keep_xz:
-            schemas = {}
-            dtype_file = papyrus_version_root.join(name='data_types.json')
-            if dtype_file.is_file():
-                schemas = load_data_type_schemas(papyrus_version_root)
-
-            for ftype in downloads:
-                schema = schemas.get(_SCHEMA_KEY_BY_FTYPE.get(ftype))
-                null_values = _NULL_VALUES_BY_FTYPE.get(ftype)
-                for entry in _iter_entries(version_files[ftype]):
-                    fpath = _file_path(papyrus_version_root, ftype, entry['name'])
-                    parquet_path = _parquet_sibling(fpath)
-                    if parquet_path is None or not fpath.is_file():
-                        continue
-                    if not parquet_path.is_file():
-                        convert_xz_to_parquet(
-                            fpath, parquet_path,
-                            separator='\t', schema_overrides=schema,
-                            null_values=null_values, progress=progress,
-                        )
-                    fpath.unlink()
+        if converter_process is not None:
+            # Signal "no more files are coming" and wait for every already
+            # -queued conversion to finish before this version is marked
+            # as downloaded.
+            task_queue.put(_CONVERSION_DONE)
+            _wait_for_converter()
+            error = error_queue.get()
+            if error is not None:
+                raise RuntimeError(f'Parquet conversion failed: {error}')
 
         # Register this version in the local versions.json
         _update_versions_json(papyrus_root, pv, add=True)
