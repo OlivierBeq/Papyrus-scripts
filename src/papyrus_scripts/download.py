@@ -669,6 +669,11 @@ def download_papyrus(outdir: str | Path | None = None,
             total_str = f'{current_total:,}' if current_total is not None else '?'
             converting_pbar.set_description(f'{current_desc} ({current_rows:,}/{total_str} rows)')
 
+        def _mark_current_file_complete() -> None:
+            # Only ever called once converting_pbar has been created (see call sites).
+            assert converting_pbar is not None
+            converting_pbar.set_description(f'{current_desc} (complete)')
+
         def _drain_progress_queue() -> None:
             """Apply every conversion-progress message available right now, without blocking."""
             nonlocal files_converted, current_desc, current_rows, current_total
@@ -693,6 +698,7 @@ def download_papyrus(outdir: str | Path | None = None,
                     continue
                 if kind == _PROGRESS_DONE:
                     converting_pbar.update(1)
+                    _mark_current_file_complete()
                 elif kind in (_PROGRESS_START, _PROGRESS_RESET, _PROGRESS_CHUNK):
                     _update_current_file_description()
 

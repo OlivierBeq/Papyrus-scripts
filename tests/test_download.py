@@ -783,6 +783,23 @@ class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.T
             f'no real row-progress description shown before download bar closed: {live_updates_before_close}',
         )
 
+    def test_completed_file_shows_complete_instead_of_final_row_count(self):
+        with self.assertWarns(DeprecationWarning):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+
+        converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
+        self.assertEqual(len(converting_bars), 1)
+        converting_pbar = converting_bars[0]
+
+        descriptions = [
+            call.args[0] for call in converting_pbar.set_description.call_args_list
+            if call.args
+        ]
+        self.assertTrue(
+            any(d.endswith('(complete)') for d in descriptions),
+            f'no "(complete)" description found among: {descriptions}',
+        )
+
 
 class TestConvertWorker(unittest.TestCase):
     """Unit tests for download._convert_worker, run synchronously in-process
