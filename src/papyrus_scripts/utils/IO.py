@@ -16,11 +16,14 @@ import re
 import shutil
 import warnings
 from collections import namedtuple
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pystow
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -384,12 +387,16 @@ class PapyrusVersion:
                     f'and (revision == "{revision}")'
                 )
             else:
-                warnings.warn('Revision number not provided; latest revision selected.')
-                latest_rev = (
-                    self.aliases[
-                        (self.aliases['version'] == version) | (self.aliases['alias'] == version)
-                    ]['revision'].max()
-                )
+                matches = self.aliases[
+                    (self.aliases['version'] == version) | (self.aliases['alias'] == version)
+                ]
+                # Only warn when there is real ambiguity to resolve - a
+                # version/alias with a single known revision (true for every
+                # old-format string, e.g. '05.7', and for every alias so far)
+                # isn't "latest revision selected", it's the only one there is.
+                if matches['revision'].nunique() > 1:
+                    warnings.warn('Revision number not provided; latest revision selected.')
+                latest_rev = matches['revision'].max()
                 query = (
                     f'(version == "{version}" or alias == "{version}") '
                     f'and (revision == "{latest_rev}")'
@@ -555,6 +562,9 @@ class PapyrusVersion:
 
     def __hash__(self) -> int:
         return hash(self.version)
+
+    def __str__(self) -> str:
+        return self.version
 
     def __repr__(self) -> str:
         return f'<PapyrusVersion version={self.version}>'
@@ -877,6 +887,101 @@ def convert_xz_to_gz(
                 pbar.update(written)
 
 
+#: Maps a polars dtype (as used in schema_overrides) to the pandas dtype
+#: name that preserves it through pd.read_csv -> pyarrow.Table.from_pandas.
+#: Nullable pandas extension types (capitalised: 'Int64', 'boolean', ...)
+#: are used for anything that isn't already nullable by nature (float,
+#: string) - a plain numpy 'int64' column can't hold NaN, so a chunk with
+#: even one missing value would silently upcast to float64 while a
+#: different chunk without one stays int64, and ParquetWriter.write_table()
+#: rejects the resulting schema mismatch between chunks.
+_POLARS_TO_PANDAS_DTYPE: dict = {
+    pl.Utf8: 'string',
+    pl.Float32: 'float32',
+    pl.Float64: 'float64',
+    pl.Int8: 'Int8',
+    pl.Int16: 'Int16',
+    pl.Int32: 'Int32',
+    pl.Int64: 'Int64',
+    pl.UInt8: 'UInt8',
+    pl.UInt16: 'UInt16',
+    pl.UInt32: 'UInt32',
+    pl.UInt64: 'UInt64',
+    pl.Boolean: 'boolean',
+}
+
+#: The nullable-integer pandas dtype names from the mapping above. A column
+#: whose real values include a decimal point, "NaN", or scientific notation
+#: (schema mistakes happen - the "right" dtype for a column can differ
+#: between Papyrus releases) crashes pandas' C parser outright if handed one
+#: of these dtypes directly ("cannot safely cast non-equivalent float64 to
+#: int64"), so convert_xz_to_parquet never does: see its docstring.
+_NULLABLE_INT_DTYPES: frozenset = frozenset({
+    'Int8', 'Int16', 'Int32', 'Int64', 'UInt8', 'UInt16', 'UInt32', 'UInt64',
+})
+
+
+def _schema_overrides_to_pandas_dtype(schema_overrides: dict | None) -> dict | None:
+    """Convert a ``{column: polars_dtype}`` mapping to pandas dtype names."""
+    if not schema_overrides:
+        return None
+    return {
+        col: _POLARS_TO_PANDAS_DTYPE.get(dtype, 'string')
+        for col, dtype in schema_overrides.items()
+    }
+
+
+def _coerce_object_columns_to_string(chunk: pd.DataFrame) -> None:
+    """Cast every ``object``-dtyped column of *chunk* to pandas' nullable ``'string'`` dtype, in place.
+
+    A column pandas couldn't type uniformly (e.g. some rows numeric-looking,
+    others not) comes back ``object``, mixing real Python ``int``/``str``
+    values - ``pyarrow.Table.from_pandas`` fails outright on that mix.
+    ``'string'`` stringifies every value the same way and maps NaN-likes to
+    ``pd.NA`` rather than the literal text ``"nan"``.
+    """
+    for col in chunk.columns[chunk.dtypes == object]:
+        chunk[col] = chunk[col].astype('string')
+
+
+def _downcast_integer_overrides(
+        chunk: pd.DataFrame,
+        overrides: dict,
+        forced_float_cols: set,
+) -> str | None:
+    """Downcast *chunk*'s int-schema columns to their real nullable integer dtype, in place.
+
+    Every column in *overrides* mapped to one of :data:`_NULLABLE_INT_DTYPES`
+    is read leniently as ``'Float64'`` (see :func:`convert_xz_to_parquet`),
+    so it must be cast back to its intended integer dtype here once the
+    chunk is safely in hand. A column already in *forced_float_cols* is
+    known to hold genuine fractional values from an earlier chunk and is
+    left as-is.
+
+    :returns: the name of the first column found to hold a real fractional
+        value (not yet in *forced_float_cols*, so this is news) - the
+        caller must restart the conversion with it added there - or
+        ``None`` if every eligible column downcast cleanly.
+    """
+    for col, target in overrides.items():
+        if target not in _NULLABLE_INT_DTYPES or col in forced_float_cols:
+            continue
+        non_null = chunk[col].dropna()
+        if len(non_null) == 0 or (non_null % 1 == 0).all():
+            chunk[col] = chunk[col].astype(target)
+        else:
+            return col
+    return None
+
+
+def _first_type_mismatch(established: pa.Schema, candidate: pa.Schema) -> str | None:
+    """Return the name of the first field whose type in *candidate* differs from *established*, else None."""
+    for field in candidate:
+        if established.field(field.name).type != field.type:
+            return field.name
+    return None
+
+
 def convert_xz_to_parquet(
         input_file: str | Path,
         output_file: str | Path,
@@ -884,63 +989,223 @@ def convert_xz_to_parquet(
         schema_overrides: dict | None = None,
         null_values: list | str | None = None,
         progress: bool = False,
+        chunksize: int = 250_000,
+        desc: str | None = None,
+        position: int = 0,
+        total: int | None = None,
+        leave: bool = True,
+        ncols: int = 100,
+        on_progress: Callable[[int], None] | None = None,
+        on_reset: Callable[[], None] | None = None,
 ) -> None:
     """Losslessly convert an LZMA-compressed CSV/TSV file to Parquet.
 
-    Polars has no native ``.xz`` reader, so *input_file* is first streamed
-    (chunk by chunk, never fully buffered in memory - some Papyrus files
-    decompress to several GB) to a temporary plain-text file sitting next to
-    *output_file*. The Parquet file is then written with a single
-    ``pl.scan_csv(...).sink_parquet(...)`` pipeline - Polars' streaming
-    engine only stays active across this pipeline when ``sink_parquet`` is
-    called immediately after ``scan_csv``; inserting any other Polars
-    operation between the two forces an eager collect first, defeating the
-    point for multi-gigabyte descriptor files.
+    Reads *input_file* in row-bounded chunks via ``pandas.read_csv``
+    (which decompresses ``.xz`` on the fly - no intermediate decompressed
+    file ever touches disk) and writes each chunk immediately via a single
+    streaming ``pyarrow.parquet.ParquetWriter``, so memory and extra disk
+    usage stay close to *chunksize* regardless of the true file size.
+
+    A prior implementation decompressed to a temporary file first and used
+    Polars' ``scan_csv(...).sink_parquet(...)`` (splitting into row-bounded
+    pieces above 2 GiB when that alone still wasn't enough) - benchmarked
+    against this one on an 8M-row/3.3 GB-decompressed synthetic file:
+    peak RSS 3.2 GB vs. 379 MB here, peak extra disk 6.7 GB vs. 50 MB here,
+    for +3.7s of wall time here. The old approach also OOM-killed a real
+    39-47 GB Papyrus 3D bioactivity file (version 2024.09.1) outright on a
+    31 GB-RAM machine; this one has no such failure mode since it never
+    materialises more than *chunksize* rows at once.
 
     :param input_file: path to the source ``.xz`` file
     :param output_file: path to write the ``.parquet`` file
     :param separator: field separator of the decompressed CSV/TSV content
-    :param schema_overrides: ``{column: polars_dtype}`` overrides forwarded
-        to ``pl.scan_csv``; when omitted, dtypes are inferred from the
-        full decompressed file
-    :param null_values: values to treat as null, forwarded to ``pl.scan_csv``
-        (pass ``[]`` to keep empty strings as empty strings instead of null)
-    :param progress: display a progress bar during decompression
+    :param schema_overrides: ``{column: polars_dtype}`` overrides, converted
+        to pandas dtypes and forwarded to ``pd.read_csv``; a column not
+        covered here has its dtype inferred by pandas, independently for
+        each chunk. Two failure modes follow from that and are both handled
+        automatically: a column pandas couldn't type uniformly *within* one
+        chunk (e.g. a "years" column holding a bare ``"1990"`` in some rows
+        and ``"1990;1995"`` in others, mixing real Python ``int`` and
+        ``str`` values) comes back ``object``-dtyped and is coerced to
+        pandas' nullable ``'string'`` dtype before handing the chunk to
+        ``pyarrow``, which otherwise rejects that mix outright; a column
+        inferred with two *different* uniform dtypes *across* chunks (e.g.
+        ``int64`` in one, ``float64`` in another because only that chunk has
+        a null, or ``string`` in one and ``int64`` in another because only
+        that chunk mixes non-numeric values in) is detected once the
+        mismatch would otherwise break ``ParquetWriter``, and the whole
+        conversion is restarted with that column forced to ``'string'``
+        from the first row - the safe common type for any two dtypes here.
+        A column *covered* here as one of the nullable integer dtypes
+        (``pl.Int8``/``pl.UInt64``/etc.) is never handed to ``pd.read_csv``
+        as such directly - it's read as ``'Float64'`` and
+        cast back to the intended integer dtype once each chunk is safely
+        parsed. Real Papyrus releases have shipped a column documented as
+        integer in ``data_types.json`` that actually holds float-formatted
+        values (e.g. ``"1.0"``) for a given release; handing pandas the
+        strict integer dtype directly crashes its C parser outright
+        (``TypeError: cannot safely cast non-equivalent float64 to
+        int64``) the moment it hits such a value, before any of the above
+        chunk-level handling ever gets a chance to run. A column found to
+        hold a genuine fraction is left ``'Float64'`` from the first row
+        onward instead (same restart-with-a-wider-type approach as above).
+    :param null_values: values to treat as null, forwarded to ``pd.read_csv``
+        as ``na_values`` (with ``keep_default_na=False``, so nothing beyond
+        what's listed here is ever treated as null). Defaults to
+        ``['', 'NA']`` when omitted (``None``) - real Papyrus releases have
+        shipped columns absent from data_types.json holding literal "NA"
+        for missing values (e.g. a "Year" column on the 3D bioactivity file
+        of version 2024.09.1). Pass ``[]`` explicitly to keep empty strings
+        and literal "NA" values as-is instead of null.
+    :param progress: display a progress bar while converting
+    :param chunksize: rows read and written per chunk
+    :param desc: progress bar label; defaults to *input_file*'s name so
+        converting many files in a row (e.g. from :func:`download_papyrus`)
+        shows which one is currently in progress rather than a bare
+        "Converting" repeated identically for every file
+    :param position: ``tqdm`` line offset - pass a nonzero value when this
+        bar must coexist on-screen with another (already-running) one, e.g.
+        a download's overall byte-progress bar, so they render on separate
+        lines instead of overwriting each other
+    :param total: expected row count, shown as "N/total" plus a percentage
+        instead of a bare running count; an approximation (e.g. from a
+        released version's ``data_size.json``) is fine - it only affects
+        the display, never the actual conversion. ``None`` (default) falls
+        back to an open-ended count when the true size isn't known upfront.
+    :param leave: keep the finished bar visible on-screen after this
+        function returns; set to False when converting many files back to
+        back (e.g. from :func:`download_papyrus`) so completed per-file
+        bars don't pile up as one leftover line each
+    :param ncols: fixed bar width in characters, so it never grows to fill
+        the whole terminal on a wide screen
+    :param on_progress: called with the row count of each chunk just
+        written (a delta, not a running total) - lets a caller running this
+        in its own process (e.g. download_papyrus's converter subprocess)
+        report progress back to a single process that owns every tqdm bar,
+        instead of rendering its own bar here. Two independent processes
+        each rendering position-pinned tqdm bars (this function's own
+        ``progress=True`` path, used concurrently with another bar in a
+        different process) drift out of sync over time - each one's
+        cursor-movement math assumes it is the only writer, so once one
+        process's bar has scrolled the terminal in a way the other doesn't
+        know about, stray blank lines accumulate. Used together with
+        *progress*\\ =False so no bar is created here at all.
+    :param on_reset: called (with no arguments) whenever a conversion
+        attempt restarts from row 0 because of dtype drift - the
+        conversion-progress counterpart of *on_progress*, so the receiving
+        side can reset its own bar back to 0 in step.
     """
     input_file = Path(input_file)
     output_file = Path(output_file)
-    tmp_file = output_file.with_name(output_file.name + '.decompressing')
-    chunksize = 10 * 1_048_576  # 10 MB
-    try:
-        with (
-            lzma.open(input_file, 'rb') as fh,
-            open(tmp_file, 'wb') as oh,
-        ):
-            if progress:
-                pbar = tqdm(desc='Decompressing', unit='B', unit_scale=True)
-                size = fh.seek(0, 2)
-                fh.seek(0, 0)
-                pbar.total = size
-            while True:
-                chunk = fh.read(chunksize)
-                if not chunk:
-                    if progress:
-                        pbar.close()
-                    break
-                written = oh.write(chunk)
-                if progress:
-                    pbar.update(written)
+    # Written under a different name and only moved to *output_file* (an
+    # atomic filesystem rename) once every chunk has been written - a plain
+    # try/finally cleanup is not enough here, since a hard kill (e.g. the
+    # OOM killer) skips all Python exception handling entirely and would
+    # still leave a truncated, invalid file sitting at *output_file* for
+    # download_papyrus's "does the .parquet already exist" skip-check to
+    # mistake for a completed conversion on every subsequent run.
+    tmp_parquet = output_file.with_name(output_file.name + '.converting')
+    na_values = null_values if null_values is not None else ['', 'NA']
+    overrides = _schema_overrides_to_pandas_dtype(schema_overrides) or {}
+    forced_string_cols: set[str] = set()
+    forced_float_cols: set[str] = set()
+    if desc is None:
+        desc = f'Converting {input_file.name}'
 
-        scan_kw: dict = dict(
-            separator=separator,
-            schema_overrides=schema_overrides,
-            infer_schema_length=None if schema_overrides is None else 100,
-        )
-        if null_values is not None:
-            scan_kw['null_values'] = null_values
-        pl.scan_csv(tmp_file, **scan_kw).sink_parquet(output_file)
+    pbar = tqdm(
+        desc=desc, unit=' rows', unit_scale=True, position=position,
+        total=total, leave=leave, ncols=ncols,
+    ) if progress else None
+    try:
+        while True:
+            # Every int-schema column is read as 'Float64' - never its real
+            # nullable integer dtype - regardless of forced_float_cols: see
+            # the docstring and _downcast_integer_overrides, which casts it
+            # back after each chunk is safely in hand for every column not
+            # already confirmed (by a past attempt) to hold real fractions.
+            dtype = {
+                col: ('Float64' if target in _NULLABLE_INT_DTYPES else target)
+                for col, target in overrides.items()
+            }
+            dtype.update({col: 'string' for col in forced_string_cols})
+            writer = None
+            first_schema: pa.Schema | None = None
+            drift: tuple[str, str] | None = None
+            tmp_parquet.unlink(missing_ok=True)
+            if pbar is not None:
+                pbar.reset()
+            if on_reset is not None:
+                on_reset()
+            try:
+                # Default quoting (respecting '"' as the CSV quote character) is
+                # deliberately left enabled: some Papyrus columns (InChI_AuxInfo,
+                # doc_id/citation fields) legitimately hold values that embed a
+                # literal '"' and even a literal newline, properly RFC4180-quoted
+                # by the exporter - disabling quoting (tried and reverted) does
+                # NOT just change a row count, it corrupts those specific records
+                # by splitting one logical row into several garbage fragments
+                # (confirmed on 05.5++_combined_set_without_stereochemistry.tsv
+                # of 2022.08.1: record BXNJHAXVSOCGBA_on_P68400_WT, cleanly
+                # reconstructed with quoting enabled, became 3 rows of mostly
+                # NaN/stray-quote garbage with quoting disabled). The resulting
+                # row count is lower than data_size.json's published count for
+                # this same reason - data_size.json's numbers are a naive
+                # physical line count, not quote-aware logical records.
+                # low_memory=False: pandas' C parser otherwise processes each
+                # chunksize-bounded chunk in smaller internal blocks of its
+                # own and infers dtypes per block, emitting a DtypeWarning
+                # straight to stderr (bypassing tqdm's write hooks) whenever
+                # two blocks of the *same* chunk disagree - on top of being
+                # spurious noise, that raw write lands mid-redraw of the
+                # progress bar above and forces tqdm to reprint a duplicate
+                # line. chunksize already bounds how much a single block
+                # reads at once, so disabling the extra internal splitting
+                # costs no meaningful memory here.
+                reader = pd.read_csv(
+                    input_file, sep=separator, compression='xz', chunksize=chunksize,
+                    dtype=dtype, na_values=na_values, keep_default_na=False,
+                    low_memory=False,
+                )
+                for chunk in reader:
+                    _coerce_object_columns_to_string(chunk)
+                    float_drift_col = _downcast_integer_overrides(chunk, overrides, forced_float_cols)
+                    if float_drift_col is not None:
+                        drift = (float_drift_col, 'float')
+                        break
+                    table = pa.Table.from_pandas(chunk, preserve_index=False)
+                    if writer is None:
+                        writer = pq.ParquetWriter(tmp_parquet, table.schema)
+                        first_schema = table.schema
+                    else:
+                        mismatch_col = _first_type_mismatch(first_schema, table.schema)
+                        if mismatch_col is not None:
+                            drift = (mismatch_col, 'string')
+                            break
+                    writer.write_table(table)
+                    if pbar is not None:
+                        pbar.update(len(chunk))
+                    if on_progress is not None:
+                        on_progress(len(chunk))
+                if drift is None and writer is None:
+                    # Empty input (header only, zero data rows) - still produce
+                    # a valid, correctly-schema'd, zero-row Parquet file.
+                    empty = pd.read_csv(
+                        input_file, sep=separator, compression='xz', nrows=0, dtype=dtype,
+                    )
+                    _coerce_object_columns_to_string(empty)
+                    pq.write_table(pa.Table.from_pandas(empty, preserve_index=False), tmp_parquet)
+            finally:
+                if writer is not None:
+                    writer.close()
+            if drift is None:
+                break
+            drifted_col, kind = drift
+            (forced_string_cols if kind == 'string' else forced_float_cols).add(drifted_col)
+        tmp_parquet.replace(output_file)
     finally:
-        tmp_file.unlink(missing_ok=True)
+        if pbar is not None:
+            pbar.close()
+        tmp_parquet.unlink(missing_ok=True)
 
 
 def convert_gz_to_xz(
