@@ -717,7 +717,14 @@ def download_papyrus(outdir: str | Path | None = None,
         def _mark_current_file_complete() -> None:
             # Only ever called once converting_pbar has been created (see call sites).
             assert converting_pbar is not None
-            converting_pbar.set_description(f'{current_desc} (complete)')
+            # refresh=False: the caller immediately follows this with
+            # update(1), which does its own refresh - two separate refreshes
+            # for the same event means two consecutive cursor-repositioning
+            # writes (moveto's newline-down/ANSI-up dance) with nothing in
+            # between them, which on Windows (even with colorama) has been
+            # observed to leave the cursor one line off, so the *next*
+            # redraw lands on a fresh line instead of overwriting in place.
+            converting_pbar.set_description(f'{current_desc} (complete)', refresh=False)
 
         def _drain_progress_queue() -> None:
             """Apply every conversion-progress message available right now, without blocking."""
@@ -742,8 +749,12 @@ def download_papyrus(outdir: str | Path | None = None,
                 if converting_pbar is None:
                     continue
                 if kind == _PROGRESS_DONE:
-                    converting_pbar.update(1)
+                    # Set the description first (no refresh), then let the
+                    # single update(1) refresh show both the new count and
+                    # the new description together - see
+                    # _mark_current_file_complete's own comment for why.
                     _mark_current_file_complete()
+                    converting_pbar.update(1)
                 elif kind in (_PROGRESS_START, _PROGRESS_RESET, _PROGRESS_CHUNK):
                     _update_current_file_description()
 
@@ -855,8 +866,8 @@ def download_papyrus(outdir: str | Path | None = None,
                                     pbar.write(msg)
 
                         if not success:
-                            if progress:
-                                pbar.close()
+                            # pbar is intentionally left open here (not
+                            # closed) - see the except handler below for why.
                             raise OSError(f'Download failed for {dname}')
 
                     # Extract ZIP archives in-place
@@ -899,31 +910,39 @@ def download_papyrus(outdir: str | Path | None = None,
             # converter process drain and exit cleanly instead of leaving
             # it running in the background, but propagate the original
             # failure rather than whatever it reports back, if anything.
-            # tqdm.close() is idempotent, so closing an already-closed
-            # pbar here (e.g. after the retry-exhausted branch above
-            # already closed it) is harmless.
-            if progress:
-                pbar.close()
+            # pbar.close() must come *after* converting_pbar has finished
+            # and closed, not before: tqdm's close() (with leave=True, our
+            # default) writes an explicit, uncoordinated newline of its own
+            # once the bar's own final state is drawn - a real newline that
+            # a still-active position=1 bar has no way to account for in
+            # its own cursor math, permanently shifting it one row off for
+            # every redraw from that point on. Closing bottom-up (highest
+            # position first) avoids this entirely.
             if converter_process is not None:
                 assert task_queue is not None
                 _enqueue(_CONVERSION_DONE)
                 _wait_for_converter()
+            if progress:
+                pbar.close()
             raise
-
-        if progress:
-            pbar.close()
 
         if converter_process is not None:
             # Signal "no more files are coming" and wait for every already
             # -queued conversion to finish before this version is marked
-            # as downloaded.
+            # as downloaded. Still before pbar.close() - see the except
+            # handler's comment above for why.
             assert task_queue is not None
             assert error_queue is not None
             _enqueue(_CONVERSION_DONE)
             _wait_for_converter()
             error = error_queue.get()
             if error is not None:
+                if progress:
+                    pbar.close()
                 raise RuntimeError(f'Parquet conversion failed: {error}')
+
+        if progress:
+            pbar.close()
 
         # Register this version in the local versions.json
         _update_versions_json(papyrus_root, pv, add=True)

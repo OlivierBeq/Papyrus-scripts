@@ -42,6 +42,7 @@ dependencies = [
     "requests",
     "fake-useragent",
     "tqdm",
+    "colorama; platform_system == 'Windows'",
     "mordred",
     "scikit-learn",
     "xgboost",

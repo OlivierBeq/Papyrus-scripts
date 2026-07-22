@@ -870,6 +870,64 @@ class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.T
             f'no "(complete)" description found among: {descriptions}',
         )
 
+    def test_completion_triggers_a_single_refresh_not_two(self):
+        # Regression test: marking a file complete used to call
+        # set_description() (which forces its own unconditional refresh)
+        # immediately followed by update(1) (which forces another) - two
+        # consecutive cursor-repositioning writes for the same event, with
+        # nothing in between, which left the cursor one line off on Windows
+        # so the *next* redraw landed on a fresh line instead of
+        # overwriting in place. The description must now be set with
+        # refresh=False, letting update(1)'s own refresh be the only one.
+        with self.assertWarns(DeprecationWarning):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+
+        converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
+        self.assertEqual(len(converting_bars), 1)
+        converting_pbar = converting_bars[0]
+
+        complete_calls = [
+            call for call in converting_pbar.set_description.call_args_list
+            if call.args and call.args[0].endswith('(complete)')
+        ]
+        self.assertTrue(complete_calls)
+        for call in complete_calls:
+            self.assertIs(
+                call.kwargs.get('refresh', True), False,
+                'set_description for "(complete)" must pass refresh=False',
+            )
+
+    def test_download_bar_closes_after_converting_bar_not_before(self):
+        # Regression test: the download bar (position=0) used to close as
+        # soon as downloading finished, well before the still-active
+        # converting bar (position=1). tqdm's close() (leave=True, our
+        # default) writes an explicit, uncoordinated newline of its own
+        # after the bar's final state - a real newline a still-active
+        # position=1 bar has no way to account for in its own cursor math,
+        # permanently shifting it one row off for every redraw from that
+        # point on. Bars must close bottom-up: converting_pbar first, then
+        # the download bar last.
+        with self.assertWarns(DeprecationWarning):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+
+        download_bars = [m for m in self.pbar_mocks if 'Downloading version' in m._kwargs.get('desc', '')]
+        converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
+        self.assertEqual(len(download_bars), 1)
+        self.assertEqual(len(converting_bars), 1)
+        pbar, converting_pbar = download_bars[0], converting_bars[0]
+
+        calls = self.manager.mock_calls
+        names = [f'bar{i + 1}' for i in range(len(self.pbar_mocks))]
+        pbar_name = next(name for name, m in zip(names, self.pbar_mocks) if m is pbar)
+        converting_name = next(name for name, m in zip(names, self.pbar_mocks) if m is converting_pbar)
+
+        pbar_close_index = next(i for i, c in enumerate(calls) if c[0] == f'{pbar_name}.close')
+        converting_close_index = next(i for i, c in enumerate(calls) if c[0] == f'{converting_name}.close')
+        self.assertLess(
+            converting_close_index, pbar_close_index,
+            'converting_pbar must close before the download bar, not after',
+        )
+
 
 class TestConvertWorker(unittest.TestCase):
     """Unit tests for download._convert_worker, run synchronously in-process
