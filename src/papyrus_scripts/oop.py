@@ -330,7 +330,7 @@ class PapyrusDataset:
             plusplus: bool = True,
             chunksize: int | None = 1_000_000,
             source_path: str | Path | None = None,
-            download_progress: bool = False,
+            download_progress: bool = True,
             keep_original_files: bool = False,
     ) -> None:
         """Read, filter and aggregate data from a release of the Papyrus dataset.
@@ -417,7 +417,7 @@ class PapyrusDataset:
             version: str | IO.PapyrusVersion,
             plusplus: bool = True,
             source_path: str | Path | None = None,
-            download_progress: bool = False,
+            download_progress: bool = True,
             chunksize: int | None = None,
             keep_original_files: bool = False,
     ) -> PapyrusDataset:

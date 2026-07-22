@@ -76,7 +76,7 @@ class TestPapyrusDataset(unittest.TestCase):
 
     def _new_dataset(self):
         return PapyrusDataset(is3d=self.stereo, version=self.version, plusplus=self.plusplus,
-                              chunksize=CHUNKSIZE, source_path=SOURCE_PATH)
+                              chunksize=CHUNKSIZE, source_path=SOURCE_PATH, download_progress=False)
 
     def assertDataFrameEqual(self, df1: pl.DataFrame, df2: pl.DataFrame):
         # Unlike pandas' NaN, polars represents missing values as `None`

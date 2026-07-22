@@ -8,6 +8,7 @@ pl.DataFrame via PapyrusDataset._from_data(), to exercise PapyrusDataFilter
 without any network access.
 """
 
+import inspect
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -226,6 +227,33 @@ class TestFPSubSim2EngineFilters(unittest.TestCase):
 
         self.assertEqual(called['molecule_smiles'], 'CCO')
         self.assertIsInstance(result, PapyrusDataset)
+
+
+class TestPapyrusDatasetDownloadProgressDefaultsToTrue(unittest.TestCase):
+    """download_progress now defaults to True (previously False) on both
+    PapyrusDataset.__init__ and PapyrusDataset.from_dataframe, so a bare
+    call showing no explicit download_progress= now shows progress bars
+    instead of silently downloading with none.
+    """
+
+    def test_init_defaults_to_true(self):
+        default = inspect.signature(PapyrusDataset.__init__).parameters['download_progress'].default
+        self.assertIs(default, True)
+
+    def test_from_dataframe_defaults_to_true(self):
+        default = inspect.signature(PapyrusDataset.from_dataframe).parameters['download_progress'].default
+        self.assertIs(default, True)
+
+    def test_constructing_without_the_argument_forwards_progress_true(self):
+        with (
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', side_effect=[KeyError(), 0]),
+            patch('src.papyrus_scripts.oop.reader.read_papyrus', return_value=pl.DataFrame()),
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()),
+        ):
+            # No download_progress= passed here - relies on the default.
+            PapyrusDataset(version='2022.04.2').aggregate()
+        self.assertTrue(mock_download.call_args.kwargs['progress'])
 
 
 class TestPapyrusDatasetDownloadUsesConsistentFolderKey(unittest.TestCase):
