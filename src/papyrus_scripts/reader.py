@@ -269,8 +269,11 @@ def read_molecular_descriptors(
         _read_one_mol_descriptor(k, is3d, desc_dir, schemas, lazy, ids, id_col)
         for k in all_keys
     ]
-    # Join all descriptor frames on the common identifier column.
-    return reduce(lambda a, b: a.join(b, on=id_col, how='inner'), frames)
+    # Join all descriptor frames on the common identifier column. Every frame
+    # shares the same concrete type (driven by the single `lazy` flag above),
+    # a guarantee polars' overloaded join() can't express for a plain
+    # DataFrame | LazyFrame union.
+    return reduce(lambda a, b: a.join(b, on=id_col, how='inner'), frames)  # type: ignore[arg-type]
 
 
 def read_protein_descriptors(
@@ -296,7 +299,7 @@ def read_protein_descriptors(
     :param kwargs: extra keyword arguments forwarded to ProDEC ``pandas_get``
     """
     if desc_type == 'custom':
-        if not Path(source_path).is_file():
+        if source_path is None or not Path(source_path).is_file():
             raise ValueError(
                 'source_path must point to an existing file when desc_type="custom"'
             )

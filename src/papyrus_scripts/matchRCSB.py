@@ -30,7 +30,7 @@ def papyrus_rcsb_data_root(root_folder: str | Path | None = None) -> pystow.Modu
     return pystow.module('rcsb')
 
 
-def get_all_pdb_ids_with_ligands(session: requests.Session | None = None):
+def get_all_pdb_ids_with_ligands(session: requests.Session | None = None) -> list[str]:
     """Obtain all ligands from the RCSB PDB Search API.
 
     :param session: session to reuse for the request; a new one-off session
@@ -174,18 +174,18 @@ def update_rcsb_data(root_folder: str | Path | None = None,
                     time.sleep(0.5)
         pbar.close()
         # To DataFrame
-        results = pd.DataFrame.from_records(results)
+        results_df = pd.DataFrame.from_records(results)
     # Map PDBID prot to UniProt acessions
     if verbose:
         print(f'Obtaining mappings from protein PDB ID to UniProt accessions')
-    uniprot_mapping = UniprotMatch.uniprot_mappings(results.PDBID_protein.unique().tolist(),
+    uniprot_mapping = UniprotMatch.uniprot_mappings(results_df.PDBID_protein.unique().tolist(),
                                                     map_from='PDB',
                                                     map_to='UniProtKB_AC-ID'
                                                     )  # Forces the use of SIFTS
     # Join on the RCSB data
     if verbose:
         print(f'Combining RCSB and UniProt data')
-    pdb_data = results.merge(uniprot_mapping, left_on='PDBID_protein', right_on='PDB')
+    pdb_data = results_df.merge(uniprot_mapping, left_on='PDBID_protein', right_on='PDB')
     # Rename columns
     pdb_data = pdb_data.rename(columns={'UniProtKB_AC-ID': 'UniProt_accession'})
     # Drop duplicate information
@@ -237,8 +237,8 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
         # Set pystow root folder
         if root_folder is not None:
             os.environ['PYSTOW_HOME'] = str(Path(root_folder).resolve())
-        root_folder = pystow.module('papyrus')
-        rcsb_data_path = root_folder.join('rcsb', name='RCSB_data.tsv.xz')
+        papyrus_root = pystow.module('papyrus')
+        rcsb_data_path = papyrus_root.join('rcsb', name='RCSB_data.tsv.xz')
         # Read the data mapping
         rcsb_data = pd.read_csv(rcsb_data_path, sep='\t')
         if 'SMILES' in rcsb_data.columns:
@@ -258,7 +258,7 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
 
 
 def _chunked_get_matches(chunks: PandasTextFileReader | Iterator, root_folder: str | Path | None, verbose: bool,
-                         total: int):
+                         total: int | None) -> Generator[pd.DataFrame, None, None]:
     if verbose:
         pbar = tqdm(chunks, total=total, ncols=100)
     else:

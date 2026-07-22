@@ -18,6 +18,7 @@ import warnings
 from collections import namedtuple
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -212,7 +213,7 @@ _TYPE_NAME_TO_POLARS: dict = {
 }
 
 
-def to_polars_dtype(t) -> pl.DataType:
+def to_polars_dtype(t: Any) -> type[pl.DataType]:
     """Convert a Python builtin/NumPy type, or its lowercase name as a
     string, to the nearest Polars dtype.
     """
@@ -349,6 +350,13 @@ class PapyrusVersion:
 
     #: Class-level alias table, loaded once from the local cache.
     aliases: pd.DataFrame = get_papyrus_aliases(offline=True)
+
+    #: Attributes attached dynamically (via ``setattr``) during ``__init__``
+    #: from the matched row of ``aliases`` - declared here purely so static
+    #: type checkers know they exist.
+    _version: str
+    _version_old_fmt: str
+    revision: str
 
     def __init__(
             self,
@@ -628,7 +636,8 @@ def get_downloaded_versions(root_folder: str | Path | None = None) -> list[Papyr
     """
     _set_root_folder(root_folder)
     version_json = pystow.join('papyrus', name='versions.json')
-    raw_versions: list = read_jsonfile(version_json)
+    # versions.json is always written as a JSON array (see _update_versions_json).
+    raw_versions = cast(list, read_jsonfile(version_json))
     if not raw_versions:
         return []
     return _sort_versions([PapyrusVersion(version=v) for v in raw_versions])
@@ -845,7 +854,8 @@ def get_num_rows_in_file(
     pv = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
 
     json_file = papyrus_version_module(pv, root_folder=root_folder).join(name='data_size.json')
-    sizes = read_jsonfile(json_file)
+    # data_size.json is always written as a JSON object.
+    sizes = cast(dict, read_jsonfile(json_file))
 
     if filetype == 'bioactivities':
         if plusplus:
@@ -859,7 +869,8 @@ def get_num_rows_in_file(
         return sizes['papyrus_3D'] if is3D else sizes['papyrus_2D']
     if filetype == 'structures':
         return sizes['structures_3D'] if is3D else sizes['structures_2D']
-    # filetype == 'descriptors'
+    # filetype == 'descriptors' - descriptor_name was validated above.
+    assert descriptor_name is not None
     return {
         'cddd': sizes['cddd'],
         'mold2': sizes['mold2'],
@@ -1233,7 +1244,7 @@ def convert_xz_to_parquet(
 def convert_gz_to_xz(
         input_file: str | Path,
         output_file: str | Path,
-        compression_level: int = lzma.PRESET_DEFAULT,
+        compression_level: int | None = lzma.PRESET_DEFAULT,
         extreme: bool = False,
         progress: bool = False,
 ) -> None:

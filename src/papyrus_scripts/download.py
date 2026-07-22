@@ -9,6 +9,7 @@ import shutil
 import warnings
 import zipfile
 from pathlib import Path
+from typing import cast
 
 import pystow
 from tqdm.auto import tqdm
@@ -53,7 +54,7 @@ _SCHEMA_KEY_BY_FTYPE = {
 #: Parquet conversion must apply the same null-value handling, since once a
 #: cell is written as a genuine Parquet null the empty-string/null
 #: distinction can no longer be recovered at read time.
-_NULL_VALUES_BY_FTYPE = {'proteins': []}
+_NULL_VALUES_BY_FTYPE: dict[str, list] = {'proteins': []}
 
 #: Maps a logical file-type key to the data_size.json key holding its
 #: (naive, physical-line) row count - used only to give the per-file
@@ -295,7 +296,8 @@ def _update_versions_json(
     :param add: True to add the version, False to remove it
     """
     json_file = papyrus_root.join(name='versions.json')
-    existing: list = read_jsonfile(json_file) if json_file.is_file() else []
+    # versions.json is always written as a JSON array (see the write_jsonfile call below).
+    existing = cast(list, read_jsonfile(json_file)) if json_file.is_file() else []
     path_key = pv.pystow_path_key
     if add:
         updated = sorted(set(existing + [path_key]))
@@ -668,12 +670,16 @@ def download_papyrus(outdir: str | Path | None = None,
         current_total: int | None = None
 
         def _update_current_file_description() -> None:
+            # Only ever called once converting_pbar has been created (see call sites).
+            assert converting_pbar is not None
             total_str = f'{current_total:,}' if current_total is not None else '?'
             converting_pbar.set_description(f'{current_desc} ({current_rows:,}/{total_str} rows)')
 
         def _drain_progress_queue() -> None:
             """Apply every conversion-progress message available right now, without blocking."""
             nonlocal converting_pbar, files_converted, current_desc, current_rows, current_total
+            # Only ever called once progress_queue has been created (see call sites).
+            assert progress_queue is not None
             while True:
                 try:
                     message = progress_queue.get_nowait()
@@ -699,6 +705,8 @@ def download_papyrus(outdir: str | Path | None = None,
         def _wait_for_converter() -> None:
             """Block until the converter process exits, draining progress messages meanwhile."""
             nonlocal converting_pbar, download_finished
+            # Only ever called once converter_process has been started (see call sites).
+            assert converter_process is not None
             download_finished = True
             if progress and converting_pbar is None:
                 converting_pbar = tqdm(
@@ -815,8 +823,10 @@ def download_papyrus(outdir: str | Path | None = None,
                             dtype_file = papyrus_version_root.join(name='data_types.json')
                             if dtype_file.is_file():
                                 schemas = load_data_type_schemas(papyrus_version_root)
-                                sizes = read_jsonfile(papyrus_version_root.join(name='data_size.json'))
+                                # data_size.json is always written as a JSON object.
+                                sizes = cast(dict, read_jsonfile(papyrus_version_root.join(name='data_size.json')))
                                 metadata_loaded = True
+                        assert task_queue is not None
                         task_queue.put({
                             'fpath': fpath,
                             'parquet_path': parquet_path,
@@ -844,6 +854,7 @@ def download_papyrus(outdir: str | Path | None = None,
             if progress:
                 pbar.close()
             if converter_process is not None:
+                assert task_queue is not None
                 task_queue.put(_CONVERSION_DONE)
                 _wait_for_converter()
             raise
@@ -855,6 +866,8 @@ def download_papyrus(outdir: str | Path | None = None,
             # Signal "no more files are coming" and wait for every already
             # -queued conversion to finish before this version is marked
             # as downloaded.
+            assert task_queue is not None
+            assert error_queue is not None
             task_queue.put(_CONVERSION_DONE)
             _wait_for_converter()
             error = error_queue.get()

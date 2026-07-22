@@ -11,6 +11,7 @@ import warnings
 from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Self
 
 from rdkit import Chem, RDLogger
 from rdkit.Chem import (
@@ -26,11 +27,11 @@ from tqdm.auto import tqdm
 @contextmanager
 def suppress_rdkit_log() -> Generator[None]:
     """Temporarily silence RDKit's logger, always re-enabling it afterwards (even on error)."""
-    RDLogger.DisableLog('rdApp.*')
+    RDLogger.DisableLog('rdApp.*')  # type: ignore[attr-defined]
     try:
         yield
     finally:
-        RDLogger.EnableLog('rdApp.*')
+        RDLogger.EnableLog('rdApp.*')  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +126,7 @@ class ForwardMol2MolSupplier:
         sanitize: bool = True,
         removeHs: bool = True,
         cleanupSubstructures: bool = True,
-    ):
+    ) -> None:
         """Initialise the supplier.
 
         :param fileobj: path to a ``.mol2`` file, or an open text-mode stream
@@ -156,10 +157,10 @@ class ForwardMol2MolSupplier:
     # Context-manager protocol
     # ------------------------------------------------------------------
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_) -> None:
         self.close()
 
     # ------------------------------------------------------------------
@@ -239,7 +240,7 @@ class ForwardSmilesMolSupplier:
         nameColumn: int = 1,
         titleLine: bool = True,
         sanitize: bool = True,
-    ):
+    ) -> None:
         """Initialise the supplier.
 
         :param fileobj: path to a ``.smi`` file, or an open text-mode stream
@@ -284,10 +285,10 @@ class ForwardSmilesMolSupplier:
     # Context-manager protocol
     # ------------------------------------------------------------------
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_) -> None:
         self.close()
 
     # ------------------------------------------------------------------
@@ -296,6 +297,10 @@ class ForwardSmilesMolSupplier:
 
     def _iterate(self) -> Iterator[Chem.Mol | None]:
         """Stream molecules from a text-mode file object line by line."""
+        # Only reached when constructed from a file-like object (see
+        # __init__/__iter__): the filename branch sets self._iterator
+        # directly and never calls this method.
+        assert self._handle is not None
         if self.titleLine:
             self._handle.readline()
 
@@ -376,11 +381,11 @@ class MolSupplier:
     def __init__(
         self,
         source: Source | None = None,
-        supplier: Iterable[Chem.Mol] | None = None,
+        supplier: Iterable[Chem.Mol | None] | None = None,
         format: str | None = None,
         compression: str | None = None,
         **kwargs,
-    ):
+    ) -> None:
         """Initialise the supplier.
 
         Exactly one of *source* or *supplier* must be provided.
@@ -417,7 +422,7 @@ class MolSupplier:
 
         self._owns_handle = False   # whether we opened the stream
         self._handle: io.IOBase | None = None
-        self._inner_supplier: Iterable[Chem.Mol] | None = None
+        self._inner_supplier: Iterable[Chem.Mol | None] | None = None
         self._iterator: Iterator[tuple[int, Chem.Mol]] | None = None
 
         # ------------------------------------------------------------------
@@ -526,7 +531,7 @@ class MolSupplier:
         self,
         fmt: str,
         handle: io.IOBase,
-    ) -> Iterable[Chem.Mol]:
+    ) -> Iterable[Chem.Mol | None]:
         """Instantiate the correct low-level RDKit supplier for *fmt*.
 
         :param fmt: molecular format label
@@ -534,6 +539,8 @@ class MolSupplier:
         """
         kw = self._supplier_kwargs
         if fmt == 'smi':
+            # _stream_mode always opens 'smi'/'mol2' in text mode.
+            assert isinstance(handle, io.TextIOBase)
             return ForwardSmilesMolSupplier(handle, **kw)
         if fmt == 'mae':
             return MaeMolSupplier(handle, **kw)
@@ -546,6 +553,7 @@ class MolSupplier:
                     'Mol2 format requires a text-mode stream. '
                     'Use an uncompressed file or open with mode="rt".'
                 )
+            assert isinstance(handle, io.TextIOBase)
             return ForwardMol2MolSupplier(handle, **kw)
         raise ValueError(f'Unsupported format {fmt!r}')
 
@@ -575,6 +583,7 @@ class MolSupplier:
 
     def _processed_mol_supplier(self) -> Iterator[tuple[int, Chem.Mol]]:
         """Yield ``(mol_id, rdmol)`` pairs, skipping ``None`` entries."""
+        assert self._inner_supplier is not None, 'MolSupplier is closed.'
         enumerated = enumerate(self._inner_supplier, self._iter_start)
         if self._iter_progress:
             enumerated = tqdm(enumerated, total=self._iter_total, ncols=100)
@@ -592,10 +601,10 @@ class MolSupplier:
     # Context-manager protocol
     # ------------------------------------------------------------------
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_) -> None:
         self.close()
 
     # ------------------------------------------------------------------
@@ -619,8 +628,9 @@ class MolSupplier:
     def close(self) -> None:
         """Release the underlying file handle (if opened by this supplier)."""
         # Let the inner supplier clean up first (ForwardSmiles/Mol2 have close()).
-        if hasattr(self._inner_supplier, 'close'):
-            self._inner_supplier.close()
+        close_fn = getattr(self._inner_supplier, 'close', None)
+        if close_fn is not None:
+            close_fn()
         self._inner_supplier = None
 
         if self._owns_handle and self._handle is not None:

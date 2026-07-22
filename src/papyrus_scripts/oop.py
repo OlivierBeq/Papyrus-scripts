@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +43,7 @@ def _ceil_div(numerator: int, denominator: int) -> int:
     return -(-numerator // denominator)
 
 
-def _num_chunks(num_rows: int, chunksize: int | None) -> int | None:
+def _num_chunks(num_rows: int | None, chunksize: int | None) -> int | None:
     """Return the number of chunks or ``None`` when *chunksize* is ``None``."""
     if chunksize is None or num_rows is None:
         return None
@@ -90,19 +90,19 @@ class _Deferred:
 
     __slots__ = ('_loader', '_value', '_resolved')
 
-    def __init__(self, loader):
+    def __init__(self, loader: Callable[[], Any]) -> None:
         self._loader = loader
-        self._value = None
+        self._value: Any = None
         self._resolved = False
 
-    def get(self):
+    def get(self) -> Any:
         if not self._resolved:
             self._value = self._loader()
             self._resolved = True
         return self._value
 
 
-def _resolve(value):
+def _resolve(value: Any) -> Any:
     """Return *value* itself, or the result of calling it if it's a :class:`_Deferred`."""
     return value.get() if isinstance(value, _Deferred) else value
 
@@ -118,17 +118,17 @@ class _LazyBioactivity:
 
     __slots__ = ('_loader', '_ops', '_value', '_resolved')
 
-    def __init__(self, loader, ops: tuple = ()):
+    def __init__(self, loader: Callable[[], Any], ops: tuple[Callable[[Any], Any], ...] = ()) -> None:
         self._loader = loader
         self._ops = ops
-        self._value = None
+        self._value: Any = None
         self._resolved = False
 
-    def then(self, op) -> _LazyBioactivity:
+    def then(self, op: Callable[[Any], Any]) -> _LazyBioactivity:
         """Return a new :class:`_LazyBioactivity` with *op* appended to the pending queue."""
         return _LazyBioactivity(self._loader, self._ops + (op,))
 
-    def resolve(self):
+    def resolve(self) -> Any:
         """Load the base data (downloading it first if needed) and apply every pending op, once."""
         if not self._resolved:
             data = self._loader()
@@ -139,7 +139,7 @@ class _LazyBioactivity:
         return self._value
 
 
-def _apply_lazy(data, fn, **kwargs):
+def _apply_lazy(data: Any, fn: Callable[..., Any], **kwargs: Any) -> Any:
     """Return ``fn(data=data, **kwargs)``, deferred if *data* is still a :class:`_LazyBioactivity`.
 
     Any :class:`_Deferred` value in *kwargs* (e.g. ``protein_data`` for
@@ -191,8 +191,8 @@ class _PapyrusSource:
         self._source_path = source_path
         self._download_progress = download_progress
         self._keep_original_files = keep_original_files
-        self._bioactivity = None
-        self._proteins = None
+        self._bioactivity: pl.DataFrame | pl.LazyFrame | None = None
+        self._proteins: pl.DataFrame | None = None
         self._num_rows: int | None = None
         self._loaded = False
         self._descriptor_types: set[str] = set()
@@ -219,7 +219,7 @@ class _PapyrusSource:
         """
         self._need_structures = True
 
-    def _load(self) -> tuple[int, Any, pl.DataFrame]:
+    def _load(self) -> tuple[int, pl.DataFrame | pl.LazyFrame, pl.DataFrame]:
         num_rows = IO.get_num_rows_in_file(
             filetype='bioactivities', is3D=self._is3d,
             version=self._pv, plusplus=self._plusplus,
@@ -288,16 +288,19 @@ class _PapyrusSource:
             self._num_rows, self._bioactivity, self._proteins = self._load()
         self._loaded = True
 
-    def get_bioactivity(self):
+    def get_bioactivity(self) -> pl.DataFrame | pl.LazyFrame:
         self._ensure_loaded()
+        assert self._bioactivity is not None
         return self._bioactivity
 
     def get_proteins(self) -> pl.DataFrame:
         self._ensure_loaded()
+        assert self._proteins is not None
         return self._proteins
 
     def get_num_rows(self) -> int:
         self._ensure_loaded()
+        assert self._num_rows is not None
         return self._num_rows
 
 
@@ -313,6 +316,10 @@ class PapyrusDataset:
     :meth:`aggregate` (or its aliases :meth:`agg`, :meth:`to_dataframe`,
     :meth:`consume_chunks`) to materialise the result into a DataFrame.
     """
+
+    papyrus_bioactivity_data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | Iterator[pd.DataFrame] | _LazyBioactivity
+    papyrus_protein_data: pd.DataFrame | pl.DataFrame | _Deferred
+    papyrus_params: dict
 
     def __init__(
             self,
@@ -439,8 +446,8 @@ class PapyrusDataset:
             num_rows=len(df), download_progress=download_progress,
             keep_original_files=keep_original_files,
         )
-        dataset._fpsubsim2_: FPSubSim2Engine | None = None
-        dataset._can_reset: bool = False
+        dataset._fpsubsim2_ = None
+        dataset._can_reset = False
         return dataset
 
     @staticmethod
@@ -461,8 +468,8 @@ class PapyrusDataset:
         dataset.papyrus_bioactivity_data = papyrus_bioactivity_data
         dataset.papyrus_protein_data = papyrus_protein_data
         dataset.papyrus_params = papyrus_params
-        dataset._fpsubsim2_: FPSubSim2Engine | None = None
-        dataset._can_reset: bool = False
+        dataset._fpsubsim2_ = None
+        dataset._can_reset = False
         return dataset
 
     # ------------------------------------------------------------------
@@ -614,7 +621,7 @@ class PapyrusDataset:
     def keep_similar_molecules(
             self,
             smiles: str | list[str],
-            fp: Fingerprint = None,
+            fp: Fingerprint | None = None,
             threshold: float = 0.7,
             cuda: bool = False,
     ) -> PapyrusDataset:
@@ -634,7 +641,7 @@ class PapyrusDataset:
     def keep_dissimilar_molecules(
             self,
             smiles: str | list[str],
-            fp: Fingerprint = None,
+            fp: Fingerprint | None = None,
             threshold: float = 0.7,
             cuda: bool = False,
     ) -> PapyrusDataset:
@@ -1015,10 +1022,10 @@ class FPSubSim2Engine:
         self.papyrus_params = papyrus_params
         self.path: str | Path | None = None
         self.progress: bool = False
-        self.fp: Fingerprint = MorganFingerprint()
+        self.fp: Fingerprint | list[Fingerprint] = MorganFingerprint()
         self.fpsubsim2 = subsim_search.FPSubSim2()
-        self.papyrus_bioactivity_data = None
-        self.papyrus_protein_data = None
+        self.papyrus_bioactivity_data: Iterator[pd.DataFrame] | pd.DataFrame | None = None
+        self.papyrus_protein_data: pd.DataFrame | None = None
 
     def __call__(
             self,
@@ -1245,6 +1252,7 @@ class PapyrusMoleculeSet:
         self._ensure_loaded(progress)
         if isinstance(self.data, pl.DataFrame):
             return self.data
+        assert self.data is not None
         total = _num_chunks(self.num_rows, self.papyrus_params['chunksize'])
         return preprocess.consume_chunks(generator=self.data, progress=progress, total=total)
 
@@ -1367,6 +1375,7 @@ class PapyrusDescriptorSet:
         """
         progress = self._default_progress if progress is None else progress
         self._ensure_loaded(progress)
+        assert self.data is not None
         return preprocess.consume_chunks(generator=self.data, progress=progress, total=None)
 
     def agg(self, progress: bool | None = None) -> pl.DataFrame:
@@ -1550,4 +1559,4 @@ class PapyrusPDBProteinSet(ProteinSet):
     def __repr__(self) -> str:
         if not isinstance(self.data, pd.DataFrame):
             return f'{type(self).__name__}<iterator of protein structures>'
-        return f'{type(self).__name__}<{len(self.data)} protein structures>'
+        return f'{type(self).__name__}<{len(self.data)} protein structures>'

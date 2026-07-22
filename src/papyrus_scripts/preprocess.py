@@ -158,14 +158,14 @@ def equalize_cell_size_in_column(
     :raises ValueError: if *fill_mode* is not recognised
     """
     is_series_in = isinstance(col, pl.Series)
-    series = col if is_series_in else pl.Series(col, strict=False)
+    series: pl.Series = col if isinstance(col, pl.Series) else pl.Series(col, strict=False)
 
     if series.dtype == pl.Object:
         # Genuinely mixed scalar/list Python data: the dtype alone can't
         # distinguish scalars from lists, so one linear pass is unavoidable.
         values = series.to_list()
-        lengths = [len(v) if isinstance(v, list) else 1 for v in values]
-        if len(set(lengths)) == 1:
+        mixed_lengths = [len(v) if isinstance(v, list) else 1 for v in values]
+        if len(set(mixed_lengths)) == 1:
             return series if is_series_in else values
         series = pl.Series([v if isinstance(v, list) else [v] for v in values])
     elif series.dtype != pl.List:
@@ -177,8 +177,11 @@ def equalize_cell_size_in_column(
     if lengths.len() == 0 or lengths.n_unique() == 1:
         return series if is_series_in else series.to_list()
 
-    max_len = lengths.max()
-    min_len = lengths.min()
+    # lengths is a non-empty Series of list-lengths (checked above), so
+    # .max()/.min() always yield a genuine int - narrower than the broad
+    # scalar union polars' stubs declare for a generic Series.
+    max_len = int(lengths.max())  # type: ignore[arg-type]
+    min_len = int(lengths.min())  # type: ignore[arg-type]
 
     if fill_mode == 'trim':
         result = series.list.head(min_len)
@@ -364,13 +367,16 @@ def _unnest_and_filter(
 
     included = included.filter(keep_mask())
 
+    # included and excluded are both derived from the same df, so they are
+    # guaranteed to share the same concrete type; polars' overloaded join()
+    # can't express that invariant for a plain DataFrame | LazyFrame union.
     if not aggregate:
-        result = included.join(excluded, on='Activity_ID', how='inner')
+        result = included.join(excluded, on='Activity_ID', how='inner')  # type: ignore[arg-type]
         result_schema = result.collect_schema()
         return result.select([c for c in ordered_columns if c in result_schema])
 
     aggregated = process_groups(included, additional_columns)
-    result     = aggregated.join(excluded, on='Activity_ID', how='inner')
+    result     = aggregated.join(excluded, on='Activity_ID', how='inner')  # type: ignore[arg-type]
     result_schema = result.collect_schema()
     final_cols = [c for c in ordered_columns if c in result_schema]
     return result.select(final_cols)
@@ -458,8 +464,11 @@ def keep_source(
         aggregate=True,
     )
 
+    # All four parts are derived from the same data, so they are
+    # guaranteed to share the same concrete type; polars' concat() can't
+    # express that invariant for a plain DataFrame | LazyFrame union.
     parts = [preserved.drop(added), filtered, preserved_binary.drop(added), binary_data]
-    return pl.concat(parts, how='diagonal')
+    return pl.concat(parts, how='diagonal')  # type: ignore[type-var]
 
 
 def _activity_type_expr(type_cols: list[str], schema) -> pl.Expr:
@@ -500,16 +509,16 @@ def keep_type(
 
     if isinstance(activity_types, str):
         activity_types = [activity_types]
-    activity_types = {t.lower() for t in activity_types}
+    types_lower = {t.lower() for t in activity_types}
 
-    if 'any' in activity_types or 'all' in activity_types or activity_types >= set(lower_map):
+    if 'any' in types_lower or 'all' in types_lower or types_lower >= set(lower_map):
         return data
 
-    unknown = activity_types - set(lower_map)
+    unknown = types_lower - set(lower_map)
     if unknown:
         raise ValueError(f'Unrecognised activity type(s): {unknown}. Must be one of {canonical}')
 
-    type_cols       = [f'type_{lower_map[t]}' for t in activity_types]
+    type_cols       = [f'type_{lower_map[t]}' for t in types_lower]
     ordered_columns = list(data.collect_schema())
     data, added     = _with_papyruspp_columns(data)
     schema          = data.collect_schema()
@@ -541,8 +550,11 @@ def keep_type(
         aggregate=True,
     )
 
+    # All four parts are derived from the same data, so they are
+    # guaranteed to share the same concrete type; polars' concat() can't
+    # express that invariant for a plain DataFrame | LazyFrame union.
     parts = [preserved.drop(added), filtered, preserved_binary.drop(added), binary_data]
-    return pl.concat(parts, how='diagonal')
+    return pl.concat(parts, how='diagonal')  # type: ignore[type-var]
 
 
 def keep_accession(
@@ -671,14 +683,17 @@ def keep_protein_class(
     targets         = protein_data['target_id'].gather(matched_indices)
     classification_col = protein_data['Classification'].gather(matched_indices)
 
-    target_df = pl.DataFrame({
+    target_df: pl.DataFrame | pl.LazyFrame = pl.DataFrame({
         'target_id':      targets,
         'Classification': classification_col,
     })
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         target_df = target_df.lazy()
-    return data.filter(pl.col('target_id').is_in(targets)).join(target_df, on='target_id')
+    # data and target_df are guaranteed to be the same concrete type by the
+    # isinstance check above; polars' overloaded join() can't express that
+    # invariant for a plain DataFrame | LazyFrame union.
+    return data.filter(pl.col('target_id').is_in(targets)).join(target_df, on='target_id')  # type: ignore[arg-type]
 
 
 def keep_organism(
@@ -717,16 +732,19 @@ def keep_organism(
     matched_target_ids  = protein_data['target_id'].gather(matched_indices)
     matched_organisms   = protein_data['Organism'].gather(matched_indices)
 
-    organism_df = pl.DataFrame({
+    organism_df: pl.DataFrame | pl.LazyFrame = pl.DataFrame({
         'target_id': matched_target_ids,
         'Organism':  matched_organisms,
     })
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         organism_df = organism_df.lazy()
+    # data and organism_df are guaranteed to be the same concrete type by the
+    # isinstance check above; polars' overloaded join() can't express that
+    # invariant for a plain DataFrame | LazyFrame union.
     return data.filter(
         pl.col('target_id').is_in(matched_target_ids),
-    ).join(organism_df, on='target_id')
+    ).join(organism_df, on='target_id')  # type: ignore[arg-type]
 
 
 def keep_match(
@@ -876,13 +894,16 @@ def keep_similar(
     fpss2        = _load_fpsubsim2(fpsubsim2_file, fingerprint)
     similar_mols = _collect_similar_molecules(fpss2, molecule_smiles, fingerprint, threshold, cuda)
     score_col    = similar_mols.columns[-1]
-    scores       = similar_mols.select(['InChIKey', score_col])
+    scores: pl.DataFrame | pl.LazyFrame = similar_mols.select(['InChIKey', score_col])
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         scores = scores.lazy()
+    # data and scores are guaranteed to be the same concrete type by the
+    # isinstance check above; polars' overloaded join() can't express that
+    # invariant for a plain DataFrame | LazyFrame union.
     return (
         data.filter(pl.col('InChIKey').is_in(similar_mols['InChIKey']))
-        .join(scores, on='InChIKey')
+        .join(scores, on='InChIKey')  # type: ignore[arg-type]
     )
 
 

@@ -8,6 +8,7 @@ from itertools import chain, combinations
 from collections import Counter
 
 from collections.abc import Iterable, Iterator
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -75,7 +76,9 @@ def filter_molecular_descriptors(data: pd.DataFrame | Iterator,
                          axis=0)
 
 
-def model_metrics(model, y_true, x_test) -> dict:
+def model_metrics(model: RegressorMixin | ClassifierMixin,
+                  y_true: pd.Series | np.ndarray,
+                  x_test: pd.DataFrame) -> dict[str, Any]:
     """Determine performance metrics of a model
 
     Beware R2 = 1 - (Residual sum of squares) / (Total sum of squares) != (Pearson r)²
@@ -201,7 +204,7 @@ def model_metrics(model, y_true, x_test) -> dict:
 def crossvalidate_model(data: pd.DataFrame,
                         model: RegressorMixin | ClassifierMixin,
                         folds: BaseCrossValidator,
-                        groups: list[int] = None,
+                        groups: list[int] | pd.Series | None = None,
                         verbose: bool = False
                         ) -> tuple[pd.DataFrame, dict[str, RegressorMixin | ClassifierMixin]]:
     """Create a machine learning model predicting values in the first column
@@ -214,21 +217,21 @@ def crossvalidate_model(data: pd.DataFrame,
    :return: cross-validated performance and model trained on the entire dataset
     """
     X, y = data.iloc[:, 1:], data.iloc[:, 0].values.ravel()
-    performance = []
+    fold_metrics: list[dict[str, Any]] = []
     if verbose:
         pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1)
-    models = {}
+    models: dict[str, RegressorMixin | ClassifierMixin] = {}
     # Perform cross-validation
     for i, (train, test) in enumerate(folds.split(X, y, groups)):
         if verbose:
             pbar.set_description(f'Fitting model on fold {i + 1}', refresh=True)
         model.fit(X.iloc[train, :], y[train])
         models[f'Fold {i + 1}'] = deepcopy(model)
-        performance.append(model_metrics(model, y[test], X.iloc[test, :]))
+        fold_metrics.append(model_metrics(model, y[test], X.iloc[test, :]))
         if verbose:
             pbar.update()
     # Organize result in a dataframe
-    performance = pd.DataFrame(performance)
+    performance = pd.DataFrame(fold_metrics)
     performance.index = [f'Fold {i + 1}' for i in range(folds.n_splits)]
     # Add average and sd of performance
     performance.loc['Mean'] = [np.mean(performance[col]) if ':' not in col else '-' for col in performance]
@@ -244,10 +247,10 @@ def crossvalidate_model(data: pd.DataFrame,
 
 
 def train_test_proportional_group_split(data: pd.DataFrame,
-                                        groups: list[int],
+                                        groups: list[int] | np.ndarray,
                                         test_size: float = 0.30,
                                         verbose: bool = False
-                                        ) -> tuple[pd.DataFrame, pd.DataFrame, list[int], list[int]]:
+                                        ) -> tuple[pd.DataFrame, pd.DataFrame, list[int], tuple[int, ...]]:
     """Split the data into training and test sets according to the groups that respect most test_size (based on MSE)
 
    :param data: the data to be split up into training and test sets
@@ -290,8 +293,8 @@ def qsar(data: pd.DataFrame,
          split_by: str = 'Year',
          split_year: int = 2013,
          test_set_size: float = 0.30,
-         cluster_method: ClusterMixin = None,
-         custom_groups: pd.DataFrame = None,
+         cluster_method: ClusterMixin | None = None,
+         custom_groups: pd.DataFrame | None = None,
          scale: bool = False,
          scale_method: TransformerMixin = StandardScaler(),
          yscramble: bool = False,
@@ -347,6 +350,10 @@ def qsar(data: pd.DataFrame,
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster',"
                          "'custom-cluster', 'custom'}")
+    if split_by.lower() == 'cluster' and cluster_method is None:
+        raise ValueError("cluster_method must be given if split_by is 'cluster'")
+    if split_by.lower() in ('custom-cluster', 'custom') and custom_groups is None:
+        raise ValueError("custom_groups must be given if split_by is 'custom-cluster' or 'custom'")
     if not isinstance(model, (RegressorMixin, ClassifierMixin)):
         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -382,7 +389,8 @@ def qsar(data: pd.DataFrame,
     data = data.drop(columns=[merge_on])
     del descs
     # Table of results
-    results, models = [], {}
+    fold_results: list[pd.DataFrame] = []
+    models: dict[str, dict[str, RegressorMixin | ClassifierMixin] | None] = {}
     targets = list(data['target_id'].unique())
     n_targets = len(targets)
     if verbose:
@@ -397,13 +405,13 @@ def qsar(data: pd.DataFrame,
         # Insufficient data points
         if tmp_data.shape[0] < num_points:
             if model_type == 'regressor':
-                results.append(pd.DataFrame([[targets[i_target],
+                fold_results.append(pd.DataFrame([[targets[i_target],
                                               tmp_data.shape[0],
                                               f'Number of points {tmp_data.shape[0]} < {num_points}']],
                                             columns=['target', 'number', 'error']))
             else:
                 data_classes = Counter(tmp_data[endpoint])
-                results.append(
+                fold_results.append(
                     pd.DataFrame([[targets[i_target],
                                    ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                    f'Number of points {tmp_data.shape[0]} < {num_points}']],
@@ -418,7 +426,7 @@ def qsar(data: pd.DataFrame,
             delta = max_activity - min_activity
             # Not enough activity amplitude
             if delta < delta_activity:
-                results.append(pd.DataFrame([[targets[i_target],
+                fold_results.append(pd.DataFrame([[targets[i_target],
                                               tmp_data.shape[0],
                                               f'Delta activity {delta} < {delta_activity}']],
                                             columns=['target', 'number', 'error']))
@@ -430,7 +438,7 @@ def qsar(data: pd.DataFrame,
             data_classes = Counter(tmp_data[endpoint])
             # Only one activity class
             if len(data_classes) == 1:
-                results.append(
+                fold_results.append(
                     pd.DataFrame([[targets[i_target],
                                    ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                    'Only one activity class']],
@@ -441,7 +449,7 @@ def qsar(data: pd.DataFrame,
                 continue
             # Not enough data in minority class for all folds
             elif not all(x >= folds for x in data_classes.values()):
-                results.append(
+                fold_results.append(
                     pd.DataFrame([[targets[i_target],
                                    ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                    f'Not enough data in minority class for all {folds} folds']],
@@ -456,13 +464,13 @@ def qsar(data: pd.DataFrame,
             test_set = tmp_data[tmp_data['Year'] >= split_year]
             if test_set.empty:
                 if model_type == 'regressor':
-                    results.append(pd.DataFrame([[targets[i_target],
+                    fold_results.append(pd.DataFrame([[targets[i_target],
                                                   tmp_data.shape[0],
                                                   f'No test data for temporal split at {split_year}']],
                                                 columns=['target', 'number', 'error']))
                 else:
                     data_classes = Counter(tmp_data[endpoint])
-                    results.append(
+                    fold_results.append(
                         pd.DataFrame([[targets[i_target],
                                        ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                        f'No test data for temporal split at {split_year}']],
@@ -474,13 +482,13 @@ def qsar(data: pd.DataFrame,
             training_set = tmp_data[~tmp_data.index.isin(test_set.index)]
             if training_set.empty or training_set.shape[0] < folds:
                 if model_type == 'regressor':
-                    results.append(pd.DataFrame([[targets[i_target],
+                    fold_results.append(pd.DataFrame([[targets[i_target],
                                                   tmp_data.shape[0],
                                                   f'Not enough training data for temporal split at {split_year}']],
                                                 columns=['target', 'number', 'error']))
                 else:
                     data_classes = Counter(tmp_data[endpoint])
-                    results.append(
+                    fold_results.append(
                         pd.DataFrame([[targets[i_target],
                                        ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                        f'Not enough training data for temporal split at {split_year}']],
@@ -493,7 +501,7 @@ def qsar(data: pd.DataFrame,
                 train_data_classes = Counter(training_set[endpoint])
                 test_data_classes = Counter(test_set[endpoint])
                 if len(train_data_classes) < 2:
-                    results.append(pd.DataFrame([[targets[i_target],
+                    fold_results.append(pd.DataFrame([[targets[i_target],
                                                   ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
                                                   'Only one activity class in traing set '
                                                   f'for temporal split at {split_year}']],
@@ -502,7 +510,7 @@ def qsar(data: pd.DataFrame,
                         pbar.update()
                     continue
                 elif len(test_data_classes) < 2:
-                    results.append(pd.DataFrame([[targets[i_target],
+                    fold_results.append(pd.DataFrame([[targets[i_target],
                                                   ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
                                                   'Only one activity class in traing set '
                                                   f'for temporal split at {split_year}']],
@@ -516,6 +524,7 @@ def qsar(data: pd.DataFrame,
             training_groups = None
             training_set, test_set = train_test_split(tmp_data, test_size=test_set_size, random_state=random_state)
         elif split_by.lower() == 'cluster':
+            assert cluster_method is not None
             groups = cluster_method.fit_predict(tmp_data.drop(columns=features_to_ignore))
             training_set, test_set, training_groups, _ = train_test_proportional_group_split(tmp_data, groups,
                                                                                              test_set_size,
@@ -567,7 +576,7 @@ def qsar(data: pd.DataFrame,
             test_data_classes = Counter(test_set['Activity_class'])
             test_enough_data = np.all(np.array(list(test_data_classes.values())) > folds)
             if not train_enough_data:
-                results.append(pd.DataFrame([[targets[i_target],
+                fold_results.append(pd.DataFrame([[targets[i_target],
                                               ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
                                               'Not enough data in minority class of '
                                               f'the training set for all {folds} folds']],
@@ -577,7 +586,7 @@ def qsar(data: pd.DataFrame,
                 models[targets[i_target]] = None
                 continue
             elif not test_enough_data:
-                results.append(pd.DataFrame([[targets[i_target],
+                fold_results.append(pd.DataFrame([[targets[i_target],
                                               ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
                                               'Not enough data in minority class of '
                                               f'the training set for all {folds} folds']],
@@ -596,7 +605,7 @@ def qsar(data: pd.DataFrame,
         X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
         performance.loc['Test set'] = model_metrics(full_model, y_test, X_test)
         performance.loc[:, 'target'] = targets[i_target]
-        results.append(performance.reset_index())
+        fold_results.append(performance.reset_index())
         models[targets[i_target]] = cv_models
         if verbose:
             pbar.update()
@@ -614,9 +623,9 @@ def qsar(data: pd.DataFrame,
     else:
         return_val['data_splitter'] = KFold(n_splits=folds, shuffle=True, random_state=random_state)
     return_val = {**return_val, **models}
-    if len(results) is False:
+    if len(fold_results) is False:
         return pd.DataFrame(), return_val
-    results = pd.concat(results, axis=0).set_index(['target', 'index'])
+    results = pd.concat(fold_results, axis=0).set_index(['target', 'index'])
     results.index.names = ['target', None]
     return results, return_val
 
@@ -640,8 +649,8 @@ def pcm(data: pd.DataFrame,
         split_by: str = 'Year',
         split_year: int = 2013,
         test_set_size: float = 0.30,
-        cluster_method: ClusterMixin = None,
-        custom_groups: pd.DataFrame = None,
+        cluster_method: ClusterMixin | None = None,
+        custom_groups: pd.DataFrame | None = None,
         scale: bool = False,
         scale_method: TransformerMixin = StandardScaler(),
         yscramble: bool = False,
@@ -703,6 +712,10 @@ def pcm(data: pd.DataFrame,
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', "
                          "'custom-cluster', 'custom'}")
+    if split_by.lower() == 'cluster' and cluster_method is None:
+        raise ValueError("cluster_method must be given if split_by is 'cluster'")
+    if split_by.lower() in ('custom-cluster', 'custom') and custom_groups is None:
+        raise ValueError("custom_groups must be given if split_by is 'custom-cluster' or 'custom'")
     if not isinstance(model, (RegressorMixin, ClassifierMixin)):
         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -769,6 +782,7 @@ def pcm(data: pd.DataFrame,
         training_groups = None
         training_set, test_set = train_test_split(data, test_size=test_set_size, random_state=random_state)
     elif split_by.lower() == 'cluster':
+        assert cluster_method is not None
         groups = cluster_method.fit_predict(data.drop(columns=features_to_ignore))
         training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
                                                                                          test_set_size,

@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 
+from __future__ import annotations
+
 from collections.abc import Callable
 import json
 import hashlib
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 from rdkit import Chem
@@ -23,40 +26,48 @@ except ImportError:
 
 
 class Fingerprint(ABC):
-    def __init__(self, name: str, params: dict, call_func: Callable):
+    def __init__(self, name: str, params: dict, call_func: Callable | str) -> None:
         self.name = name
         self.params = params
         self.func = call_func
         # determine length
-        self.length = None
+        length: int | None = None
         if "nBits" in params.keys():
-            self.length = params["nBits"]
+            length = params["nBits"]
         elif "fpSize" in params.keys():
-            self.length = params["fpSize"]
+            length = params["fpSize"]
         elif self.name == "MACCSKeys":
-            self.length = 166
+            length = 166
         elif self.name == "FP2":
-            self.length = 1024
+            length = 1024
         elif self.name == "FP3":
-            self.length = 55
+            length = 55
         elif self.name == "FP4":
-            self.length = 307
-        if not self.length:
+            length = 307
+        if not length:
             raise Exception("fingerprint size is not specified")
-        self._hash = self.name + json.dumps(self.params, sort_keys=True)
-        self._hash = hashlib.sha256((self._hash).encode()).digest()
-        self._hash = np.frombuffer(self._hash, dtype=np.int64)
-        self._hash = abs(np.sum(self._hash)) % 65537
-        self._hash = f'{hex(self._hash)}'
+        self.length: int = length
+        digest = hashlib.sha256((self.name + json.dumps(self.params, sort_keys=True)).encode()).digest()
+        hash_ints = np.frombuffer(digest, dtype=np.int64)
+        hash_int = abs(int(np.sum(hash_ints))) % 65537
+        self._hash = f'{hex(hash_int)}'
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'{self.name}_{self.length}bits_{self._hash}'
 
     @classmethod
-    def derived(cls):
+    def derived(cls) -> type[Fingerprint] | list[type[Fingerprint]]:
+        """Return every leaf (non-abstract) subclass, recursively.
+
+        A leaf class (no subclasses of its own) returns itself directly
+        rather than a single-element list - callers that only ever invoke
+        this on :class:`Fingerprint` itself (which always has subclasses)
+        get a flat ``list``; the bare-class case only surfaces when calling
+        ``derived()`` directly on a leaf class.
+        """
         if not cls.__subclasses__():
             return cls
-        subclasses = []
+        subclasses: list[type[Fingerprint]] = []
         for subclass in cls.__subclasses__():
             subclass_derived = subclass.derived()
             if isinstance(subclass_derived, list):
@@ -75,18 +86,22 @@ class RDKitFingerprint(Fingerprint):
         """Get the bistring fingerprint of the molecule and popcounts"""
         if not HAS_FPSIM2:
             raise ImportError('Some required dependencies are missing:\n\ttables, FPSim2')
+        # RDKitFingerprint always constructs itself with a real callable (see
+        # each subclass' __init__) - only OBFingerprint uses the str variant.
+        assert callable(self.func)
         fp = BitStrToIntList(self.func(mol, **self.params).ToBitString())
         popcnt = PyPopcount(np.array(fp, dtype=np.uint64))
-        return (*fp, popcnt)
+        return [*fp, popcnt]
 
 
 class MACCSKeysFingerprint(RDKitFingerprint):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__('MACCSKeys', {}, rdMolDescriptors.GetMACCSKeysFingerprint)
 
 
 class AvalonFingerprint(RDKitFingerprint):
-    def __init__(self, nBits: int = 512, isQuery: bool = False, resetVect: bool = False, bitFlags: int = 15761407):
+    def __init__(self, nBits: int = 512, isQuery: bool = False, resetVect: bool = False,
+                 bitFlags: int = 15761407) -> None:
         super().__init__('Avalon',
                                                 {'nBits': nBits,
                                                  'isQuery': isQuery,
@@ -97,7 +112,7 @@ class AvalonFingerprint(RDKitFingerprint):
 
 class MorganFingerprint(RDKitFingerprint):
     def __init__(self, radius: int = 2, nBits: int = 2048, invariants: list = [], fromAtoms: list = [],
-                 useChirality: bool = False, useBondTypes: bool = True, useFeatures: bool = False):
+                 useChirality: bool = False, useBondTypes: bool = True, useFeatures: bool = False) -> None:
         super().__init__('Morgan',
                                                 {'radius': radius,
                                                  'nBits': nBits,
@@ -110,8 +125,9 @@ class MorganFingerprint(RDKitFingerprint):
 
 
 class TopologicalTorsionFingerprint(RDKitFingerprint):
-    def __init__(self, nBits: int = 2048, targetSize: int = 4, fromAtoms: list = 0,
-                 ignoreAtoms: list = 0, atomInvariants: list = 0, includeChirality: bool = False):
+    def __init__(self, nBits: int = 2048, targetSize: int = 4, fromAtoms: list | int = 0,
+                 ignoreAtoms: list | int = 0, atomInvariants: list | int = 0,
+                 includeChirality: bool = False) -> None:
         super().__init__('TopologicalTorsion',
                          {"nBits": nBits,
                           "targetSize": targetSize,
@@ -124,9 +140,9 @@ class TopologicalTorsionFingerprint(RDKitFingerprint):
 
 class AtomPairFingerprint(RDKitFingerprint):
     def __init__(self, nBits: int = 2048, minLength: int = 1, maxLength: int = 30,
-                 fromAtoms: list = 0, ignoreAtoms: list = 0, atomInvariants: list = 0,
+                 fromAtoms: list | int = 0, ignoreAtoms: list | int = 0, atomInvariants: list | int = 0,
                  nBitsPerEntry: int = 4, includeChirality: bool = False,
-                 use2D: bool = True, confId: int = -1):
+                 use2D: bool = True, confId: int = -1) -> None:
         super().__init__('AtomPair',
                                                   {"nBits": nBits,
                                                    "minLength": minLength,
@@ -144,8 +160,8 @@ class AtomPairFingerprint(RDKitFingerprint):
 class RDKitTopologicalFingerprint(RDKitFingerprint):
     def __init__(self, fpSize: int = 2048, minPath: int = 1, maxPath: int = 7, nBitsPerHash: int = 2,
                  useHs: bool = True, tgtDensity: float = 0.0, minSize: int = 128,
-                 branchedPaths: bool = True, useBondOrder: bool = True, atomInvariants: list = 0,
-                 fromAtoms: list = 0, atomBits: list = None, bitInfo: list = None):
+                 branchedPaths: bool = True, useBondOrder: bool = True, atomInvariants: list | int = 0,
+                 fromAtoms: list | int = 0, atomBits: list | None = None, bitInfo: list | None = None) -> None:
         super().__init__('RDKFingerprint',
                                                           {"minPath": minPath,
                                                            "maxPath": maxPath,
@@ -164,7 +180,7 @@ class RDKitTopologicalFingerprint(RDKitFingerprint):
 
 
 class RDKPatternFingerprint(RDKitFingerprint):
-    def __init__(self, fpSize: int = 2048, atomCounts: list = [], setOnlyBits: list = None):
+    def __init__(self, fpSize: int = 2048, atomCounts: list = [], setOnlyBits: list | None = None) -> None:
         super().__init__('RDKPatternFingerprint',
                                                     {'fpSize': fpSize,
                                                      'atomCounts': atomCounts,
@@ -173,7 +189,7 @@ class RDKPatternFingerprint(RDKitFingerprint):
 
 
 class OBFingerprint(Fingerprint):
-    def __init__(self, name: str, params: dict, call_func: Callable):
+    def __init__(self, name: str, params: dict, call_func: str) -> None:
         if not HAS_PYBEL and not HAS_FPSIM2:
             raise ImportError('Some required dependencies are missing:\n\topenbabel, FPSim2')
         elif not HAS_PYBEL:
@@ -189,40 +205,44 @@ class OBFingerprint(Fingerprint):
         binvec.SetBitsFromList([x - 1 for x in obmol.calcfp(self.func).bits])
         fp = BitStrToIntList(binvec.ToBitString())
         popcnt = PyPopcount(np.array(fp, dtype=np.uint64))
-        return (*fp, popcnt)
+        return [*fp, popcnt]
 
 
 class FP2Fingerprint(OBFingerprint):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__('FP2',
                                              {},
                                              'FP2')
 
 
 class FP3Fingerprint(OBFingerprint):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__('FP3',
                                              {},
                                              'FP3')
 
 
 class FP4Fingerprint(OBFingerprint):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__('FP4',
                                              {},
                                              'FP4')
 
 
-def get_fp_from_name(fp_name, **kwargs):
+def get_fp_from_name(fp_name: str, **kwargs: Any) -> Fingerprint:
     """Get the fingerprint TYPE corresponding to a name
     :param fp_name: Name of the fingerprint
     :param kwargs: parameters specific to the desired fingerprint
     :return: fingerprint instance
     """
-    fps = {}
-    for fp_cls in Fingerprint.derived():
+    fps: dict[str, type[Fingerprint]] = {}
+    # Fingerprint (unlike a leaf subclass) always has subclasses, so
+    # derived() always returns a list here.
+    for fp_cls in Fingerprint.derived():  # type: ignore[union-attr]
         try:
-            fps[fp_cls().name] = fp_cls
+            # Every concrete subclass overrides __init__ with its own
+            # no-argument signature; mypy only sees the abstract base's.
+            fps[fp_cls().name] = fp_cls  # type: ignore[call-arg]
         except ImportError:
             # Skip fingerprints whose optional dependencies (openbabel, FPSim2)
             # are not installed instead of letting them break the lookup of

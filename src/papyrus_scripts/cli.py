@@ -6,7 +6,9 @@ import ast
 import inspect
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -27,7 +29,7 @@ CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
 
 
 @click.group(context_settings=CONTEXT_SETTINGS)
-def main():
+def main() -> None:
     """Group allowing subcommands to be defined"""
     pass
 
@@ -82,7 +84,9 @@ def main():
                    '(and deleting the .xz originals). Needed if you intend to transform '
                    'compression with the "convert" command.'
               )
-def download(output_directory, version, more, stereo, structs, descs, force, all_revisions, keep_xz):
+def download(output_directory: str | None, version: tuple[str, ...] | list[str], more: bool, stereo: str,
+            structs: bool, descs: tuple[str, ...] | list[str], force: bool, all_revisions: bool,
+            keep_xz: bool) -> None:
     """CLI to download the Papyrus data."""
     if isinstance(version, tuple):
         version = list(version)
@@ -151,8 +155,10 @@ def download(output_directory, version, more, stereo, structs, descs, force, all
               help='When set, "all" and two-part version aliases expand to every known '
                    'revision rather than only the latest revision per version.'
               )
-def clean(output_directory, version, papyruspp, stereo, bioactivities, proteins,
-          structs, descs, other_files, remove_version, remove_root, force, all_revisions):
+def clean(output_directory: str | None, version: tuple[str, ...] | list[str], papyruspp: bool, stereo: str,
+         bioactivities: bool, proteins: bool, structs: bool, descs: tuple[str, ...] | list[str],
+         other_files: bool, remove_version: bool, remove_root: bool, force: bool,
+         all_revisions: bool) -> None:
     """CLI to remove the Papyrus data."""
     if isinstance(version, tuple):
         version = list(version)
@@ -202,7 +208,8 @@ def clean(output_directory, version, papyruspp, stereo, bioactivities, proteins,
 @click.option('--verbose', 'verbose', is_flag=True, required=False, default=False, nargs=1,
               show_default=True, help='Display progress.'
               )
-def pdbmatch(indir, output, version, more, is3D, overwrite, verbose):
+def pdbmatch(indir: str | None, output: str, version: str, more: bool, is3D: bool,
+            overwrite: bool, verbose: bool) -> None:
     """CLI to match Papyrus data against RCSB PDB structures."""
     CHUNKSIZE = 1_000_000
     update_rcsb_data(root_folder=indir, overwrite=overwrite, verbose=verbose)
@@ -221,7 +228,7 @@ def pdbmatch(indir, output, version, more, is3D, overwrite, verbose):
 
 
 class Mutex(click.Option):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Custom class allowing click.Options to be required if other
         click.Options are not set.
 
@@ -237,7 +244,12 @@ class Mutex(click.Option):
         ).strip()
         super().__init__(*args, **kwargs)
 
-    def handle_parse_result(self, ctx, opts, args):
+    def handle_parse_result(
+            self,
+            ctx: click.Context,
+            opts: Mapping[str, Any],
+            args: list[str],
+    ) -> tuple[Any, list[str]]:
         current_opt: bool = self.consume_value(ctx, opts)[0]
         for other_param in ctx.command.get_params(ctx):
             if other_param is self:
@@ -254,7 +266,7 @@ class Mutex(click.Option):
                         f"{other_param.human_readable_name}."
                     )
                 elif other_opt:
-                    self.required = None
+                    self.required = False
         return super().handle_parse_result(ctx, opts, args)
 
 
@@ -290,14 +302,19 @@ class Mutex(click.Option):
 @click.option('--fhelp', 'fingerprint_help', is_flag=True, default=False, required=False,
               help='Show advanced help about fingerprints.'
               )
-def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerprint_help):
+def fpsubsim2(indir: str | None, output: str | None, version: tuple[str, ...], is3D: bool,
+             fingerprint: tuple[str, ...], verbose: bool, njobs: int, fingerprint_help: bool) -> None:
     """CLI to create a database for similarity and substructure searches."""
     if fingerprint_help:
         fp_name_list, fp_no_parameter_list, fp_parameter_list = [], [], []
-        for fp_type in Fingerprint.derived():
-            fp_name = fp_type().name
+        # Fingerprint (unlike a leaf subclass) always has subclasses, so
+        # derived() always returns a list here. Every concrete subclass
+        # overrides __init__ with its own no-argument signature; mypy only
+        # sees the abstract base's.
+        for fp_type in Fingerprint.derived():  # type: ignore[union-attr]
+            fp_name = fp_type().name  # type: ignore[call-arg]
             fp_params = [
-                (key, value._default)
+                (key, value.default)
                 for key, value in inspect.signature(fp_type.__init__).parameters.items()
                 if key != 'self'
             ]
@@ -323,6 +340,9 @@ def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerp
         )
         sys.exit()
 
+    # `output` is only allowed to be None via the Mutex/fhelp path above,
+    # already handled (and exited) by this point.
+    assert output is not None
     if output.lower() == 'none':
         output = None
 
@@ -334,27 +354,34 @@ def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerp
                                      progress=verbose, njobs=njobs
                                      )
     else:
-        fp_correct_values = {fp_class().name: fp_class().params for fp_class in Fingerprint.derived()}
+        # Fingerprint (unlike a leaf subclass) always has subclasses, so
+        # derived() always returns a list here. Every concrete subclass
+        # overrides __init__ with its own no-argument signature; mypy only
+        # sees the abstract base's.
+        fp_correct_values = {
+            fp_class().name: fp_class().params  # type: ignore[call-arg]
+            for fp_class in Fingerprint.derived()  # type: ignore[union-attr]
+        }
         fingerprints = []
         for fp in fingerprint:
-            fp_param = fp.split(';')
-            fp_name = fp_param.pop(0)
+            fp_param_list = fp.split(';')
+            fp_name = fp_param_list.pop(0)
             if fp_name not in fp_correct_values:
                 print(f'Fingerprint must be one of {", ".join(fp_correct_values)}')
                 sys.exit()
-            fp_param = dict(param.split('=') for param in fp_param)
-            for param_name, param_value in fp_param.items():
+            fp_param_values: dict[str, Any] = dict(param.split('=') for param in fp_param_list)
+            for param_name, param_value in fp_param_values.items():
                 if param_name not in fp_correct_values[fp_name]:
                     print(f'Parameters for fingerprint {fp_name} '
                           f'are {", ".join(fp_correct_values[fp_name])}'
                           )
                 try:
-                    fp_param[param_name] = ast.literal_eval(param_value)
+                    fp_param_values[param_name] = ast.literal_eval(param_value)
                 except (ValueError, SyntaxError) as e:
                     print(f'Parameter {param_name!r} for fingerprint {fp_name!r} is not a '
                          f'valid Python literal: {param_value!r} ({e})')
                     sys.exit()
-            fingerprints.append(get_fp_from_name(fp_name, **fp_param))
+            fingerprints.append(get_fp_from_name(fp_name, **fp_param_values))
         for version_ in version:
             fpss.create_from_papyrus(is3d=is3D, version=version_, outfile=output,
                                      fingerprint=fingerprints, root_folder=indir,
@@ -385,7 +412,8 @@ def fpsubsim2(indir, output, version, is3D, fingerprint, verbose, njobs, fingerp
 @click.option('-e', '--extreme', 'extreme', is_flag=True, required=False, default=False,
               nargs=1, show_default=True, help='Toggle extreme compression.'
               )
-def convert(indir, version, format, level, extreme):
+def convert(indir: str | None, version: str, format: str | None,
+           level: int | None, extreme: bool) -> None:
     """CLI to interconvert Papyrus data between GZIP and XZ compression."""
     if isinstance(version, tuple):
         version = list(version)
@@ -459,7 +487,7 @@ def convert(indir, version, format, level, extreme):
 @click.option('-v', '--verbose', 'verbose', is_flag=True, required=False, default=False,
               help='Verbose pytest output.'
               )
-def test_real_data(version, indir, download, sample_size, verbose):
+def test_real_data(version: str, indir: str | None, download: bool, sample_size: int, verbose: bool) -> None:
     """CLI to run extensive reader.py tests against real, locally downloaded Papyrus data."""
     try:
         import pytest

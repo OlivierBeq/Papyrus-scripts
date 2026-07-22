@@ -54,7 +54,7 @@ def _set_seed(seed: int | None) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-class _MLP(nn.Module if HAS_TORCH else object):
+class _MLP(nn.Module if HAS_TORCH else object):  # type: ignore[misc]
     """Fully connected feed-forward network: ``dimensions[0] -> ... -> dimensions[-1]``.
 
     ReLU + dropout between hidden layers; an optional final activation
@@ -62,7 +62,7 @@ class _MLP(nn.Module if HAS_TORCH else object):
     """
 
     def __init__(self, dimensions: list[int], dropout: float = 0.25,
-                 final_activation: nn.Module | None = None):
+                 final_activation: nn.Module | None = None) -> None:
         super().__init__()
         self.fcl = nn.ModuleList(
             nn.Linear(dimensions[i], dimensions[i + 1]) for i in range(len(dimensions) - 1)
@@ -70,7 +70,7 @@ class _MLP(nn.Module if HAS_TORCH else object):
         self.dropoutl = nn.Dropout(dropout)
         self.final_activation = final_activation
 
-    def forward(self, X):
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
         """Compute model output from input data, applying dropout while training."""
         for layer in self.fcl[:-1]:
             X = torch.relu(layer(X))
@@ -100,7 +100,7 @@ class BaseNN:
 
     def __init__(self, out: str | Path, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
-                 random_seed: int | None = None, **kwargs):
+                 random_seed: int | None = None, **kwargs) -> None:
         """Configure the estimator.
 
         :param out: output folder for checkpoints (best weights, optimizer
@@ -134,7 +134,11 @@ class BaseNN:
                 lr_lambda=lambda epoch: (1 - 1 / epochs) ** (epoch * 10),
             )),
         ]
-        super().__init__(
+        # BaseNN is a mixin: only meaningful combined with a skorch NeuralNet
+        # subclass (see SingleTaskNNClassifier etc.), which supplies the
+        # rest of this __init__ signature and the fit/predict_proba/
+        # initialize members used below - invisible to mypy from here.
+        super().__init__(  # type: ignore[call-arg]
             module=_MLP,
             optimizer=torch.optim.Adam,
             lr=lr,
@@ -152,7 +156,7 @@ class BaseNN:
     # Architecture / data preparation
     # ------------------------------------------------------------------
 
-    def initialize_module(self):
+    def initialize_module(self) -> BaseNN:
         """Build the network now that :meth:`set_architecture` has recorded its shape."""
         if self._dims is None:
             raise ValueError('call set_architecture() before fit()')
@@ -192,7 +196,7 @@ class BaseNN:
     # sklearn-style estimator interface
     # ------------------------------------------------------------------
 
-    def fit(self, X: pd.DataFrame | np.ndarray, y: pd.Series | pd.DataFrame | np.ndarray, **kwargs):
+    def fit(self, X: pd.DataFrame | np.ndarray, y: pd.Series | pd.DataFrame | np.ndarray, **kwargs) -> BaseNN:
         """Fit the network on the training set, validating against the set from :meth:`set_validation`.
 
         :param X: features to predict y from
@@ -200,21 +204,21 @@ class BaseNN:
         """
         if self.train_split is None:
             raise ValueError('call set_validation(X, y) before fit()')
-        return super().fit(self._prep_X(X), self._prep_y(y), **kwargs)
+        return super().fit(self._prep_X(X), self._prep_y(y), **kwargs)  # type: ignore[misc]
 
     def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         """Predict class/task probabilities for the incoming data.
 
         :param X: features to predict the endpoint probabilities from
         """
-        return super().predict_proba(self._prep_X(X))
+        return super().predict_proba(self._prep_X(X))  # type: ignore[misc]
 
     def reset(self) -> None:
         """Reset weights, optimizer and criterion to a freshly initialised state."""
-        self.initialize()
+        self.initialize()  # type: ignore[attr-defined]
 
 
-class SingleTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else object):
+class SingleTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else object):  # type: ignore[misc]
     """Neural Network classifier to predict a unique endpoint."""
 
     def set_architecture(self, n_dim: int, n_class: int) -> None:
@@ -235,10 +239,10 @@ class SingleTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH els
         self.criterion = nn.BCELoss if n_class == 1 else nn.CrossEntropyLoss
         self.predict_nonlinearity = None if n_class == 1 else 'auto'
 
-    def _build_final_activation(self):
+    def _build_final_activation(self) -> nn.Module | None:
         return nn.Sigmoid() if self._n_classes_ == 1 else None
 
-    def _prep_y(self, y):
+    def _prep_y(self, y: pd.Series | pd.DataFrame | np.ndarray) -> np.ndarray:
         if not hasattr(self, '_n_classes_'):
             raise ValueError('call set_architecture() before set_validation() or fit()')
         if self._n_classes_ > 1:
@@ -246,14 +250,14 @@ class SingleTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH els
             return y.astype('int64').reshape(-1)
         return super()._prep_y(y)
 
-    def predict_proba(self, X):
+    def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         """Predict class probabilities for the incoming data.
 
         :param X: features to predict the endpoint probabilities from
         """
         return super().predict_proba(X)
 
-    def predict(self, X):
+    def predict(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         """Predict classes for the incoming data.
 
         Binary endpoints threshold the sigmoid output at 0.5; multi-class
@@ -263,13 +267,13 @@ class SingleTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH els
         """
         if self._n_classes_ == 1:
             return np.round(self.predict_proba(X))
-        return super().predict(self._prep_X(X))
+        return super().predict(self._prep_X(X))  # type: ignore[misc]
 
 
-class SingleTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else object):
+class SingleTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else object):  # type: ignore[misc]
     """Neural Network regressor to predict a unique endpoint."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Neural Network regressor to predict a unique endpoint."""
         super().__init__(*args, criterion=nn.MSELoss, **kwargs)
 
@@ -281,10 +285,10 @@ class SingleTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else 
         self._dims = [n_dim, 8000, 4000, 2000, 1]
 
 
-class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else object):
+class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else object):  # type: ignore[misc]
     """Neural Network classifier to predict multiple (independent, binary) endpoints."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Neural Network classifier to predict multiple endpoints."""
         super().__init__(*args, criterion=nn.BCELoss, **kwargs)
 
@@ -298,17 +302,17 @@ class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else
             raise ValueError('use SingleTaskNNClassifier for a single task')
         self._dims = [n_dim, 8000, 4000, 2000, n_task]
 
-    def _build_final_activation(self):
+    def _build_final_activation(self) -> nn.Module:
         return nn.Sigmoid()
 
-    def predict_proba(self, X):
+    def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         """Predict per-task probabilities for the incoming data.
 
         :param X: features to predict the endpoint probabilities from
         """
         return super().predict_proba(X)
 
-    def predict(self, X):
+    def predict(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         """Predict per-task classes (each output thresholded independently at 0.5).
 
         :param X: features to predict the endpoint(s) from
@@ -316,10 +320,10 @@ class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else
         return np.round(self.predict_proba(X))
 
 
-class MultiTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else object):
+class MultiTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else object):  # type: ignore[misc]
     """Neural Network regressor to predict multiple endpoints."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Neural Network regressor to predict multiple endpoints."""
         super().__init__(*args, criterion=nn.MSELoss, **kwargs)
 

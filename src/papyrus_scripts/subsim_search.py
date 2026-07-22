@@ -47,10 +47,10 @@ except ImportError:
     # Stub classes so class definitions below do not fail at import time.
     # Using dedicated stubs (not `object`) avoids MRO conflicts when these are
     # mixed with other bases that already implicitly inherit from `object`.
-    class BaseStorageBackend: pass
-    class BaseEngine: pass
-    class FPSim2Engine: pass
-    class FPSim2CudaEngine: pass
+    class BaseStorageBackend: pass  # type: ignore[no-redef]
+    class BaseEngine: pass  # type: ignore[no-redef]
+    class FPSim2Engine: pass  # type: ignore[no-redef]
+    class FPSim2CudaEngine: pass  # type: ignore[no-redef]
 
 from .fingerprint import Fingerprint, MorganFingerprint, get_fp_from_name
 from .utils.IO import PapyrusVersion, get_num_rows_in_file, locate_file, process_data_version
@@ -87,7 +87,11 @@ def _validate_fingerprints(
     :raises ValueError: if any element is not a :class:`~fingerprint.Fingerprint`
     """
     if fingerprint is None:
-        return [fp() for fp in Fingerprint.derived()]
+        # Fingerprint (unlike a leaf subclass) always has subclasses, so
+        # derived() always returns a list here. Every concrete subclass
+        # overrides __init__ with its own no-argument signature; mypy only
+        # sees the abstract base's.
+        return [fp() for fp in Fingerprint.derived()]  # type: ignore[union-attr,call-arg]
     if not isinstance(fingerprint, list):
         fingerprint = [fingerprint]
     for fp in fingerprint:
@@ -288,7 +292,7 @@ class FPSubSim2:
         if fingerprint is None:
             fingerprint = MorganFingerprint()
 
-        self.version = PapyrusVersion(version=version)
+        self.version = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
         if not self.version.is_downloaded(root_folder=root_folder):
             raise ValueError(f'Version {self.version.version} not found. Did you download it first?')
         self.is3d = is3d
@@ -324,7 +328,7 @@ class FPSubSim2:
             self,
             sd_file: str | Path,
             outfile: str | Path | None = None,
-            fingerprint: Fingerprint | list[Fingerprint] = None,
+            fingerprint: Fingerprint | list[Fingerprint] | None = None,
             progress: bool = True,
             total: int | None = None,
             njobs: int = 1,
@@ -449,6 +453,7 @@ class FPSubSim2:
             total: int | None,
     ) -> None:
         """Populate similarity and substructure tables from a single process."""
+        assert self.h5_filename is not None
         with tb.open_file(self.h5_filename, mode='r+') as h5file:
             lib = SubstructLibrary(CachedMolHolder(), PatternHolder())
             subst_table = h5file.root.substructure_info.substruct_lib
@@ -509,13 +514,14 @@ class FPSubSim2:
             total: int | None,
     ) -> None:
         """Populate similarity and substructure tables using multiple processes."""
+        assert self.h5_filename is not None
         # Pass only (type, params) pairs to worker processes — instances are
         # not safe to share across process boundaries.
         fp_specs = [(type(fp), fp.params) for fp in fingerprint]
         table_paths = {repr(fp): _fp_table_path(fp) for fp in fingerprint}
 
-        input_queue = multiprocessing.Queue()
-        output_queue = multiprocessing.Queue()
+        input_queue: multiprocessing.Queue = multiprocessing.Queue()
+        output_queue: multiprocessing.Queue = multiprocessing.Queue()
 
         n_workers = max(multiprocessing.cpu_count() - 2, 1) if njobs == -1 else max(njobs - 1, 1)
 
@@ -643,6 +649,7 @@ class FPSubSim2:
         :param progress: display a progress bar
         :param total: molecule count for the progress bar
         """
+        assert self.h5_filename is not None
         signature = repr(fingerprint)
         available_fps = list(self.available_fingerprints.keys())
         if signature in available_fps:
@@ -670,6 +677,7 @@ class FPSubSim2:
         :param progress: display a progress bar
         :param total: molecule count for the progress bar
         """
+        assert self.h5_filename is not None
         for signature, fingerprint in self.available_fingerprints.items():
             backend = PyTablesMultiFpStorageBackend(self.h5_filename, signature)
             backend.append_fps(
@@ -780,8 +788,8 @@ def _writer_process(
     lib = SubstructLibrary(CachedMolHolder(), PatternHolder())
     pbar = tqdm(total=total, smoothing=0.0) if progress else None
 
-    mappings_insert = []
-    similarity_insert = defaultdict(list)
+    mappings_insert: list[tuple] = []
+    similarity_insert: defaultdict[str, list] = defaultdict(list)
 
     with tb.open_file(h5_filename, mode='r+') as h5file:
         while True:
@@ -1121,7 +1129,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
             'for exact subgraph isomorphism.'
         )
 
-    def on_disk_substructure(self, query_string: str, n_workers: int = 1, chunk_size: int = None):
+    def on_disk_substructure(self, query_string: str, n_workers: int = 1, chunk_size: int | None = None):
         raise NotImplementedError(
             'Use the FPSubSim2 substructure library (get_substructure_lib) '
             'for exact subgraph isomorphism.'
@@ -1208,7 +1216,7 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
         super().__init__(CachedMolHolder(), PatternHolder())
         self.fp_filename = fp_filename
 
-    def GetMatches(
+    def GetMatches(  # type: ignore[override]
             self,
             query: str | Chem.Mol,
             recursionPossible: bool = True,
