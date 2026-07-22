@@ -2,8 +2,6 @@
 
 """Reading functions for the Papyrus dataset."""
 
-import io
-import lzma
 import os
 from functools import reduce
 from pathlib import Path
@@ -15,28 +13,13 @@ from tqdm.auto import tqdm
 
 from .utils.IO import (
     PapyrusVersion,
+    convert_xz_to_parquet,
     load_data_type_schemas,
     locate_file,
     papyrus_version_module,
     process_data_version,
 )
 from .utils.mol_reader import MolSupplier
-
-
-def _open_source(filepath: str | Path) -> str | Path | io.BytesIO:
-    """Return a readable source for *filepath*, decompressing ``.xz`` in memory.
-
-    Polars' CSV reader natively decompresses ``.gz`` but not ``.xz`` (LZMA) -
-    Papyrus ships every file ``.xz``-compressed, so handing the raw compressed
-    bytes to ``pl.read_csv``/``pl.scan_csv`` as if they were plain text raises
-    ``ComputeError: invalid utf-8 sequence``. Non-``.xz`` paths are returned
-    unchanged (``.gz`` and uncompressed files are read natively).
-    """
-    filepath = Path(filepath)
-    if filepath.suffix == '.xz':
-        with lzma.open(filepath, 'rb') as fh:
-            return io.BytesIO(fh.read())
-    return filepath
 
 
 def _prefer_parquet(files: list[Path]) -> Path:
@@ -58,12 +41,38 @@ def _scan_tabular(filepath: Path, **read_kw) -> pl.LazyFrame:
     """Return a lazy scan of a Papyrus tabular file.
 
     Scans a pre-converted ``.parquet`` file directly (dtypes are embedded,
-    *read_kw* is unused); otherwise falls back to lazily scanning the
-    compressed ``.xz``/``.gz`` original via :func:`_open_source`.
+    *read_kw* is unused). A ``.xz`` original with no ``.parquet`` sibling yet
+    (data downloaded before this project converted tabular files, or with
+    ``keep_xz=True``) is converted once, via the same memory-bounded chunked
+    conversion ``download_papyrus`` uses, and the resulting Parquet file is
+    scanned lazily instead - handing Polars the whole decompressed CSV
+    content in memory (the only way to give ``pl.scan_csv`` ``.xz`` data,
+    since it only decompresses ``.gz`` natively) defeats laziness entirely
+    and OOMs on multi-GB Papyrus files. ``.gz``/uncompressed originals are
+    scanned directly since Polars streams those without materialising the
+    whole file first.
     """
     if filepath.suffix == '.parquet':
         return pl.scan_parquet(filepath)
-    return pl.scan_csv(_open_source(filepath), **read_kw)
+    if filepath.suffix == '.xz':
+        parquet_path = filepath.with_suffix('.parquet')
+        if not parquet_path.is_file():
+            convert_xz_to_parquet(
+                filepath, parquet_path,
+                separator=read_kw.get('separator', '\t'),
+                schema_overrides=read_kw.get('schema_overrides'),
+                null_values=read_kw.get('null_values'),
+                progress=True,
+            )
+        return pl.scan_parquet(parquet_path)
+    # Default quoting (quote_char='"') is deliberately left enabled - some
+    # Papyrus columns (InChI_AuxInfo, doc_id/citation fields) legitimately
+    # hold values with an embedded literal '"' and even a literal newline,
+    # properly RFC4180-quoted by the exporter. Disabling quoting doesn't
+    # avoid a bug, it causes one: it corrupts those specific records by
+    # splitting one logical row into several garbage fragments instead of
+    # reconstructing the single multi-line record correctly.
+    return pl.scan_csv(filepath, **read_kw)
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +380,83 @@ def read_molecular_structures(
     if chunksize is None:
         return _read_structures_full(sd_files[0], ids, id_col, verbose)
     return _read_structures_chunked(sd_files[0], chunksize, ids, id_col, verbose)
+
+
+# ---------------------------------------------------------------------------
+# Local availability checks
+# ---------------------------------------------------------------------------
+#
+# Cheap, network-free, read-free checks of whether the file(s) a reader
+# above would need are already on disk - used by oop.py's _PapyrusSource to
+# decide whether a download is needed at all before committing to one
+# combined download_papyrus() call for everything a filter chain ends up
+# requesting (bioactivity/proteins plus any descriptors/structures), instead
+# of one download cycle per file type as each is first touched.
+
+def molecular_descriptors_available(
+    desc_type: str,
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    source_path: str | Path | None = None,
+) -> bool:
+    """Return whether every file :func:`read_molecular_descriptors` would
+    need for *desc_type* is already present on disk, without reading any of
+    them.
+
+    :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
+        ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
+    :param is3d: check for the stereochemistry-aware variant
+    :param version: dataset version to check
+    :param source_path: root directory for Papyrus data
+    :raises ValueError: if *desc_type* is not recognised
+    """
+    if desc_type not in _VALID_DESC_TYPES:
+        raise ValueError(
+            f'desc_type must be one of {sorted(_VALID_DESC_TYPES)}, '
+            f'got {desc_type!r}'
+        )
+
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+    desc_dir   = source_mod.join('descriptors')
+
+    keys = (
+        [k for k, (_, _, dims) in _MOL_DESC_REGISTRY.items() if is3d in dims]
+        if desc_type == 'all' else [desc_type]
+    )
+    for key in keys:
+        pattern, _ = _resolve_mol_desc_pattern(key, is3d)
+        try:
+            locate_file(desc_dir, pattern)
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+    return True
+
+
+def molecular_structures_available(
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    source_path: str | Path | None = None,
+) -> bool:
+    """Return whether the file :func:`read_molecular_structures` would need
+    is already present on disk, without reading it.
+
+    :param is3d: check for the stereochemistry-aware (3D) SD file
+    :param version: dataset version to check
+    :param source_path: root directory for Papyrus data
+    """
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+
+    stereo_tag = '' if is3d else 'out'
+    dim_tag    = 3  if is3d else 2
+    pattern    = rf'\d+\.\d+_combined_{dim_tag}D_set_with{stereo_tag}_stereochemistry\.sd.*'
+
+    try:
+        locate_file(source_mod.join('structures'), pattern)
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        return False
 
 
 # ---------------------------------------------------------------------------
