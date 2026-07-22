@@ -55,6 +55,252 @@ def _id_column(is3d: bool) -> str:
     return 'InChIKey' if is3d else 'connectivity'
 
 
+#: Exceptions signalling "this isn't available locally yet" - the trigger to
+#: download it, throughout this module's various "try to read; download and
+#: retry on a cache miss" call sites. FileNotFoundError/NotADirectoryError
+#: come from utils.IO.locate_file when a file is genuinely missing; KeyError
+#: from get_num_rows_in_file's data_size.json lookup. OSError/ValueError
+#: come from utils.IO.process_data_version (reached via every reader.py
+#: function through _resolve_version) - its own two documented exceptions
+#: for "no Papyrus data downloaded at all" and "this specific version isn't
+#: among the downloaded ones" respectively. Missing these two here used to
+#: crash instead of downloading the very first time a given version was
+#: ever requested on a machine that already had a *different* version
+#: downloaded (get_downloaded_versions returns non-empty, so the OSError
+#: branch is skipped, but the requested version itself isn't in that list).
+_NOT_AVAILABLE_LOCALLY: tuple[type[Exception], ...] = (
+    FileNotFoundError, NotADirectoryError, KeyError, OSError, ValueError,
+)
+
+
+# ---------------------------------------------------------------------------
+# Deferred loading
+# ---------------------------------------------------------------------------
+#
+# A freshly-constructed PapyrusDataset must not download (or even check for)
+# its bioactivity/protein files until data is actually needed - not at
+# construction, and not when a filter (keep_quality, keep_accession, …) is
+# applied, only once aggregate()/agg()/consume_chunks()/to_dataframe() (or
+# an equivalent - .proteins(), .match_rcsb_pdb(), FPSubSim2-backed filters)
+# forces materialisation. Every filter method just wraps the *unresolved*
+# state in one more pending operation instead.
+
+class _Deferred:
+    """A value computed by *loader* the first time it's needed, then cached."""
+
+    __slots__ = ('_loader', '_value', '_resolved')
+
+    def __init__(self, loader):
+        self._loader = loader
+        self._value = None
+        self._resolved = False
+
+    def get(self):
+        if not self._resolved:
+            self._value = self._loader()
+            self._resolved = True
+        return self._value
+
+
+def _resolve(value):
+    """Return *value* itself, or the result of calling it if it's a :class:`_Deferred`."""
+    return value.get() if isinstance(value, _Deferred) else value
+
+
+class _LazyBioactivity:
+    """An unresolved bioactivity stream: a loader plus a queue of pending
+    transformations (filter methods) to apply once it's actually loaded.
+
+    Immutable - :meth:`then` returns a new instance, so branching a filter
+    chain (applying two different filters to the same starting point) never
+    lets one branch's cached result leak into the other's.
+    """
+
+    __slots__ = ('_loader', '_ops', '_value', '_resolved')
+
+    def __init__(self, loader, ops: tuple = ()):
+        self._loader = loader
+        self._ops = ops
+        self._value = None
+        self._resolved = False
+
+    def then(self, op) -> _LazyBioactivity:
+        """Return a new :class:`_LazyBioactivity` with *op* appended to the pending queue."""
+        return _LazyBioactivity(self._loader, self._ops + (op,))
+
+    def resolve(self):
+        """Load the base data (downloading it first if needed) and apply every pending op, once."""
+        if not self._resolved:
+            data = self._loader()
+            for op in self._ops:
+                data = op(data)
+            self._value = data
+            self._resolved = True
+        return self._value
+
+
+def _apply_lazy(data, fn, **kwargs):
+    """Return ``fn(data=data, **kwargs)``, deferred if *data* is still a :class:`_LazyBioactivity`.
+
+    Any :class:`_Deferred` value in *kwargs* (e.g. ``protein_data`` for
+    :func:`~preprocess.keep_protein_class`) is resolved at the same time as
+    *data* - immediately if *data* is already resolved, otherwise only once
+    the returned pending operation actually runs.
+    """
+    if isinstance(data, _LazyBioactivity):
+        return data.then(lambda d: fn(data=d, **{k: _resolve(v) for k, v in kwargs.items()}))
+    return fn(data=data, **{k: _resolve(v) for k, v in kwargs.items()})
+
+
+class _PapyrusSource:
+    """Downloads (if needed) and reads the bioactivity/protein files for one
+    ``(version, is3d, plusplus)`` selection - at most once, however many
+    :class:`PapyrusDataset`/:class:`_LazyBioactivity` instances in a filter
+    chain end up needing them.
+
+    Also the single place that collects, across an entire filter chain, which
+    descriptor sets and/or molecular structures will be needed downstream
+    (via :meth:`request_descriptors`/:meth:`request_structures`, called by
+    :meth:`PapyrusDataset.molecular_descriptors`/:meth:`PapyrusDataset.molecules`
+    and their :class:`PapyrusMoleculeSet` counterparts while the chain is
+    still being built, i.e. before any ``.agg()``). Since one
+    :class:`_PapyrusSource` instance is shared by reference across every
+    :class:`PapyrusDataset` derived from the same root (threaded through
+    ``papyrus_params['_source']``), by the time materialisation actually
+    starts every requirement registered anywhere in the chain is already
+    known - so :meth:`_ensure_loaded` can issue one combined
+    :func:`~download.download_papyrus` call covering everything instead of
+    one separate download-and-convert cycle per file type as each is first
+    touched.
+    """
+
+    def __init__(
+            self,
+            pv: IO.PapyrusVersion,
+            is3d: bool,
+            plusplus: bool,
+            chunksize: int | None,
+            source_path: str | Path | None,
+            download_progress: bool,
+            keep_original_files: bool,
+    ) -> None:
+        self._pv = pv
+        self._is3d = is3d
+        self._plusplus = plusplus
+        self._chunksize = chunksize
+        self._source_path = source_path
+        self._download_progress = download_progress
+        self._keep_original_files = keep_original_files
+        self._bioactivity = None
+        self._proteins = None
+        self._num_rows: int | None = None
+        self._loaded = False
+        self._descriptor_types: set[str] = set()
+        self._need_structures: bool = False
+
+    def request_descriptors(self, desc_type: str) -> None:
+        """Register *desc_type* as needed by this chain, so the next
+        download (if any) fetches it together with everything else instead
+        of triggering a separate download cycle once it's actually read.
+
+        Safe to call more than once (e.g. two branches of the same chain
+        requesting different descriptor sets) - every distinct type
+        requested anywhere in the chain ends up in the same combined
+        download.
+
+        :param desc_type: descriptor set, as accepted by
+            :meth:`PapyrusDataset.molecular_descriptors`
+        """
+        self._descriptor_types.add(desc_type)
+
+    def request_structures(self) -> None:
+        """Register molecular structures as needed by this chain - see
+        :meth:`request_descriptors`.
+        """
+        self._need_structures = True
+
+    def _load(self) -> tuple[int, Any, pl.DataFrame]:
+        num_rows = IO.get_num_rows_in_file(
+            filetype='bioactivities', is3D=self._is3d,
+            version=self._pv, plusplus=self._plusplus,
+            root_folder=self._source_path,
+        )
+        bioactivity_data = reader.read_papyrus(
+            is3d=self._is3d, version=self._pv, plusplus=self._plusplus,
+            chunksize=self._chunksize, source_path=self._source_path,
+        )
+        protein_data = reader.read_protein_set(
+            source_path=self._source_path, version=self._pv,
+        )
+        return num_rows, bioactivity_data, protein_data
+
+    def _missing_registered_extras(self) -> bool:
+        """Whether any descriptor set / structures registered so far is not yet on disk.
+
+        Any failure to even determine that (e.g. this version isn't
+        recognised as downloaded locally at all yet) is treated the same as
+        "missing" - the safe default is to let the combined download below
+        run and sort it out, rather than silently skipping something the
+        chain will need.
+        """
+        try:
+            if self._need_structures and not reader.molecular_structures_available(
+                is3d=self._is3d, version=self._pv, source_path=self._source_path,
+            ):
+                return True
+            return any(
+                not reader.molecular_descriptors_available(
+                    desc_type=desc_type, is3d=self._is3d,
+                    version=self._pv, source_path=self._source_path,
+                )
+                for desc_type in self._descriptor_types
+            )
+        except _NOT_AVAILABLE_LOCALLY:
+            return True
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        # Download the bioactivity file matching (is3d, plusplus), the
+        # always-needed protein-target file, and every descriptor
+        # set/structures requested anywhere in the chain so far (see
+        # request_descriptors/request_structures) - all in one combined
+        # call, rather than downloading bioactivity+proteins here and
+        # leaving descriptors/structures to trigger their own separate
+        # download cycle later when first read. See PapyrusDataset.__init__
+        # for why is_local_version_available can't gate this.
+        try:
+            self._num_rows, self._bioactivity, self._proteins = self._load()
+            need_download = self._missing_registered_extras()
+        except _NOT_AVAILABLE_LOCALLY:
+            need_download = True
+        if need_download:
+            download.download_papyrus(
+                outdir=self._source_path,
+                # pystow_path_key (not .version): see PapyrusDataset.__init__.
+                version=self._pv.pystow_path_key,
+                nostereo=not self._is3d, stereo=self._is3d, only_pp=self._plusplus,
+                structures=self._need_structures,
+                descriptors=sorted(self._descriptor_types) or None,
+                progress=self._download_progress, disk_margin=0.0,
+                keep_xz=self._keep_original_files,
+            )
+            self._num_rows, self._bioactivity, self._proteins = self._load()
+        self._loaded = True
+
+    def get_bioactivity(self):
+        self._ensure_loaded()
+        return self._bioactivity
+
+    def get_proteins(self) -> pl.DataFrame:
+        self._ensure_loaded()
+        return self._proteins
+
+    def get_num_rows(self) -> int:
+        self._ensure_loaded()
+        return self._num_rows
+
+
 # ---------------------------------------------------------------------------
 # PapyrusDataset
 # ---------------------------------------------------------------------------
@@ -76,6 +322,7 @@ class PapyrusDataset:
             chunksize: int | None = 1_000_000,
             source_path: str | Path | None = None,
             download_progress: bool = False,
+            keep_original_files: bool = False,
     ) -> None:
         """Read, filter and aggregate data from a release of the Papyrus dataset.
 
@@ -93,45 +340,60 @@ class PapyrusDataset:
             pystow's home directory)
         :param download_progress: show download progress bars when data is
             not yet on disk
+        :param keep_original_files: keep the downloaded ``.tsv.xz`` originals
+            after converting them to Parquet (default: False - every tabular
+            file downloaded for this dataset, and later for any descriptor
+            fetched lazily through it, is converted to Parquet and the
+            ``.xz`` original is deleted, matching :func:`~download.download_papyrus`)
         :raises ValueError: if both *is3d* and *plusplus* are True (the 3D
             Papyrus++ combination does not exist)
         """
         pv = _ensure_papyrus_version(version)
+        source = _PapyrusSource(
+            pv, is3d, plusplus, chunksize, source_path,
+            download_progress, keep_original_files,
+        )
 
-        # Auto-download if the data is not available locally.
-        if not IO.is_local_version_available(version=pv, root_folder=source_path):
-            download.download_papyrus(
-                outdir=source_path,
-                # pystow_path_key (not .version) so the folder download_papyrus
-                # writes to matches what every read below looks up pv under -
-                # .version is the canonical new-format string, which would
-                # silently write to a different folder for an old-format pv.
-                version=pv.pystow_path_key,
-                nostereo=True, stereo=True, only_pp=False,
-                structures=True, descriptors='all',
-                progress=download_progress, disk_margin=0.0,
-            )
-
+        # Nothing is downloaded, converted, or even checked for here - only
+        # once aggregate()/agg()/consume_chunks()/to_dataframe() (or an
+        # equivalent - .proteins(), .match_rcsb_pdb(), a similarity-search
+        # filter, keep_protein_class()/keep_organism()) actually needs the
+        # data does _PapyrusSource resolve it, downloading only the
+        # bioactivity file matching (is3d, plusplus) plus the always-needed
+        # protein-target file - not every stereo/++ combination, structures,
+        # or descriptors regardless of whether this dataset ever uses them.
+        # is_local_version_available (whether *anything* was ever downloaded
+        # for this version) can't gate this: a version downloaded before
+        # under different (is3d, plusplus) choices would wrongly look
+        # "available" while still missing the specific file needed now, so
+        # _PapyrusSource reads first and only downloads on a genuine cache
+        # miss for this exact selection.
+        #
+        # Descriptors/structures chained in before that first materialisation
+        # point (.molecular_descriptors(...), .molecules(...) - see their
+        # request_descriptors()/request_structures() calls into `source`) are
+        # folded into that same combined download instead of triggering their
+        # own separate download-and-convert cycle once they're first read -
+        # `source` is shared by reference across the whole filter chain
+        # (threaded through papyrus_params['_source']), so every requirement
+        # registered anywhere in the chain is known by the time _PapyrusSource
+        # actually resolves. Requesting one only *after* the chain has already
+        # been materialised once (e.g. calling .agg() first, then
+        # .molecular_descriptors(...).agg() on the same dataset afterwards)
+        # still triggers its own separate download at that later point - there
+        # is no way to know about a requirement that hasn't been expressed yet.
         self.papyrus_params: dict = dict(
             is3d=is3d,
             version=pv,
             plusplus=plusplus,
             chunksize=chunksize,
             source_path=source_path,
-            num_rows=IO.get_num_rows_in_file(
-                filetype='bioactivities', is3D=is3d,
-                version=pv, plusplus=plusplus,
-                root_folder=source_path,
-            ),
             download_progress=download_progress,
+            keep_original_files=keep_original_files,
+            _source=source,
         )
-        self.papyrus_bioactivity_data = reader.read_papyrus(
-            is3d=is3d, version=pv, plusplus=plusplus,
-            chunksize=chunksize, source_path=source_path,
-        )
-        self.papyrus_protein_data = reader.read_protein_set(
-            source_path=source_path, version=pv,
-        )
+        self.papyrus_bioactivity_data = _LazyBioactivity(loader=source.get_bioactivity)
+        self.papyrus_protein_data = _Deferred(loader=source.get_proteins)
         self._fpsubsim2_: FPSubSim2Engine | None = None
         self._can_reset: bool = True
 
@@ -148,6 +410,7 @@ class PapyrusDataset:
             source_path: str | Path | None = None,
             download_progress: bool = False,
             chunksize: int | None = None,
+            keep_original_files: bool = False,
     ) -> PapyrusDataset:
         """Create a :class:`PapyrusDataset` from an existing DataFrame.
 
@@ -159,6 +422,9 @@ class PapyrusDataset:
         :param source_path: root directory for Papyrus data
         :param download_progress: whether download progress was shown
         :param chunksize: chunk size to record in ``papyrus_params``
+        :param keep_original_files: keep ``.tsv.xz`` originals after
+            conversion to Parquet for any descriptor later downloaded
+            lazily through this dataset (default: False)
         :returns: a :class:`PapyrusDataset` wrapping *df*
         """
         pv = _ensure_papyrus_version(version)
@@ -171,6 +437,7 @@ class PapyrusDataset:
             is3d=is3d, version=pv, plusplus=plusplus,
             chunksize=chunksize, source_path=source_path,
             num_rows=len(df), download_progress=download_progress,
+            keep_original_files=keep_original_files,
         )
         dataset._fpsubsim2_: FPSubSim2Engine | None = None
         dataset._can_reset: bool = False
@@ -402,17 +669,29 @@ class PapyrusDataset:
     # Materialisation
     # ------------------------------------------------------------------
 
+    def _num_rows(self) -> int | None:
+        """Return the total bioactivity row count - resolving (downloading first if needed) it if unknown."""
+        source = self.papyrus_params.get('_source')
+        if source is not None:
+            return source.get_num_rows()
+        return self.papyrus_params.get('num_rows')
+
     def aggregate(self, progress: bool = False) -> pl.DataFrame:
         """Materialise all lazy filters into a single :class:`~polars.DataFrame`.
+
+        Downloads the bioactivity file first if not yet available locally.
 
         :param progress: show a tqdm progress bar while consuming chunks
         :returns: a DataFrame of the filtered data
         """
-        if isinstance(self.papyrus_bioactivity_data, pl.DataFrame):
-            return self.papyrus_bioactivity_data
-        total = _num_chunks(self.papyrus_params['num_rows'], self.papyrus_params['chunksize'])
+        data = self.papyrus_bioactivity_data
+        if isinstance(data, _LazyBioactivity):
+            data = data.resolve()
+        if isinstance(data, pl.DataFrame):
+            return data
+        total = _num_chunks(self._num_rows(), self.papyrus_params['chunksize'])
         return preprocess.consume_chunks(
-            generator=self.papyrus_bioactivity_data, progress=progress, total=total,
+            generator=data, progress=progress, total=total,
         )
 
     #: Alias for :meth:`aggregate`.
@@ -439,19 +718,21 @@ class PapyrusDataset:
     ) -> PapyrusMoleculeSet:
         """Return the molecular structures for the samples in this dataset.
 
+        Purely lazy: neither this dataset's bioactivity data nor the
+        structure file itself are touched here - both happen only once
+        :meth:`PapyrusMoleculeSet.aggregate` (or an alias) is called on the
+        returned object, at which point the structure file is downloaded
+        first if not yet available locally.
+
         :param chunksize: structures per chunk (default: 1 000 000)
-        :param progress: show progress while aggregating the bioactivity data
+        :param progress: default ``progress`` for the returned set's
+            :meth:`~PapyrusMoleculeSet.aggregate` when not overridden there
         :returns: a :class:`PapyrusMoleculeSet`
         """
-        ids = self.aggregate(progress=progress)[_id_column(self.papyrus_params['is3d'])].unique()
-        molecules = reader.read_molecular_structures(
-            is3d=self.papyrus_params['is3d'],
-            version=self.papyrus_params['version'],
-            chunksize=chunksize,
-            source_path=self.papyrus_params['source_path'],
-            ids=ids, verbose=False,
-        )
-        return PapyrusMoleculeSet(molecules, {**self.papyrus_params, 'chunksize': chunksize})
+        source = self.papyrus_params.get('_source')
+        if source is not None:
+            source.request_structures()
+        return PapyrusMoleculeSet(self, chunksize=chunksize, progress=progress)
 
     def proteins(self, progress: bool = False) -> PapyrusProteinSet:
         """Return the protein targets for the samples in this dataset.
@@ -460,19 +741,25 @@ class PapyrusDataset:
         :returns: a :class:`PapyrusProteinSet`
         """
         ids = self.aggregate(progress=progress)['target_id'].unique()
-        proteins = self.papyrus_protein_data.filter(pl.col('target_id').is_in(ids))
+        protein_data = _resolve(self.papyrus_protein_data)
+        proteins = protein_data.filter(pl.col('target_id').is_in(ids))
         return PapyrusProteinSet(proteins, self.papyrus_params, num_proteins=len(proteins))
 
     def match_rcsb_pdb(self, update: bool = True, progress: bool = False) -> PapyrusPDBProteinSet:
         """Match samples to RCSB Protein Data Bank 3D structures.
 
+        Downloads the bioactivity file first if not yet available locally.
+
         :param update: refresh the local PDB identifier cache (default: True)
         :param progress: show progress while matching
         :returns: a :class:`PapyrusPDBProteinSet`
         """
-        total = _num_chunks(self.papyrus_params['num_rows'], self.papyrus_params['chunksize'])
+        data = self.papyrus_bioactivity_data
+        if isinstance(data, _LazyBioactivity):
+            data = data.resolve()
+        total = _num_chunks(self._num_rows(), self.papyrus_params['chunksize'])
         structures = get_pdb_matches(
-            self.papyrus_bioactivity_data,
+            data,
             root_folder=self.papyrus_params['source_path'],
             verbose=progress,
             total=total,
@@ -488,43 +775,25 @@ class PapyrusDataset:
             self,
             desc_type: str,
             progress: bool = False,
-    ) -> pd.DataFrame | Iterator[pd.DataFrame]:
+    ) -> PapyrusDescriptorSet:
         """Return molecular descriptors for the molecules in this dataset.
 
-        Downloads the descriptor file if it is not yet available locally.
+        Purely lazy: neither this dataset's bioactivity data nor the
+        descriptor file itself are touched here - both happen only once
+        :meth:`PapyrusDescriptorSet.aggregate` (or an alias) is called on
+        the returned object, at which point the descriptor file is
+        downloaded first if not yet available locally.
 
         :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
             ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
-        :param progress: show progress while aggregating
-        :returns: a DataFrame (or lazy iterator) of molecular descriptors
+        :param progress: default ``progress`` for the returned set's
+            :meth:`~PapyrusDescriptorSet.aggregate` when not overridden there
+        :returns: a :class:`PapyrusDescriptorSet`
         """
-        ids = self.aggregate(progress)[_id_column(self.papyrus_params['is3d'])].unique()
-        try:
-            return reader.read_molecular_descriptors(
-                desc_type=desc_type,
-                is3d=self.papyrus_params['is3d'],
-                version=self.papyrus_params['version'],
-                chunksize=self.papyrus_params['chunksize'],
-                source_path=self.papyrus_params['source_path'],
-                ids=ids,
-                verbose=progress,
-            )
-        except FileNotFoundError:
-            download.download_papyrus(
-                outdir=self.papyrus_params['source_path'],
-                # pystow_path_key (not .version): must match the folder key
-                # every read in this class looks up self.papyrus_params['version']
-                # under, or an old-format pv silently downloads to the wrong folder.
-                version=self.papyrus_params['version'].pystow_path_key,
-                nostereo=not self.papyrus_params['is3d'],
-                stereo=self.papyrus_params['is3d'],
-                only_pp=self.papyrus_params['plusplus'],
-                structures=False,
-                descriptors=desc_type,
-                progress=self.papyrus_params['download_progress'],
-                disk_margin=0.0,
-            )
-            return self.molecular_descriptors(desc_type, progress)
+        source = self.papyrus_params.get('_source')
+        if source is not None:
+            source.request_descriptors(desc_type)
+        return PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
 
     # ------------------------------------------------------------------
     # Administration
@@ -533,22 +802,17 @@ class PapyrusDataset:
     def reset(self) -> bool:
         """Reset the underlying data stream to the beginning of the file.
 
-        Has no effect when the dataset was created from a DataFrame.
+        Has no effect when the dataset was created from a DataFrame. Does
+        not by itself download anything not already fetched - it reuses
+        this dataset's :class:`_PapyrusSource` (downloading only if that
+        hasn't happened yet either).
 
         :returns: ``True`` if the stream was reset, ``False`` otherwise
         """
         if self._can_reset:
-            self.papyrus_bioactivity_data = reader.read_papyrus(
-                is3d=self.papyrus_params['is3d'],
-                version=self.papyrus_params['version'],
-                plusplus=self.papyrus_params['plusplus'],
-                chunksize=self.papyrus_params['chunksize'],
-                source_path=self.papyrus_params['source_path'],
-            )
-            self.papyrus_protein_data = reader.read_protein_set(
-                source_path=self.papyrus_params['source_path'],
-                version=self.papyrus_params['version'],
-            )
+            source = self.papyrus_params['_source']
+            self.papyrus_bioactivity_data = _LazyBioactivity(loader=source.get_bioactivity)
+            self.papyrus_protein_data = _Deferred(loader=source.get_proteins)
         return self._can_reset
 
     @staticmethod
@@ -579,7 +843,13 @@ class PapyrusDataset:
             version_arg = version
         else:
             pv = _ensure_papyrus_version(version)
-            version_arg = pv.version
+            # pystow_path_key (not .version) so remove_papyrus resolves the
+            # same on-disk folder download_papyrus wrote to - .version is the
+            # canonical new-format string, which for an old-format version
+            # would make pystow.module() create an empty sibling folder
+            # under the wrong (new-format) name instead of touching the
+            # real, old-format one.
+            version_arg = pv.pystow_path_key
         download.remove_papyrus(
             outdir=source_path,
             version=version_arg,
@@ -603,7 +873,9 @@ class PapyrusDataset:
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
-        params = ', '.join(f'{k}={v}' for k, v in self.papyrus_params.items())
+        params = ', '.join(
+            f'{k}={v}' for k, v in self.papyrus_params.items() if not k.startswith('_')
+        )
         return f'{type(self).__name__}<{params}>'
 
 
@@ -658,44 +930,42 @@ class PapyrusDataFilter:
             papyrus_params=self.papyrus_params,
         )
 
+    def _apply(self, fn, **kwargs) -> PapyrusDataset:
+        """Wrap ``fn(data=..., **kwargs)``, deferred if the bioactivity data isn't resolved yet.
+
+        Any :class:`_Deferred` value in *kwargs* (``protein_data`` for
+        :meth:`keep_protein_class`/:meth:`keep_organism`) is resolved at the
+        same point as the bioactivity data - so a not-yet-downloaded
+        dataset still downloads nothing for these either, until the
+        bioactivity data they're chained onto is actually materialised.
+        """
+        return self._wrap(_apply_lazy(self.papyrus_bioactivity_data, fn, **kwargs))
+
     # ------------------------------------------------------------------
     # Filters
     # ------------------------------------------------------------------
 
     def keep_quality(self, min_quality: str = 'high') -> PapyrusDataset:
-        return self._wrap(preprocess.keep_quality(
-            data=self.papyrus_bioactivity_data, min_quality=min_quality,
-        )
-        )
+        return self._apply(preprocess.keep_quality, min_quality=min_quality)
 
     def keep_source(self, source: list[str] | str = 'all') -> PapyrusDataset:
-        return self._wrap(preprocess.keep_source(
-            data=self.papyrus_bioactivity_data, source=source,
-        )
-        )
+        return self._apply(preprocess.keep_source, source=source)
 
     def keep_activity_type(self, activity_types: list[str] | str = 'ic50') -> PapyrusDataset:
-        return self._wrap(preprocess.keep_type(
-            data=self.papyrus_bioactivity_data, activity_types=activity_types,
-        )
-        )
+        return self._apply(preprocess.keep_type, activity_types=activity_types)
 
     def keep_accession(self, accession: list[str] | str = 'all') -> PapyrusDataset:
-        return self._wrap(preprocess.keep_accession(
-            data=self.papyrus_bioactivity_data, accession=accession,
-        )
-        )
+        return self._apply(preprocess.keep_accession, accession=accession)
 
     def keep_protein_class(
             self,
             classes: dict | list[dict] | None,
             generic_regex: bool = False,
     ) -> PapyrusDataset:
-        return self._wrap(preprocess.keep_protein_class(
-            data=self.papyrus_bioactivity_data,
+        return self._apply(
+            preprocess.keep_protein_class,
             protein_data=self.papyrus_protein_data,
             classes=classes, generic_regex=generic_regex,
-        )
         )
 
     def keep_organism(
@@ -703,42 +973,33 @@ class PapyrusDataFilter:
             organism: str | list[str] | None = 'Homo sapiens (Human)',
             generic_regex: bool = False,
     ) -> PapyrusDataset:
-        return self._wrap(preprocess.keep_organism(
-            data=self.papyrus_bioactivity_data,
+        return self._apply(
+            preprocess.keep_organism,
             protein_data=self.papyrus_protein_data,
             organism=organism, generic_regex=generic_regex,
-        )
         )
 
     def contains(
             self, column: str, value: str, case: bool = True, regex: bool = False,
     ) -> PapyrusDataset:
-        return self._wrap(preprocess.keep_contains(
-            data=self.papyrus_bioactivity_data,
+        return self._apply(
+            preprocess.keep_contains,
             column=column, value=value, case=case, regex=regex,
-        )
         )
 
     def not_contains(
             self, column: str, value: str, case: bool = True, regex: bool = False,
     ) -> PapyrusDataset:
-        return self._wrap(preprocess.keep_not_contains(
-            data=self.papyrus_bioactivity_data,
+        return self._apply(
+            preprocess.keep_not_contains,
             column=column, value=value, case=case, regex=regex,
-        )
         )
 
     def isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
-        return self._wrap(preprocess.keep_match(
-            data=self.papyrus_bioactivity_data, column=column, values=values,
-        )
-        )
+        return self._apply(preprocess.keep_match, column=column, values=values)
 
     def not_isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
-        return self._wrap(preprocess.keep_not_match(
-            data=self.papyrus_bioactivity_data, column=column, values=values,
-        )
-        )
+        return self._apply(preprocess.keep_not_match, column=column, values=values)
 
 
 # ---------------------------------------------------------------------------
@@ -858,15 +1119,14 @@ class FPSubSim2Engine:
     ) -> PapyrusDataset:
         """Keep samples similar to any of the query SMILES."""
         self._ensure_loaded()
-        return self._wrap(preprocess.keep_similar(
-            data=self.papyrus_bioactivity_data,
+        return self._wrap(_apply_lazy(
+            self.papyrus_bioactivity_data, preprocess.keep_similar,
             molecule_smiles=smiles,
             fpsubsim2_file=self.path,
             fingerprint=fp if fp is not None else MorganFingerprint(),
             threshold=threshold,
             cuda=cuda,
-        )
-        )
+        ))
 
     def keep_dissimilar_molecules(
             self,
@@ -877,35 +1137,32 @@ class FPSubSim2Engine:
     ) -> PapyrusDataset:
         """Keep samples **not** similar to any of the query SMILES."""
         self._ensure_loaded()
-        return self._wrap(preprocess.keep_dissimilar(
-            data=self.papyrus_bioactivity_data,
+        return self._wrap(_apply_lazy(
+            self.papyrus_bioactivity_data, preprocess.keep_dissimilar,
             molecule_smiles=smiles,
             fpsubsim2_file=self.path,
             fingerprint=fp if fp is not None else MorganFingerprint(),
             threshold=threshold,
             cuda=cuda,
-        )
-        )
+        ))
 
     def keep_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
         """Keep samples that are substructures of any of the query SMILES."""
         self._ensure_loaded()
-        return self._wrap(preprocess.keep_substructure(
-            data=self.papyrus_bioactivity_data,
+        return self._wrap(_apply_lazy(
+            self.papyrus_bioactivity_data, preprocess.keep_substructure,
             molecule_smiles=smiles,
             fpsubsim2_file=self.path,
-        )
-        )
+        ))
 
     def keep_not_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
         """Keep samples that are **not** substructures of any of the query SMILES."""
         self._ensure_loaded()
-        return self._wrap(preprocess.keep_not_substructure(
-            data=self.papyrus_bioactivity_data,
+        return self._wrap(_apply_lazy(
+            self.papyrus_bioactivity_data, preprocess.keep_not_substructure,
             molecule_smiles=smiles,
             fpsubsim2_file=self.path,
-        )
-        )
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -913,15 +1170,62 @@ class FPSubSim2Engine:
 # ---------------------------------------------------------------------------
 
 class PapyrusMoleculeSet:
-    """A set of molecular structures derived from a :class:`PapyrusDataset`."""
+    """A set of molecular structures derived from a :class:`PapyrusDataset`.
+
+    Purely lazy: constructing this class (via :meth:`PapyrusDataset.molecules`)
+    neither materialises the parent dataset's bioactivity data nor touches
+    the structure file - both happen only once :meth:`aggregate` (or an
+    alias) is called, at which point the structure file is downloaded first
+    if not yet available locally.
+    """
 
     def __init__(
             self,
-            df: pl.DataFrame | Iterator,
-            papyrus_params: dict,
+            dataset: PapyrusDataset,
+            chunksize: int | None = 1_000_000,
+            progress: bool = False,
     ) -> None:
-        self.data = df
-        self.papyrus_params = papyrus_params
+        self._dataset = dataset
+        self._default_progress = progress
+        self.papyrus_params: dict = {**dataset.papyrus_params, 'chunksize': chunksize}
+        self.data: pl.DataFrame | Iterator | None = None
+        self.num_rows: int | None = None
+
+    # ------------------------------------------------------------------
+    # Materialisation
+    # ------------------------------------------------------------------
+
+    def _ensure_loaded(self, progress: bool) -> None:
+        """Download the structure file (if needed) and read it - once."""
+        if self.data is not None:
+            return
+        ids = self._dataset.aggregate(progress=progress)[_id_column(self.papyrus_params['is3d'])].unique()
+        read_kwargs = dict(
+            is3d=self.papyrus_params['is3d'],
+            version=self.papyrus_params['version'],
+            chunksize=self.papyrus_params['chunksize'],
+            source_path=self.papyrus_params['source_path'],
+            ids=ids, verbose=False,
+        )
+        try:
+            self.data = reader.read_molecular_structures(**read_kwargs)
+        except _NOT_AVAILABLE_LOCALLY:
+            download.download_papyrus(
+                outdir=self.papyrus_params['source_path'],
+                # pystow_path_key (not .version): must match the folder key
+                # every read in this class looks up self.papyrus_params['version']
+                # under, or an old-format pv silently downloads to the wrong folder.
+                version=self.papyrus_params['version'].pystow_path_key,
+                nostereo=not self.papyrus_params['is3d'],
+                stereo=self.papyrus_params['is3d'],
+                only_pp=False,
+                structures=True,
+                descriptors=None,
+                progress=self.papyrus_params['download_progress'],
+                disk_margin=0.0,
+                keep_xz=self.papyrus_params['keep_original_files'],
+            )
+            self.data = reader.read_molecular_structures(**read_kwargs)
         self.num_rows = IO.get_num_rows_in_file(
             filetype='structures',
             is3D=self.papyrus_params['is3d'],
@@ -929,29 +1233,30 @@ class PapyrusMoleculeSet:
             root_folder=self.papyrus_params['source_path'],
         )
 
-    # ------------------------------------------------------------------
-    # Materialisation
-    # ------------------------------------------------------------------
-
-    def aggregate(self, progress: bool = False) -> pl.DataFrame:
+    def aggregate(self, progress: bool | None = None) -> pl.DataFrame:
         """Materialise all structures into a single :class:`~polars.DataFrame`.
 
-        :param progress: show a progress bar
+        Downloads the structure file first if not yet available locally.
+
+        :param progress: show a progress bar; defaults to the value passed
+            to :meth:`PapyrusDataset.molecules`
         """
+        progress = self._default_progress if progress is None else progress
+        self._ensure_loaded(progress)
         if isinstance(self.data, pl.DataFrame):
             return self.data
         total = _num_chunks(self.num_rows, self.papyrus_params['chunksize'])
         return preprocess.consume_chunks(generator=self.data, progress=progress, total=total)
 
-    def agg(self, progress: bool = False) -> pl.DataFrame:
+    def agg(self, progress: bool | None = None) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
-    def consume_chunks(self, progress: bool = False) -> pl.DataFrame:
+    def consume_chunks(self, progress: bool | None = None) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
-    def to_dataframe(self, progress: bool = False) -> pl.DataFrame:
+    def to_dataframe(self, progress: bool | None = None) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
@@ -963,27 +1268,78 @@ class PapyrusMoleculeSet:
             self,
             desc_type: str,
             progress: bool = False,
-    ) -> pd.DataFrame | Iterator[pd.DataFrame]:
+    ) -> PapyrusDescriptorSet:
         """Return molecular descriptors for the molecules in this set.
 
-        Downloads the descriptor file if not yet available locally.
+        Purely lazy: see :meth:`PapyrusDataset.molecular_descriptors`.
 
         :param desc_type: one of ``'mold2'``, ``'mordred'``, ``'cddd'``,
             ``'fingerprint'``, ``'moe'``, ``'all'``
-        :param progress: show progress while aggregating
+        :param progress: default ``progress`` for the returned set's
+            :meth:`~PapyrusDescriptorSet.aggregate` when not overridden there
+        :returns: a :class:`PapyrusDescriptorSet`
         """
-        ids = self.aggregate(progress)[_id_column(self.papyrus_params['is3d'])].unique()
+        source = self.papyrus_params.get('_source')
+        if source is not None:
+            source.request_descriptors(desc_type)
+        return PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
+
+    # ------------------------------------------------------------------
+    # Dunder
+    # ------------------------------------------------------------------
+
+    def __repr__(self) -> str:
+        if self.data is None:
+            return f'{type(self).__name__}<not yet materialised>'
+        if not isinstance(self.data, pl.DataFrame):
+            return f'{type(self).__name__}<iterator of molecules>'
+        return f'{type(self).__name__}<{len(self.data)} molecules>'
+
+
+# ---------------------------------------------------------------------------
+# PapyrusDescriptorSet
+# ---------------------------------------------------------------------------
+
+class PapyrusDescriptorSet:
+    """A set of molecular descriptors derived from a :class:`PapyrusDataset` or :class:`PapyrusMoleculeSet`.
+
+    Purely lazy: constructing this class (via
+    :meth:`PapyrusDataset.molecular_descriptors` or
+    :meth:`PapyrusMoleculeSet.molecular_descriptors`) neither materialises
+    the parent set nor touches the descriptor file - both happen only once
+    :meth:`aggregate` (or an alias) is called, at which point the
+    descriptor file is downloaded first if not yet available locally.
+    """
+
+    def __init__(
+            self,
+            dataset: PapyrusDataset | PapyrusMoleculeSet,
+            desc_type: str,
+            progress: bool = False,
+    ) -> None:
+        self._dataset = dataset
+        self._desc_type = desc_type
+        self._default_progress = progress
+        self.papyrus_params: dict = dict(dataset.papyrus_params)
+        self.data: pl.DataFrame | pl.LazyFrame | None = None
+
+    def _ensure_loaded(self, progress: bool) -> None:
+        """Download the descriptor file (if needed) and read it - once."""
+        if self.data is not None:
+            return
+        ids = self._dataset.aggregate(progress=progress)[_id_column(self.papyrus_params['is3d'])].unique()
+        read_kwargs = dict(
+            desc_type=self._desc_type,
+            is3d=self.papyrus_params['is3d'],
+            version=self.papyrus_params['version'],
+            chunksize=self.papyrus_params['chunksize'],
+            source_path=self.papyrus_params['source_path'],
+            ids=ids,
+            verbose=progress,
+        )
         try:
-            return reader.read_molecular_descriptors(
-                desc_type=desc_type,
-                is3d=self.papyrus_params['is3d'],
-                version=self.papyrus_params['version'],
-                chunksize=self.papyrus_params['chunksize'],
-                source_path=self.papyrus_params['source_path'],
-                ids=ids,
-                verbose=progress,
-            )
-        except FileNotFoundError:
+            self.data = reader.read_molecular_descriptors(**read_kwargs)
+        except _NOT_AVAILABLE_LOCALLY:
             download.download_papyrus(
                 outdir=self.papyrus_params['source_path'],
                 # pystow_path_key (not .version): must match the folder key
@@ -994,20 +1350,45 @@ class PapyrusMoleculeSet:
                 stereo=self.papyrus_params['is3d'],
                 only_pp=self.papyrus_params['plusplus'],
                 structures=False,
-                descriptors=desc_type,
+                descriptors=self._desc_type,
                 progress=self.papyrus_params['download_progress'],
                 disk_margin=0.0,
+                keep_xz=self.papyrus_params['keep_original_files'],
             )
-            return self.molecular_descriptors(desc_type, progress)
+            self.data = reader.read_molecular_descriptors(**read_kwargs)
+
+    def aggregate(self, progress: bool | None = None) -> pl.DataFrame:
+        """Materialise all descriptors into a single :class:`~polars.DataFrame`.
+
+        Downloads the descriptor file first if not yet available locally.
+
+        :param progress: show a progress bar; defaults to the value passed
+            to :meth:`PapyrusDataset.molecular_descriptors`
+        """
+        progress = self._default_progress if progress is None else progress
+        self._ensure_loaded(progress)
+        return preprocess.consume_chunks(generator=self.data, progress=progress, total=None)
+
+    def agg(self, progress: bool | None = None) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
+    def consume_chunks(self, progress: bool | None = None) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
+    def to_dataframe(self, progress: bool | None = None) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
 
     # ------------------------------------------------------------------
     # Dunder
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
-        if not isinstance(self.data, pl.DataFrame):
-            return f'{type(self).__name__}<iterator of molecules>'
-        return f'{type(self).__name__}<{len(self.data)} molecules>'
+        if self.data is None:
+            return f'{type(self).__name__}<{self._desc_type}, not yet materialised>'
+        return f'{type(self).__name__}<{self._desc_type}>'
 
 
 # ---------------------------------------------------------------------------
@@ -1048,7 +1429,7 @@ class ProteinSet(ABC):
                 ids=ids,
                 verbose=progress,
             )
-        except FileNotFoundError:
+        except _NOT_AVAILABLE_LOCALLY:
             download.download_papyrus(
                 outdir=self.papyrus_params['source_path'],
                 # pystow_path_key (not .version): must match the folder key
@@ -1062,6 +1443,7 @@ class ProteinSet(ABC):
                 descriptors=desc_type,
                 progress=self.papyrus_params['download_progress'],
                 disk_margin=0.0,
+                keep_xz=self.papyrus_params['keep_original_files'],
             )
             return self.protein_descriptors(desc_type, progress)
 
