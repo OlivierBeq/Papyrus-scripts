@@ -11,6 +11,8 @@ import io
 import os
 import queue
 import tempfile
+import threading
+import time
 import unittest
 import zipfile
 from contextlib import redirect_stdout
@@ -153,6 +155,25 @@ class _FakeResponse:
         yield self._content
 
 
+class _SlowFakeResponse:
+    """Like _FakeResponse, but streams in several delayed chunks - so the
+    main download loop keeps polling _drain_progress_queue() for real wall
+    time, long enough for an earlier file's conversion to genuinely overlap
+    with this one still downloading.
+    """
+
+    def __init__(self, content: bytes, n_chunks: int = 5, delay: float = 0.08):
+        self._content = content
+        self._n_chunks = n_chunks
+        self._delay = delay
+
+    def iter_content(self, chunk_size):
+        step = max(1, len(self._content) // self._n_chunks)
+        for i in range(0, len(self._content), step):
+            time.sleep(self._delay)
+            yield self._content[i:i + step]
+
+
 class _FakeQueue:
     """Stand-in for multiprocessing.Queue that runs in-process, so tests can
     inspect exactly what was queued without a real subprocess.
@@ -164,7 +185,7 @@ class _FakeQueue:
         self._events = events
         self._label = label
 
-    def put(self, item):
+    def put(self, item, timeout=None):
         self.items.append(item)
         self._pending.append(item)
         if self._events is not None:
@@ -338,6 +359,428 @@ class TestDownloadPapyrusQueuesConversionsAsItGoes(unittest.TestCase):
         self.assertEqual(
             tasks['05.4++_combined_set_without_stereochemistry.tsv.xz']['desc'],
             'Converting papyrus++',
+        )
+
+
+class TestDownloadPapyrusSingleConvertingProgressBar(unittest.TestCase):
+    """download_papyrus shows two simultaneous, position-pinned bars -
+    'Downloading version X' at position=0 and 'Converting files' at
+    position=1 - both owned and rendered by this (parent) process only,
+    which is tqdm's well-supported case for stacked bars (see
+    _convert_worker's docstring for the multi-*process* rendering that
+    was tried and reverted instead - a different failure mode that
+    doesn't apply to two bars from one process). The 'Converting files'
+    bar must be constructed exactly once, up front (alongside the
+    converter process), at position=1.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._old_pystow_home = os.environ.get('PYSTOW_HOME')
+        self.addCleanup(self._restore_pystow_home)
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+            zh.writestr('data_size.json', '{"papyrus_proteins": 7}')
+        zip_bytes = zip_buf.getvalue()
+
+        content_by_url = {
+            'https://example.org/readme': b'a readme',
+            'https://example.org/requirements': zip_bytes,
+            'https://example.org/proteins': b'fake-tsv-xz-proteins',
+        }
+        files = {
+            '05.4': {
+                'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
+                           'size': 8, 'sha256': 'x'},
+                'requirements': {'name': '05.4_additional_files.zip',
+                                 'url': 'https://example.org/requirements',
+                                 'size': len(zip_bytes), 'sha256': 'x'},
+                'proteins': {'name': '05.4_combined_set_protein_targets.tsv.xz',
+                             'url': 'https://example.org/proteins',
+                             'size': 20, 'sha256': 'x'},
+            },
+        }
+
+        def fake_get(url, **kwargs):
+            return _FakeResponse(content_by_url[url])
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        self.tqdm_calls: list[dict] = []
+
+        def fake_tqdm(*args, **kwargs):
+            self.tqdm_calls.append(kwargs)
+            return MagicMock()
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_queue': patch(
+                'src.papyrus_scripts.download.mp.Queue', side_effect=lambda *a, **k: _FakeQueue(),
+            ),
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process', side_effect=_FakeProcess,
+            ),
+            'tqdm': patch('src.papyrus_scripts.download.tqdm', side_effect=fake_tqdm),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def _restore_pystow_home(self):
+        if self._old_pystow_home is None:
+            os.environ.pop('PYSTOW_HOME', None)
+        else:
+            os.environ['PYSTOW_HOME'] = self._old_pystow_home
+
+    def test_converting_files_bar_created_at_most_once(self):
+        with self.assertWarns(DeprecationWarning):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+
+        converting_calls = [c for c in self.tqdm_calls if c.get('desc') == 'Converting files']
+        self.assertEqual(len(converting_calls), 1)
+
+    def test_converting_files_bar_uses_position_one(self):
+        with self.assertWarns(DeprecationWarning):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+
+        converting_calls = [c for c in self.tqdm_calls if c.get('desc') == 'Converting files']
+        self.assertEqual(converting_calls[0].get('position'), 1)
+
+    def test_download_bar_uses_position_zero(self):
+        with self.assertWarns(DeprecationWarning):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+
+        download_calls = [c for c in self.tqdm_calls if 'Downloading version' in c.get('desc', '')]
+        self.assertEqual(download_calls[0].get('position'), 0)
+
+
+class _SlowConsumerProcess:
+    """Stand-in for multiprocessing.Process: consumes task_queue on a
+    background thread with an artificial per-task delay, so a real
+    maxsize=1 task_queue genuinely backpressures download_papyrus's
+    producer side - exactly like a slow real converter would, without
+    actually spawning a subprocess or touching pandas/pyarrow.
+
+    :param first_delay: seconds to wait before ever calling task_queue.get()
+        for the first time - set >0 to deterministically guarantee real
+        backpressure (regardless of thread-scheduling races) for tests that
+        need it; 0 (default) lets the worker start consuming immediately.
+    """
+
+    first_delay: float = 0.0
+
+    def __init__(self, target=None, args=(), daemon=None):
+        self._task_queue, self._error_queue, self._progress_queue, self._progress = args
+        self._thread: threading.Thread | None = None
+
+    def start(self):
+        def run():
+            first = True
+            while True:
+                if first:
+                    if self.first_delay:
+                        # Guarantee real backpressure regardless of thread
+                        # scheduling: leave the first task sitting
+                        # unconsumed in the maxsize=1 queue for a while, so
+                        # the producer (main thread) is certain to block on
+                        # its *next* put() before this thread ever calls
+                        # get().
+                        time.sleep(self.first_delay)
+                    first = False
+                task = self._task_queue.get()
+                if task is download._CONVERSION_DONE:
+                    self._error_queue.put(None)
+                    return
+                if self._progress:
+                    self._progress_queue.put((download._PROGRESS_START, task['desc'], 100))
+                for _ in range(3):
+                    time.sleep(0.1)
+                    if self._progress:
+                        self._progress_queue.put((download._PROGRESS_CHUNK, 25))
+                if self._progress:
+                    self._progress_queue.put((download._PROGRESS_DONE,))
+
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+
+    def join(self, timeout=None):
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def is_alive(self):
+        return self._thread is not None and self._thread.is_alive()
+
+
+class _SlowConsumerProcessWithStartupDelay(_SlowConsumerProcess):
+    """_SlowConsumerProcess variant that deterministically backpressures the
+    very first task, for tests specifically about the queue.Full path.
+    """
+
+    first_delay = 0.5
+
+
+class TestDownloadPapyrusBackpressureFeedback(unittest.TestCase):
+    """Regression test: task_queue.put() (maxsize=1) blocks the producer
+    whenever the converter hasn't yet taken the previous task - a real wait
+    for a large file. A plain blocking put() gave zero visible feedback
+    during that wait (not even the download bar moved), indistinguishable
+    from a genuine hang - which is exactly what was reported after the
+    eager converting_pbar was removed: no conversion progress shown at all,
+    to the point of looking stuck. download_papyrus must instead keep
+    showing something (a status message on whichever bar is on screen)
+    while backpressured, and must not block forever - a real maxsize=1
+    task_queue with a deliberately slow (but not stuck) consumer must
+    still let download_papyrus complete.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._old_pystow_home = os.environ.get('PYSTOW_HOME')
+        self.addCleanup(self._restore_pystow_home)
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+            zh.writestr('data_size.json', '{}')
+        zip_bytes = zip_buf.getvalue()
+
+        content_by_url = {
+            'https://example.org/readme': b'a readme',
+            'https://example.org/requirements': zip_bytes,
+            'https://example.org/proteins': b'fake-tsv-xz-proteins',
+            'https://example.org/papyruspp': b'fake-tsv-xz-papyruspp',
+        }
+        files = {
+            '05.4': {
+                'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
+                           'size': 8, 'sha256': 'x'},
+                'requirements': {'name': '05.4_additional_files.zip',
+                                 'url': 'https://example.org/requirements',
+                                 'size': len(zip_bytes), 'sha256': 'x'},
+                'proteins': {'name': '05.4_combined_set_protein_targets.tsv.xz',
+                             'url': 'https://example.org/proteins',
+                             'size': 20, 'sha256': 'x'},
+                'papyrus++': {'name': '05.4++_combined_set_without_stereochemistry.tsv.xz',
+                              'url': 'https://example.org/papyruspp',
+                              'size': 21, 'sha256': 'x'},
+            },
+        }
+
+        def fake_get(url, **kwargs):
+            return _FakeResponse(content_by_url[url])
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        self.pbar_mocks: list[MagicMock] = []
+
+        def fake_tqdm(*args, **kwargs):
+            m = MagicMock()
+            m._kwargs = kwargs
+            self.pbar_mocks.append(m)
+            return m
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process',
+                side_effect=_SlowConsumerProcessWithStartupDelay,
+            ),
+            'tqdm': patch('src.papyrus_scripts.download.tqdm', side_effect=fake_tqdm),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def _restore_pystow_home(self):
+        if self._old_pystow_home is None:
+            os.environ.pop('PYSTOW_HOME', None)
+        else:
+            os.environ['PYSTOW_HOME'] = self._old_pystow_home
+
+    def test_does_not_hang_when_converter_is_slower_than_downloading(self):
+        result = {}
+
+        def run():
+            with self.assertWarns(DeprecationWarning):
+                download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+            result['finished'] = True
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(timeout=10)
+        self.assertTrue(result.get('finished'), 'download_papyrus hung instead of completing')
+
+    def test_shows_feedback_while_backpressured_instead_of_going_silent(self):
+        with self.assertWarns(DeprecationWarning):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+
+        # Some bar (download bar's postfix, or converting_pbar's
+        # description) must have received a non-empty, real (non-'?') live
+        # update reflecting actual conversion progress while task_queue.put()
+        # was blocked on the slow consumer - proving the wait is visible,
+        # not silent.
+        statuses = [
+            call.args[0]
+            for m in self.pbar_mocks
+            for method in (m.set_postfix_str, m.set_description)
+            for call in method.call_args_list
+            if call.args and call.args[0]
+        ]
+        self.assertTrue(statuses, 'no feedback was shown while backpressured on task_queue.put()')
+        self.assertTrue(
+            any('/100 rows' in s for s in statuses),
+            f'no live row-progress feedback found among: {statuses}',
+        )
+
+class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.TestCase):
+    """Regression test: conversion progress used to be silently counted but
+    never displayed until the download bar closed - so a small file's
+    conversion, starting as soon as it finishes downloading and easily
+    running to completion while a later, larger file is still downloading,
+    was invisible until everything was done. converting_pbar (position=1)
+    must instead be live - receiving real description/update calls - while
+    the download bar (position=0) is still open, not only afterwards.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._old_pystow_home = os.environ.get('PYSTOW_HOME')
+        self.addCleanup(self._restore_pystow_home)
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+            zh.writestr('data_size.json', '{}')
+        zip_bytes = zip_buf.getvalue()
+
+        # Both tabular files stream slowly (real wall time) - regardless of
+        # which one download_papyrus happens to download first (ordered_
+        # ftypes' order among non-readme/requirements files is set-iteration
+        # order, not guaranteed), the other one's still-active download
+        # overlaps with the first one's background conversion - the
+        # scenario the fix is about.
+        content_by_url = {
+            'https://example.org/readme': _FakeResponse(b'a readme'),
+            'https://example.org/requirements': _FakeResponse(zip_bytes),
+            'https://example.org/proteins': _SlowFakeResponse(b'fake-tsv-xz-proteins' * 20),
+            'https://example.org/papyruspp': _SlowFakeResponse(b'fake-tsv-xz-papyruspp' * 20),
+        }
+        files = {
+            '05.4': {
+                'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
+                           'size': 8, 'sha256': 'x'},
+                'requirements': {'name': '05.4_additional_files.zip',
+                                 'url': 'https://example.org/requirements',
+                                 'size': len(zip_bytes), 'sha256': 'x'},
+                'proteins': {'name': '05.4_combined_set_protein_targets.tsv.xz',
+                             'url': 'https://example.org/proteins',
+                             'size': 20 * 20, 'sha256': 'x'},
+                'papyrus++': {'name': '05.4++_combined_set_without_stereochemistry.tsv.xz',
+                              'url': 'https://example.org/papyruspp',
+                              'size': 21 * 20, 'sha256': 'x'},
+            },
+        }
+
+        def fake_get(url, **kwargs):
+            return content_by_url[url]
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        self.pbar_mocks: list[MagicMock] = []
+        # A shared manager so calls across the two separate bar mocks can be
+        # compared in one true chronological order (manager.mock_calls
+        # interleaves attached children's calls in real call order).
+        self.manager = MagicMock()
+
+        def fake_tqdm(*args, **kwargs):
+            m = MagicMock()
+            m._kwargs = kwargs
+            self.pbar_mocks.append(m)
+            self.manager.attach_mock(m, f'bar{len(self.pbar_mocks)}')
+            return m
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process', side_effect=_SlowConsumerProcess,
+            ),
+            'tqdm': patch('src.papyrus_scripts.download.tqdm', side_effect=fake_tqdm),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def _restore_pystow_home(self):
+        if self._old_pystow_home is None:
+            os.environ.pop('PYSTOW_HOME', None)
+        else:
+            os.environ['PYSTOW_HOME'] = self._old_pystow_home
+
+    def test_download_bar_shows_conversion_progress_before_it_closes(self):
+        with self.assertWarns(DeprecationWarning):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+
+        download_bars = [m for m in self.pbar_mocks if 'Downloading version' in m._kwargs.get('desc', '')]
+        converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
+        self.assertEqual(len(download_bars), 1)
+        self.assertEqual(len(converting_bars), 1)
+        pbar, converting_pbar = download_bars[0], converting_bars[0]
+
+        # manager.mock_calls interleaves both bars' calls in true
+        # chronological order - unlike comparing indices within each mock's
+        # own (separate) call list.
+        calls = self.manager.mock_calls
+        names = [f'bar{i + 1}' for i in range(len(self.pbar_mocks))]
+        pbar_name = next(name for name, m in zip(names, self.pbar_mocks) if m is pbar)
+        converting_name = next(name for name, m in zip(names, self.pbar_mocks) if m is converting_pbar)
+
+        close_index = next(i for i, c in enumerate(calls) if c[0] == f'{pbar_name}.close')
+        live_updates_before_close = [
+            c for i, c in enumerate(calls)
+            if i < close_index
+            and c[0] in (f'{converting_name}.set_description', f'{converting_name}.update')
+            and c.args and c.args[0]
+        ]
+        self.assertTrue(
+            live_updates_before_close,
+            'converting_pbar never received a live update before the download bar closed',
+        )
+        self.assertTrue(
+            any('Converting' in str(c.args[0]) and '/100 rows' in str(c.args[0])
+                for c in live_updates_before_close if c[0] == f'{converting_name}.set_description'),
+            f'no real row-progress description shown before download bar closed: {live_updates_before_close}',
         )
 
 

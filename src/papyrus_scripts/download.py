@@ -629,6 +629,7 @@ def download_papyrus(outdir: str | Path | None = None,
                 unit='B',
                 unit_scale=True,
                 ncols=_PBAR_NCOLS,
+                position=0,
             )
 
         schemas: dict = {}
@@ -643,28 +644,21 @@ def download_papyrus(outdir: str | Path | None = None,
         # file N rather than the two happening strictly one after another.
         # The worker itself renders no progress bars - it reports progress
         # via progress_queue instead (see _convert_worker's docstring), and
-        # this process renders at most one tqdm bar at a time, always at
-        # position 0 (tqdm's default, and its only reliably-behaved case;
-        # see _convert_worker's docstring for what non-zero positions did).
-        # While the download bar above is still active, conversion
-        # progress is only counted (files_converted), never displayed -
-        # only once that bar is closed does a second, equally
-        # position-0 "Converting files" bar get created to show (and catch
-        # up on) whatever conversion progress has happened since, live
-        # from then on.
+        # both bars below are rendered by this (parent) process only - one
+        # process owning every bar it displays is tqdm's well-supported
+        # case for simultaneous position-pinned bars (see
+        # _convert_worker's docstring for the multi-*process* rendering
+        # that was tried and reverted; that failure mode doesn't apply
+        # here). converting_pbar (position=1) is created up front and kept
+        # live for the whole download+conversion overlap, right below the
+        # download bar (position=0), instead of staying hidden until
+        # downloading finishes.
         converter_process: mp.Process | None = None
         task_queue: mp.Queue | None = None
         error_queue: mp.Queue | None = None
         progress_queue: mp.Queue | None = None
         converting_pbar: tqdm | None = None
         files_converted = 0
-        download_finished = False
-        # Current file's row-level progress, folded into converting_pbar's
-        # description text (e.g. "Converting 2D_papyrus (12.3k/59.5M rows)")
-        # rather than a second tqdm bar - a large file's conversion can take
-        # several minutes, so some live feedback within it still matters,
-        # but a second bar object here would mean a second active position
-        # again (see this block's docstring above for why that's unsafe).
         current_desc = ''
         current_rows = 0
         current_total: int | None = None
@@ -677,7 +671,7 @@ def download_papyrus(outdir: str | Path | None = None,
 
         def _drain_progress_queue() -> None:
             """Apply every conversion-progress message available right now, without blocking."""
-            nonlocal converting_pbar, files_converted, current_desc, current_rows, current_total
+            nonlocal files_converted, current_desc, current_rows, current_total
             # Only ever called once progress_queue has been created (see call sites).
             assert progress_queue is not None
             while True:
@@ -695,7 +689,7 @@ def download_papyrus(outdir: str | Path | None = None,
                     current_rows += message[1]
                 elif kind == _PROGRESS_DONE:
                     files_converted += 1
-                if not download_finished or converting_pbar is None:
+                if converting_pbar is None:
                     continue
                 if kind == _PROGRESS_DONE:
                     converting_pbar.update(1)
@@ -704,25 +698,33 @@ def download_papyrus(outdir: str | Path | None = None,
 
         def _wait_for_converter() -> None:
             """Block until the converter process exits, draining progress messages meanwhile."""
-            nonlocal converting_pbar, download_finished
             # Only ever called once converter_process has been started (see call sites).
             assert converter_process is not None
-            download_finished = True
-            if progress and converting_pbar is None:
-                converting_pbar = tqdm(
-                    total=to_convert_total, initial=files_converted,
-                    desc='Converting files', unit=' file', ncols=_PBAR_NCOLS,
-                )
-                if current_desc:
-                    # Catch up: a file may already be mid-conversion by the
-                    # time the download bar closes and this one takes over.
-                    _update_current_file_description()
             while converter_process.is_alive():
                 _drain_progress_queue()
                 converter_process.join(timeout=0.1)
             _drain_progress_queue()
             if converting_pbar is not None:
                 converting_pbar.close()
+
+        def _enqueue(item) -> None:
+            """Put *item* on task_queue, staying responsive while backpressured.
+
+            task_queue's maxsize=1 means this blocks whenever the converter
+            hasn't yet taken the previous task - which can be a long wait
+            for a large file. A plain blocking put() here previously gave
+            zero feedback during that wait, indistinguishable from a
+            genuine hang. Retrying with a short timeout instead lets each
+            iteration drain the progress queue, which keeps converting_pbar
+            live throughout the wait.
+            """
+            assert task_queue is not None
+            while True:
+                try:
+                    task_queue.put(item, timeout=0.2)
+                    return
+                except queue.Full:
+                    _drain_progress_queue()
 
         if not keep_xz:
             to_convert_total = 0
@@ -739,7 +741,7 @@ def download_papyrus(outdir: str | Path | None = None,
             if progress:
                 converting_pbar = tqdm(
                     total=to_convert_total, desc='Converting files', unit=' file',
-                    position=1, ncols=_PBAR_NCOLS,
+                    ncols=_PBAR_NCOLS, position=1,
                 )
             converter_process = mp.Process(
                 target=_convert_worker,
@@ -827,7 +829,7 @@ def download_papyrus(outdir: str | Path | None = None,
                                 sizes = cast(dict, read_jsonfile(papyrus_version_root.join(name='data_size.json')))
                                 metadata_loaded = True
                         assert task_queue is not None
-                        task_queue.put({
+                        _enqueue({
                             'fpath': fpath,
                             'parquet_path': parquet_path,
                             'schema_overrides': schemas.get(_SCHEMA_KEY_BY_FTYPE.get(ftype)),
@@ -846,16 +848,14 @@ def download_papyrus(outdir: str | Path | None = None,
             # converter process drain and exit cleanly instead of leaving
             # it running in the background, but propagate the original
             # failure rather than whatever it reports back, if anything.
-            # pbar (if not already closed by the retry-exhausted branch
-            # above) must close before _wait_for_converter's own bar is
-            # created - both are position-0 tqdm bars, and only one may be
-            # active at a time (tqdm.close() is idempotent, so closing an
-            # already-closed pbar here is harmless).
+            # tqdm.close() is idempotent, so closing an already-closed
+            # pbar here (e.g. after the retry-exhausted branch above
+            # already closed it) is harmless.
             if progress:
                 pbar.close()
             if converter_process is not None:
                 assert task_queue is not None
-                task_queue.put(_CONVERSION_DONE)
+                _enqueue(_CONVERSION_DONE)
                 _wait_for_converter()
             raise
 
@@ -868,7 +868,7 @@ def download_papyrus(outdir: str | Path | None = None,
             # as downloaded.
             assert task_queue is not None
             assert error_queue is not None
-            task_queue.put(_CONVERSION_DONE)
+            _enqueue(_CONVERSION_DONE)
             _wait_for_converter()
             error = error_queue.get()
             if error is not None:
