@@ -29,6 +29,72 @@ def make_version(key):
     return pv
 
 
+class TestPrintBanner(unittest.TestCase):
+    """Unit tests for download._print_banner, the boxed emoji-tagged notice
+    used for the download banners (old-format-data notice, Papyrus++
+    disclaimer, disk-space error).
+    """
+
+    def _render(self, *args, **kwargs):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            download._print_banner(*args, **kwargs)
+        return buf.getvalue()
+
+    def test_title_line_includes_the_emoji(self):
+        output = self._render('🚫', 'Some title')
+        self.assertIn('🚫 Some title', output)
+
+    def test_body_lines_are_all_included(self):
+        output = self._render('📢', 'Title', 'line one', 'line two')
+        self.assertIn('line one', output)
+        self.assertIn('line two', output)
+
+    def test_every_line_has_matching_left_and_right_borders(self):
+        output = self._render('📢', 'Title', 'a body line')
+        content_lines = [line for line in output.splitlines() if line.startswith('│')]
+        self.assertTrue(content_lines)
+        for line in content_lines:
+            self.assertTrue(line.endswith('│'), line)
+
+    def test_top_and_bottom_rules_use_box_drawing_corners(self):
+        output = self._render('📢', 'Title', 'a body line')
+        lines = output.splitlines()
+        self.assertTrue(lines[0].startswith('┌') and lines[0].endswith('┐'))
+        self.assertTrue(lines[-1].startswith('└') and lines[-1].endswith('┘'))
+
+    def test_title_row_aligns_with_body_rows_despite_the_emoji(self):
+        # Regression test: len() counts an emoji as one character, but
+        # terminals render it two columns wide - padding with plain
+        # .ljust() (len()-based) therefore under-pads the title row,
+        # visibly misaligning its right border relative to plain-text
+        # body rows. All rows (including rule lines) must occupy the same
+        # real display width.
+        output = self._render('📢', 'Some title', 'a plain body line')
+        widths = {download._display_width(line) for line in output.splitlines() if line}
+        self.assertEqual(len(widths), 1, f'rows have inconsistent display widths: {widths}')
+
+    def test_long_body_line_is_wrapped_instead_of_overflowing(self):
+        # Regression test: a body line longer than the banner's fixed width
+        # (e.g. a dynamically-built list of several stale versions) used to
+        # be printed as-is, overflowing straight past the right border
+        # instead of wrapping onto additional rows.
+        long_line = (
+            "(or remove_papyrus(version=['05.4', '05.7', '05.5', '2022.01', "
+            "'2022.04'], version_root=True) from Python)"
+        )
+        output = self._render('📢', 'Title', long_line)
+        content_lines = [line for line in output.splitlines() if line.startswith('│')]
+        for line in content_lines:
+            self.assertEqual(download._display_width(line), download._BANNER_WIDTH, line)
+        # The long line's own words must still all be present, just spread
+        # across more than one row.
+        joined = ' '.join(content_lines)
+        self.assertIn('remove_papyrus', joined)
+        self.assertIn('from Python', joined)
+        self.assertGreater(len(content_lines), 1)
+
+
 class TestRemovePapyrusVersionRoot(unittest.TestCase):
     """Regression tests: remove_papyrus used `return` instead of `continue`
     inside its `for pv in versions:` loop, silently dropping every version
@@ -145,6 +211,10 @@ class TestDownloadPapyrusStaleFormatNotice(unittest.TestCase):
         self.assertIn('--version 05.7', notice)
         self.assertIn('--remove_version', notice)
         self.assertNotIn('--version all', notice)
+        # Boxed, emoji-tagged banner rather than a plain '##########' rule.
+        self.assertIn('📢', notice)
+        self.assertIn('┌', notice)
+        self.assertIn('└', notice)
 
 
 class _FakeResponse:

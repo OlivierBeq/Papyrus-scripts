@@ -6,6 +6,8 @@ import multiprocessing as mp
 import os
 import queue
 import shutil
+import textwrap
+import unicodedata
 import warnings
 import zipfile
 from pathlib import Path
@@ -79,6 +81,55 @@ _SIZE_KEY_BY_FTYPE = {
 #: Fixed progress-bar width (characters) for the download and conversion
 #: bars, so none of them grows to fill an entire wide terminal.
 _PBAR_NCOLS = 100
+
+#: Fixed width (characters) for the boxed notice/disclaimer/error banners
+#: printed by download_papyrus - kept in the same spirit as _PBAR_NCOLS.
+_BANNER_WIDTH = 78
+
+
+def _display_width(text: str) -> int:
+    """Approximate the terminal column width of *text*.
+
+    ``len()`` counts an emoji as a single character, but most terminals
+    render it two columns wide - padding banner rows with ``.ljust()``
+    directly therefore misaligns any row containing one relative to plain-
+    text rows. Unicode's East Asian Width property ('W'ide/'F'ullwidth)
+    reliably tags emoji this way too, without needing a wcwidth dependency.
+    """
+    return sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in text)
+
+
+def _ljust_display(text: str, width: int) -> str:
+    """Right-pad *text* with spaces until it occupies *width* display columns."""
+    return text + ' ' * max(0, width - _display_width(text))
+
+
+def _print_banner(emoji: str, title: str, *lines: str) -> None:
+    """Print a boxed, emoji-tagged banner for a user-facing notice/error.
+
+    :param emoji: single leading emoji tagging the banner's kind (info,
+        warning, error, ...)
+    :param title: short header line (assumed to already fit - unlike
+        *lines*, never dynamically long, so not wrapped)
+    :param lines: body lines, word-wrapped to fit the banner's fixed width
+        (e.g. a dynamically-built list of stale versions can otherwise run
+        arbitrarily long and overflow past the border)
+    """
+    inner_width = _BANNER_WIDTH - 2
+    text_width = _BANNER_WIDTH - 3  # inner_width, minus the leading space after '│'
+    rule = '─' * inner_width
+
+    def _row(text: str) -> str:
+        return f'│ {_ljust_display(text, text_width)}│'
+
+    print(f'┌{rule}┐')
+    print(_row(f'{emoji} {title}'))
+    if lines:
+        print(f'├{rule}┤')
+        for line in lines:
+            for wrapped in textwrap.wrap(line, text_width) or ['']:
+                print(_row(wrapped))
+    print(f'└{rule}┘')
 
 
 def _parquet_sibling(fpath: Path) -> Path | None:
@@ -515,16 +566,15 @@ def download_papyrus(outdir: str | Path | None = None,
         _stale = [v for v in (read_jsonfile(_versions_json) or []) if v in _old_fmt_keys]
         if _stale:
             version_flags = ' '.join(f'--version {v}' for v in _stale)
-            print(
-                '########## IMPORTANT NOTICE ##########\n'
-                'Papyrus-scripts now uses a new folder layout that includes the\n'
-                'revision number (e.g. 2022.04.2/ instead of 05.4/).\n'
-                'Existing data downloaded with the previous format was found:\n'
-                f'  {", ".join(_stale)}\n'
-                'Please remove those old folders before downloading new data:\n'
-                f'  papyrus clean {version_flags} --remove_version\n'
-                f'(or remove_papyrus(version={_stale!r}, version_root=True) from Python)\n'
-                '######################################'
+            _print_banner(
+                '📢', 'Notice: new data folder layout',
+                'Papyrus-scripts now uses a new folder layout that includes the',
+                'revision number (e.g. 2022.04.2/ instead of 05.4/).',
+                'Existing data downloaded with the previous format was found:',
+                f'  {", ".join(_stale)}',
+                'Please remove those old folders before downloading new data:',
+                f'  papyrus clean {version_flags} --remove_version',
+                f'(or remove_papyrus(version={_stale!r}, version_root=True) from Python)',
             )
 
     files = get_papyrus_links(offline=not update_links)
@@ -552,12 +602,11 @@ def download_papyrus(outdir: str | Path | None = None,
             if not only_pp:
                 downloads.add('2D_papyrus')
             elif progress:
-                print(
-                    '########## DISCLAIMER ##########\n'
-                    'You are downloading the high-quality Papyrus++ dataset.\n'
-                    'Should you want to access the entire, though of lower quality, Papyrus dataset,\n'
-                    'look into additional switches of this command.\n'
-                    '################################'
+                _print_banner(
+                    '💡', 'Downloading the Papyrus++ subset',
+                    'You are downloading the high-quality Papyrus++ dataset.',
+                    'Should you want to access the entire, though of lower quality,',
+                    'Papyrus dataset, look into additional switches of this command.',
                 )
             if structures:
                 downloads.add('2D_structures')
@@ -597,19 +646,15 @@ def download_papyrus(outdir: str | Path | None = None,
         total = _total_size(downloads, version_files)
 
         if progress:
-            print(
-                f'Number of files to be downloaded: {len(downloads)}\n'
-                f'Total size: {tqdm.format_sizeof(total)}B'
-            )
+            print(f'📦 {len(downloads)} file(s) to download - {tqdm.format_sizeof(total)}B total')
 
         base = papyrus_version_root.base
         if not enough_disk_space(base, total, disk_margin):
-            print(
-                '########## ERROR ##########\n'
-                f'Not enough disk space ({disk_margin:.0%} kept for safety)\n'
-                f'Available: {tqdm.format_sizeof(get_disk_space(base))}B\n'
-                f'Required:  {tqdm.format_sizeof(total)}B\n'
-                '################################'
+            _print_banner(
+                '🚫', 'Not enough disk space',
+                f'Only {disk_margin:.0%} of free space is kept as a safety margin.',
+                f'Available: {tqdm.format_sizeof(get_disk_space(base))}B',
+                f'Required:  {tqdm.format_sizeof(total)}B',
             )
             return
 
