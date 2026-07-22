@@ -608,6 +608,75 @@ class TestPapyrusVersion(unittest.TestCase):
         v = IO.PapyrusVersion(version='05.4')
         self.assertEqual(str(v), '2022.04.2')
 
+    def test_three_part_version_with_known_revision_resolves(self):
+        v = IO.PapyrusVersion(version='2022.11.4')
+        self.assertEqual(v.version, '2022.11.4')
+
+    def test_three_part_version_with_out_of_range_revision_raises(self):
+        # Regression test: the guard used to compare revisions as plain
+        # strings ('4' < '130' is False lexicographically, since '4' > '1'),
+        # so an out-of-range revision like 130 for alias 2022.11 (max
+        # revision 4) was silently accepted instead of raising.
+        with self.assertRaises(ValueError) as ctx:
+            IO.PapyrusVersion(version='2022.11.130')
+        self.assertIn('130', str(ctx.exception))
+        self.assertIn('4', str(ctx.exception))
+
+    def test_three_part_version_with_next_revision_raises(self):
+        # Smaller, more realistic out-of-range case than the 130 example.
+        with self.assertRaises(ValueError):
+            IO.PapyrusVersion(version='2022.11.5')
+
+    def test_double_digit_revision_compared_numerically_not_lexicographically(self):
+        # Regression test: revision.max() on the string 'revision' column
+        # used to pick the lexicographically greatest string ('9' > '10'),
+        # not the numerically greatest one. Simulate an alias that has
+        # reached a double-digit revision and check every code path that
+        # calls max()/comparisons on 'revision' resolves to '10', not '9'.
+        original = IO.PapyrusVersion.aliases
+        alias = original.iloc[0]['alias']
+        extra = original.iloc[[0]].copy()
+        extra['revision'] = '10'
+        patched = pd.concat([original, extra], ignore_index=True)
+        IO.PapyrusVersion.aliases = patched
+        try:
+            # Resolving by alias alone (no revision) should pick '10', not '9'.
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                v = IO.PapyrusVersion(version=alias)
+            self.assertEqual(v.revision, '10')
+
+            # The 3-part fallback path should accept revision 10 (not reject
+            # it as out-of-range) and still reject revision 11.
+            v10 = IO.PapyrusVersion(version=f'{alias}.10')
+            self.assertEqual(v10.revision, '10')
+            with self.assertRaises(ValueError):
+                IO.PapyrusVersion(version=f'{alias}.11')
+
+            # is_latest must also treat '10' as greater than '9'.
+            if alias == patched['alias'].max():
+                self.assertTrue(v10.is_latest)
+        finally:
+            IO.PapyrusVersion.aliases = original
+
+    def test_resolve_latest_picks_numerically_greatest_revision(self):
+        # Regression test: 'latest' resolution used revision.max() on the
+        # string column for the winning alias; a double-digit revision (e.g.
+        # '10') must beat a single-digit one (e.g. '9'), not lose to it
+        # lexicographically.
+        original = IO.PapyrusVersion.aliases
+        latest_alias = original['alias'].max()
+        latest_row = original[original['alias'] == latest_alias].iloc[[0]].copy()
+        extra = latest_row.copy()
+        extra['revision'] = '10'
+        patched = pd.concat([original, extra], ignore_index=True)
+        IO.PapyrusVersion.aliases = patched
+        try:
+            v = IO.PapyrusVersion(version='latest')
+            self.assertEqual(v.revision, '10')
+        finally:
+            IO.PapyrusVersion.aliases = original
+
 
 class TestProcessDataVersion(unittest.TestCase):
     """process_data_version reads pystow's home directory, so PYSTOW_HOME is

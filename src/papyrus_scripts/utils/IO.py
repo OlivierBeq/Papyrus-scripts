@@ -392,8 +392,9 @@ class PapyrusVersion:
                 # full table (not the latest-alias subset) and fail when the latest
                 # alias does not have the globally highest revision number.
                 latest_alias = self.aliases['alias'].max()
-                latest_rev = (
-                    self.aliases[self.aliases['alias'] == latest_alias]['revision'].max()
+                # revision is a string column; compare numerically so e.g. '10' > '9'
+                latest_rev = max(
+                    self.aliases[self.aliases['alias'] == latest_alias]['revision'], key=int
                 )
                 query = f'alias == "{latest_alias}" and revision == "{latest_rev}"'
             elif version.count('.') == 2:
@@ -426,7 +427,7 @@ class PapyrusVersion:
                 # isn't "latest revision selected", it's the only one there is.
                 if matches['revision'].nunique() > 1:
                     warnings.warn('Revision number not provided; latest revision selected.')
-                latest_rev = matches['revision'].max()
+                latest_rev = max(matches['revision'], key=int)
                 query = (
                     f'(version == "{version}" or alias == "{version}") '
                     f'and (revision == "{latest_rev}")'
@@ -462,12 +463,15 @@ class PapyrusVersion:
             if version is not None and version.count('.') == 2:
                 parts = version.split('.')
                 split_alias = '.'.join(parts[:2])
-                split_revision = parts[2]
+                split_revision = parts[2].lstrip('0')
                 alias_rows = self.aliases[
                     (self.aliases['version'] == split_alias) | (self.aliases['alias'] == split_alias)
                 ]
                 if not alias_rows.empty:
                     row = alias_rows.iloc[0].copy()
+                    if int(row['revision']) < int(split_revision):
+                        raise ValueError(f'Revision {split_revision} is not available for version {row["alias"]}. '
+                                         f'Latest revision: {row["revision"]}.')
                     row['revision'] = split_revision
                     subset = pd.DataFrame([row])
                     _fallback_handled = True
@@ -533,7 +537,7 @@ class PapyrusVersion:
     def is_latest(self) -> bool:
         """Return True if this is the most recent version in the known releases table."""
         latest_alias = self.aliases['alias'].max()
-        latest_rev = self.aliases[self.aliases['alias'] == latest_alias]['revision'].max()
+        latest_rev = max(self.aliases[self.aliases['alias'] == latest_alias]['revision'], key=int)
         return self._version == latest_alias and self.revision == latest_rev
 
     # ------------------------------------------------------------------
@@ -710,7 +714,7 @@ def process_data_version(
     if not pv.is_latest:
         aliases = PapyrusVersion.aliases
         latest_alias = aliases['alias'].max()
-        latest_rev = aliases[aliases['alias'] == latest_alias]['revision'].max()
+        latest_rev = max(aliases[aliases['alias'] == latest_alias]['revision'], key=int)
         warnings.warn(
             f"Papyrus {pv.version!r} is not the latest release "
             f"(latest: '{latest_alias}.{latest_rev}'). "
