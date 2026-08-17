@@ -12,6 +12,7 @@ import inspect
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import polars as pl
 
 from src.papyrus_scripts.fingerprint import MorganFingerprint
@@ -413,7 +414,7 @@ class TestPapyrusDatasetKeepOriginalFiles(unittest.TestCase):
 
 class TestPapyrusDatasetDiskMargin(unittest.TestCase):
     """disk_margin must reach every download_papyrus() call the object API
-    can trigger, not the old hardcoded 0.0.
+    can trigger.
     """
 
     def _run_init(self, **kwargs):
@@ -491,6 +492,67 @@ class TestPapyrusDatasetDiskMargin(unittest.TestCase):
         ):
             protein_set.protein_descriptors('unirep')
         self.assertEqual(mock_download.call_args.kwargs['disk_margin'], 0.25)
+
+
+class TestProteinDescriptorsCustomPath(unittest.TestCase):
+    """protein_descriptors('custom', ...) must accept a custom_descriptor_path
+    and forward it as source_path, without attempting the Papyrus
+    auto-download fallback (custom files aren't Papyrus-hosted).
+    """
+
+    def _protein_set(self):
+        fake_version = MagicMock()
+        fake_version.pystow_path_key = '2022.04.2'
+        papyrus_params = dict(
+            is3d=False, version=fake_version, plusplus=True, chunksize=None,
+            source_path=None, download_progress=False,
+            keep_original_files=False, disk_margin=0.10,
+        )
+        proteins = pl.DataFrame({'target_id': ['P1', 'P2']})
+        return PapyrusProteinSet(proteins, papyrus_params, num_proteins=2)
+
+    def test_custom_path_forwarded_as_source_path(self):
+        protein_set = self._protein_set()
+        with patch(
+            'src.papyrus_scripts.oop.reader.read_protein_descriptors',
+            return_value=pl.DataFrame(),
+        ) as mock_read:
+            protein_set.protein_descriptors('custom', custom_descriptor_path='/tmp/custom.tsv')
+        self.assertEqual(mock_read.call_args.kwargs['source_path'], '/tmp/custom.tsv')
+        self.assertEqual(mock_read.call_args.kwargs['desc_type'], 'custom')
+
+    def test_missing_custom_path_raises_without_downloading(self):
+        protein_set = self._protein_set()
+        with (
+            patch(
+                'src.papyrus_scripts.oop.reader.read_protein_descriptors',
+                side_effect=ValueError('source_path must point to an existing file'),
+            ),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+        ):
+            with self.assertRaises(ValueError):
+                protein_set.protein_descriptors('custom')
+        mock_download.assert_not_called()
+
+
+class TestFromDataframeConvertsToPolars(unittest.TestCase):
+    """from_dataframe(pandas_df, ...) must convert to pl.DataFrame - the rest
+    of the library (filter methods, _validate_data_type) is polars-only.
+    """
+
+    def _from_pandas_dataset(self):
+        df = pd.DataFrame({'connectivity': ['C1', 'C2'], 'Quality': ['High', 'Low']})
+        with patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()):
+            return PapyrusDataset.from_dataframe(df=df, is3d=False, version='2022.04.2')
+
+    def test_bioactivity_data_is_polars(self):
+        dataset = self._from_pandas_dataset()
+        self.assertIsInstance(dataset.papyrus_bioactivity_data, pl.DataFrame)
+
+    def test_keep_quality_does_not_raise(self):
+        dataset = self._from_pandas_dataset()
+        result = dataset.keep_quality('high').aggregate()
+        self.assertEqual(list(result['connectivity']), ['C1'])
 
 
 class TestPapyrusDatasetRemoveUsesConsistentFolderKey(unittest.TestCase):

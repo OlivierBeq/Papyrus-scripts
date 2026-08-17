@@ -419,7 +419,7 @@ class PapyrusDataset:
 
     @staticmethod
     def from_dataframe(
-            df: pd.DataFrame,
+            df: pd.DataFrame | pl.DataFrame,
             is3d: bool,
             version: str | IO.PapyrusVersion,
             plusplus: bool = True,
@@ -447,6 +447,8 @@ class PapyrusDataset:
         :returns: a :class:`PapyrusDataset` wrapping *df*
         """
         pv = _ensure_papyrus_version(version)
+        if isinstance(df, pd.DataFrame):
+            df = pl.from_pandas(df)
         dataset = PapyrusDataset.__new__(PapyrusDataset)
         dataset.papyrus_bioactivity_data = df
         dataset.papyrus_protein_data = reader.read_protein_set(
@@ -1470,28 +1472,41 @@ class PapyrusDescriptorSet:
 class ProteinSet(ABC):
     """Abstract base for protein-target set classes."""
 
-    data: pd.DataFrame
+    data: pd.DataFrame | pl.DataFrame
     papyrus_params: dict
 
     @abstractmethod
-    def aggregate(self, progress: bool = False) -> pd.DataFrame:
+    def aggregate(self, progress: bool = False) -> pd.DataFrame | pl.DataFrame:
         """Materialise the protein data into a DataFrame."""
 
     def protein_descriptors(
             self,
             desc_type: str | prodec.Descriptor | prodec.Transform,
             progress: bool = False,
+            custom_descriptor_path: str | Path | None = None,
     ) -> pd.DataFrame:
         """Return protein descriptors for the targets in this set.
 
-        Downloads the descriptor file if not yet available locally.
+        Downloads the descriptor file if not yet available locally (except
+        for ``'custom'`` - not Papyrus-hosted).
 
         :param desc_type: descriptor type: ``'unirep'``, ``'custom'``, or a
             ProDEC :class:`~prodec.Descriptor` / :class:`~prodec.Transform`
         :param progress: show progress while aggregating
+        :param custom_descriptor_path: path to the custom TSV descriptor
+            file; required (and only used) when *desc_type* is ``'custom'``
         """
         self.data = self.aggregate(progress)
         ids = self.data['target_id'].unique()
+        if desc_type == 'custom':
+            return reader.read_protein_descriptors(
+                desc_type=desc_type,
+                version=self.papyrus_params['version'],
+                chunksize=self.papyrus_params['chunksize'],
+                source_path=custom_descriptor_path,
+                ids=ids,
+                verbose=progress,
+            )
         try:
             return reader.read_protein_descriptors(
                 desc_type=desc_type,

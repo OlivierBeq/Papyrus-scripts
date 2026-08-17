@@ -397,6 +397,7 @@ def keep_quality(
         or ``'high'``
     :raises ValueError: if *min_quality* is not recognised
     """
+    _validate_data_type(data)
     qualities = ['low', 'medium', 'high']
     if min_quality.lower() not in qualities:
         raise ValueError(f'min_quality must be one of {qualities}, got {min_quality!r}')

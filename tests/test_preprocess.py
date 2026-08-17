@@ -66,11 +66,17 @@ class TestKeepQuality(unittest.TestCase):
             pp.keep_quality(self.df, 'bogus')
 
     def test_invalid_data_type_raises(self):
-        # keep_quality does no input-type validation of its own (unlike the
-        # filters below that call _validate_data_type) - a non-DataFrame input
-        # fails naturally when `.filter` is called on it.
-        with self.assertRaises(AttributeError):
+        # keep_quality now calls _validate_data_type itself and raises
+        # TypeError (not ValueError), matching the other filters below.
+        with self.assertRaises(TypeError):
             pp.keep_quality([1, 2, 3], 'high')
+
+    def test_pandas_dataframe_raises_clean_type_error(self):
+        # A pd.DataFrame must hit _validate_data_type's clean TypeError, not
+        # pandas' own unrelated DataFrame.filter(items=...).
+        import pandas as pd
+        with self.assertRaisesRegex(TypeError, 'pl.DataFrame or pl.LazyFrame'):
+            pp.keep_quality(pd.DataFrame({'Quality': ['High']}), 'high')
 
 
 class TestKeepSource(unittest.TestCase):
