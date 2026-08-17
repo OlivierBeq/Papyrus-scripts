@@ -270,6 +270,17 @@ class Mutex(click.Option):
         return super().handle_parse_result(ctx, opts, args)
 
 
+def _versioned_outfile(output: str | None, version_: str, multi: bool) -> str | None:
+    """Suffix *output* with *version_* when *multi* versions are requested.
+
+    Without this, every version would overwrite the same *output* path.
+    """
+    if output is None or not multi:
+        return output
+    path = Path(output)
+    return str(path.with_name(f'{path.stem}_{version_}{path.suffix}'))
+
+
 @main.command(help='Create a FPSubSim2 library for substructure/similarity searches.',
               context_settings=CONTEXT_SETTINGS
               )
@@ -347,9 +358,11 @@ def fpsubsim2(indir: str | None, output: str | None, version: tuple[str, ...], i
         output = None
 
     fpss = FPSubSim2()
+    multi_version = len(version) > 1
     if 'none' in [fp.lower() for fp in fingerprint]:
         for version_ in version:
-            fpss.create_from_papyrus(is3d=is3D, version=version_, outfile=output,
+            fpss.create_from_papyrus(is3d=is3D, version=version_,
+                                     outfile=_versioned_outfile(output, version_, multi_version),
                                      fingerprint=None, root_folder=indir,
                                      progress=verbose, njobs=njobs
                                      )
@@ -383,7 +396,8 @@ def fpsubsim2(indir: str | None, output: str | None, version: tuple[str, ...], i
                     sys.exit()
             fingerprints.append(get_fp_from_name(fp_name, **fp_param_values))
         for version_ in version:
-            fpss.create_from_papyrus(is3d=is3D, version=version_, outfile=output,
+            fpss.create_from_papyrus(is3d=is3D, version=version_,
+                                     outfile=_versioned_outfile(output, version_, multi_version),
                                      fingerprint=fingerprints, root_folder=indir,
                                      progress=verbose, njobs=njobs
                                      )
