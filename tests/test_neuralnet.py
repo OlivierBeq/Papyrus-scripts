@@ -13,8 +13,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import polars as pl
 
 from src.papyrus_scripts import neuralnet as nn_mod
+from src.papyrus_scripts.neuralnet import BaseNN
 
 TORCH_AVAILABLE = nn_mod.HAS_TORCH
 
@@ -29,6 +31,17 @@ if TORCH_AVAILABLE:
 
 def _rng():
     return np.random.default_rng(0)
+
+
+class TestPrepX(unittest.TestCase):
+    """BaseNN._prep_X needs no torch/skorch - pure numpy/pandas/polars logic."""
+
+    def test_polars_dataframe_matches_pandas_equivalent(self):
+        data = [[1.0, 2.0], [3.0, 4.0]]
+        from_pandas = BaseNN._prep_X(pd.DataFrame(data))
+        from_polars = BaseNN._prep_X(pl.DataFrame(data, schema=['0', '1'], orient='row'))
+        np.testing.assert_array_equal(from_polars, from_pandas)
+        self.assertEqual(from_polars.dtype, np.dtype('float32'))
 
 
 @unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')

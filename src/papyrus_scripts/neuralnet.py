@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import polars as pl
 
 try:
     import skorch
@@ -169,9 +170,11 @@ class BaseNN:
         return None
 
     @staticmethod
-    def _prep_X(X: pd.DataFrame | np.ndarray) -> np.ndarray:
+    def _prep_X(X: pd.DataFrame | pl.DataFrame | np.ndarray) -> np.ndarray:
         if isinstance(X, pd.DataFrame):
             X = X.values
+        elif isinstance(X, pl.DataFrame):
+            X = X.to_numpy()
         return np.asarray(X, dtype='float32')
 
     def _prep_y(self, y: pd.Series | pd.DataFrame | np.ndarray) -> np.ndarray:
