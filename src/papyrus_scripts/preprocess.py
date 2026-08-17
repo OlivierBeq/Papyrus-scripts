@@ -679,21 +679,16 @@ def keep_protein_class(
                     sub_mask = sub_mask | (split_classes[col] == pattern.lower())
             mask = mask | sub_mask
 
-    matched_indices = [i for i, m in enumerate(mask.to_list()) if m]
-    targets         = protein_data['target_id'].gather(matched_indices)
-    classification_col = protein_data['Classification'].gather(matched_indices)
-
-    target_df: pl.DataFrame | pl.LazyFrame = pl.DataFrame({
-        'target_id':      targets,
-        'Classification': classification_col,
-    })
+    matched = protein_data.filter(mask).select(['target_id', 'Classification'])
+    target_ids = matched['target_id']
+    target_df: pl.DataFrame | pl.LazyFrame = matched
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         target_df = target_df.lazy()
     # data and target_df are guaranteed to be the same concrete type by the
     # isinstance check above; polars' overloaded join() can't express that
     # invariant for a plain DataFrame | LazyFrame union.
-    return data.filter(pl.col('target_id').is_in(targets)).join(target_df, on='target_id')  # type: ignore[arg-type]
+    return data.filter(pl.col('target_id').is_in(target_ids)).join(target_df, on='target_id')  # type: ignore[arg-type]
 
 
 def keep_organism(
@@ -728,14 +723,9 @@ def keep_organism(
     else:
         mask = org_col.is_in([o.lower() for o in organism])
 
-    matched_indices     = [i for i, m in enumerate(mask.to_list()) if m]
-    matched_target_ids  = protein_data['target_id'].gather(matched_indices)
-    matched_organisms   = protein_data['Organism'].gather(matched_indices)
-
-    organism_df: pl.DataFrame | pl.LazyFrame = pl.DataFrame({
-        'target_id': matched_target_ids,
-        'Organism':  matched_organisms,
-    })
+    matched = protein_data.filter(mask).select(['target_id', 'Organism'])
+    matched_target_ids = matched['target_id']
+    organism_df: pl.DataFrame | pl.LazyFrame = matched
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         organism_df = organism_df.lazy()
