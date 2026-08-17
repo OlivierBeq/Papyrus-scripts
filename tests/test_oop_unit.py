@@ -49,7 +49,7 @@ def make_dataset():
     papyrus_params = dict(
         is3d=False, version=None, plusplus=True, chunksize=None,
         source_path=None, num_rows=len(df), download_progress=False,
-        keep_original_files=False,
+        keep_original_files=False, disk_margin=0.10,
     )
     return PapyrusDataset._from_data(
         papyrus_bioactivity_data=df,

@@ -217,6 +217,92 @@ class TestDownloadPapyrusStaleFormatNotice(unittest.TestCase):
         self.assertIn('└', notice)
 
 
+class TestDownloadPapyrusDiskSpaceCheck(unittest.TestCase):
+    """No free space left after download -> hard fail, no prompt. Only the
+    safety margin violated -> ask for confirmation instead of aborting.
+    """
+
+    def setUp(self):
+        self.v1 = make_version('v1')
+        self.v2 = make_version('v2')
+        patches = {
+            'pystow_join': patch(
+                'src.papyrus_scripts.download.pystow.join',
+                return_value=Path(tempfile.gettempdir()) / 'does-not-exist.json',
+            ),
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value={},
+            ),
+            'resolve_versions': patch(
+                'src.papyrus_scripts.download._resolve_versions',
+                return_value=[self.v1, self.v2],
+            ),
+            # Empty version_files -> nothing to actually download, so
+            # a passed/overridden check falls through harmlessly instead
+            # of needing the rest of the download/convert machinery mocked.
+            'get_version_files': patch(
+                'src.papyrus_scripts.download._get_version_files', return_value={},
+            ),
+            'total_size': patch(
+                'src.papyrus_scripts.download._total_size', return_value=100,
+            ),
+            'pystow_module': patch('src.papyrus_scripts.download.pystow.module'),
+            # Last step of a per-version download - mocked so an accepted
+            # confirmation can run to completion without a real versions.json.
+            'update_versions_json': patch(
+                'src.papyrus_scripts.download._update_versions_json',
+            ),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def test_no_space_left_hard_fails_without_prompting(self):
+        with (
+            patch('src.papyrus_scripts.download.get_disk_space', return_value=50),
+            patch('builtins.input', side_effect=AssertionError('input() must not be called')),
+            redirect_stdout(io.StringIO()) as buf,
+        ):
+            result = download.download_papyrus(version='latest', progress=False)
+        self.assertIsNone(result)
+        self.assertIn('🚫', buf.getvalue())
+        self.assertIn('no space left on disk', buf.getvalue())
+        # Hard stop: the second version is never even reached.
+        self.assertEqual(self.mocks['get_version_files'].call_count, 1)
+        self.mocks['update_versions_json'].assert_not_called()
+
+    def test_margin_violation_aborts_on_declined_confirmation(self):
+        with (
+            patch('src.papyrus_scripts.download.get_disk_space', return_value=1000),
+            patch('src.papyrus_scripts.download.enough_disk_space', return_value=False),
+            patch('builtins.input', return_value='N') as mock_input,
+            redirect_stdout(io.StringIO()) as buf,
+        ):
+            result = download.download_papyrus(version='latest', progress=False)
+        self.assertIsNone(result)
+        mock_input.assert_called_once()
+        self.assertIn('was aborted', buf.getvalue())
+        self.assertEqual(self.mocks['get_version_files'].call_count, 1)
+        self.mocks['update_versions_json'].assert_not_called()
+
+    def test_margin_violation_proceeds_on_accepted_confirmation(self):
+        with (
+            patch('src.papyrus_scripts.download.get_disk_space', return_value=1000),
+            patch('src.papyrus_scripts.download.enough_disk_space', return_value=False),
+            patch('builtins.input', return_value='Y') as mock_input,
+            redirect_stdout(io.StringIO()) as buf,
+        ):
+            result = download.download_papyrus(
+                version='latest', progress=False, keep_xz=True,
+            )
+        self.assertIsNone(result)
+        self.assertNotIn('was aborted', buf.getvalue())
+        # Both versions reached -> fell through the confirmation, not an early return.
+        self.assertEqual(mock_input.call_count, 2)
+        self.assertEqual(self.mocks['get_version_files'].call_count, 2)
+        self.assertEqual(self.mocks['update_versions_json'].call_count, 2)
+
+
 class _FakeResponse:
     def __init__(self, content: bytes):
         self._content = content

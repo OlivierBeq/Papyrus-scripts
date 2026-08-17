@@ -185,6 +185,7 @@ class _PapyrusSource:
             source_path: str | Path | None,
             download_progress: bool,
             keep_original_files: bool,
+            disk_margin: float,
     ) -> None:
         self._pv = pv
         self._is3d = is3d
@@ -193,6 +194,7 @@ class _PapyrusSource:
         self._source_path = source_path
         self._download_progress = download_progress
         self._keep_original_files = keep_original_files
+        self._disk_margin = disk_margin
         self._bioactivity: pl.DataFrame | pl.LazyFrame | None = None
         self._proteins: pl.DataFrame | None = None
         self._num_rows: int | None = None
@@ -284,7 +286,7 @@ class _PapyrusSource:
                 nostereo=not self._is3d, stereo=self._is3d, only_pp=self._plusplus,
                 structures=self._need_structures,
                 descriptors=sorted(self._descriptor_types) or None,
-                progress=self._download_progress, disk_margin=0.0,
+                progress=self._download_progress, disk_margin=self._disk_margin,
                 keep_xz=self._keep_original_files,
             )
             self._num_rows, self._bioactivity, self._proteins = self._load()
@@ -332,6 +334,7 @@ class PapyrusDataset:
             source_path: str | Path | None = None,
             download_progress: bool = True,
             keep_original_files: bool = False,
+            disk_margin: float = 0.10,
     ) -> None:
         """Read, filter and aggregate data from a release of the Papyrus dataset.
 
@@ -354,13 +357,16 @@ class PapyrusDataset:
             file downloaded for this dataset, and later for any descriptor
             fetched lazily through it, is converted to Parquet and the
             ``.xz`` original is deleted, matching :func:`~download.download_papyrus`)
+        :param disk_margin: safety margin passed to
+            :func:`~download.download_papyrus` for any download this
+            dataset triggers (default: 0.10)
         :raises ValueError: if both *is3d* and *plusplus* are True (the 3D
             Papyrus++ combination does not exist)
         """
         pv = _ensure_papyrus_version(version)
         source = _PapyrusSource(
             pv, is3d, plusplus, chunksize, source_path,
-            download_progress, keep_original_files,
+            download_progress, keep_original_files, disk_margin,
         )
 
         # Nothing is downloaded, converted, or even checked for here - only
@@ -399,6 +405,7 @@ class PapyrusDataset:
             source_path=source_path,
             download_progress=download_progress,
             keep_original_files=keep_original_files,
+            disk_margin=disk_margin,
             _source=source,
         )
         self.papyrus_bioactivity_data = _LazyBioactivity(loader=source.get_bioactivity)
@@ -420,6 +427,7 @@ class PapyrusDataset:
             download_progress: bool = True,
             chunksize: int | None = None,
             keep_original_files: bool = False,
+            disk_margin: float = 0.10,
     ) -> PapyrusDataset:
         """Create a :class:`PapyrusDataset` from an existing DataFrame.
 
@@ -434,6 +442,8 @@ class PapyrusDataset:
         :param keep_original_files: keep ``.tsv.xz`` originals after
             conversion to Parquet for any descriptor later downloaded
             lazily through this dataset (default: False)
+        :param disk_margin: safety margin for any download later triggered
+            through this dataset (default: 0.10)
         :returns: a :class:`PapyrusDataset` wrapping *df*
         """
         pv = _ensure_papyrus_version(version)
@@ -447,6 +457,7 @@ class PapyrusDataset:
             chunksize=chunksize, source_path=source_path,
             num_rows=len(df), download_progress=download_progress,
             keep_original_files=keep_original_files,
+            disk_margin=disk_margin,
         )
         dataset._fpsubsim2_ = None
         dataset._can_reset = False
@@ -1281,7 +1292,7 @@ class PapyrusMoleculeSet:
                 structures=True,
                 descriptors=None,
                 progress=self.papyrus_params['download_progress'],
-                disk_margin=0.0,
+                disk_margin=self.papyrus_params['disk_margin'],
                 keep_xz=self.papyrus_params['keep_original_files'],
             )
             self.data = reader.read_molecular_structures(**read_kwargs)
@@ -1412,7 +1423,7 @@ class PapyrusDescriptorSet:
                 structures=False,
                 descriptors=self._desc_type,
                 progress=self.papyrus_params['download_progress'],
-                disk_margin=0.0,
+                disk_margin=self.papyrus_params['disk_margin'],
                 keep_xz=self.papyrus_params['keep_original_files'],
             )
             self.data = reader.read_molecular_descriptors(**read_kwargs)
@@ -1503,7 +1514,7 @@ class ProteinSet(ABC):
                 structures=False,
                 descriptors=desc_type,
                 progress=self.papyrus_params['download_progress'],
-                disk_margin=0.0,
+                disk_margin=self.papyrus_params['disk_margin'],
                 keep_xz=self.papyrus_params['keep_original_files'],
             )
             return self.protein_descriptors(desc_type, progress)

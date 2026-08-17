@@ -649,14 +649,28 @@ def download_papyrus(outdir: str | Path | None = None,
             print(f'📦 {len(downloads)} file(s) to download - {tqdm.format_sizeof(total)}B total')
 
         base = papyrus_version_root.base
-        if not enough_disk_space(base, total, disk_margin):
+        free = get_disk_space(base)
+        remaining = free - total
+        if remaining <= 0:
             _print_banner(
                 '🚫', 'Not enough disk space',
-                f'Only {disk_margin:.0%} of free space is kept as a safety margin.',
-                f'Available: {tqdm.format_sizeof(get_disk_space(base))}B',
+                'There would be no space left on disk after this download.',
+                f'Available: {tqdm.format_sizeof(free)}B',
                 f'Required:  {tqdm.format_sizeof(total)}B',
             )
             return
+        if not enough_disk_space(base, total, disk_margin):
+            _print_banner(
+                '⚠️', 'Low disk space after download',
+                f'Only {disk_margin:.0%} of free space is normally kept as a safety margin.',
+                f'Available: {tqdm.format_sizeof(free)}B',
+                f'Required:  {tqdm.format_sizeof(total)}B',
+                f'Remaining after download: {tqdm.format_sizeof(remaining)}B',
+            )
+            confirmation = input('Continue with the download anyway (Y/N): ')
+            if confirmation != 'Y':
+                print('Download was aborted.')
+                return
 
         # ------------------------------------------------------------------
         # Download (each tabular file is converted to Parquet immediately
