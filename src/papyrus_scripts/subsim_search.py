@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import json
 import multiprocessing
-import os
-import time
 import warnings
 from abc import ABC
 from collections import defaultdict
@@ -51,9 +49,10 @@ except ImportError:
     class BaseEngine: pass  # type: ignore[no-redef]
     class FPSim2Engine: pass  # type: ignore[no-redef]
     class FPSim2CudaEngine: pass  # type: ignore[no-redef]
+    BATCH_WRITE_SIZE = 32_000  # FPSim2's own default; only used for queue sizing here
 
 from .fingerprint import Fingerprint, MorganFingerprint, get_fp_from_name
-from .utils.IO import PapyrusVersion, get_num_rows_in_file, locate_file, process_data_version
+from .utils.IO import PapyrusVersion, _set_root_folder, get_num_rows_in_file, locate_file, process_data_version
 from .utils.mol_reader import MolSupplier
 
 
@@ -297,8 +296,7 @@ class FPSubSim2:
             raise ValueError(f'Version {self.version.version} not found. Did you download it first?')
         self.is3d = is3d
 
-        if root_folder is not None:
-            os.environ['PYSTOW_HOME'] = str(Path(root_folder).resolve())
+        _set_root_folder(root_folder)
 
         structure_dir = pystow.join(
             'papyrus', self.version.pystow_path_key, 'structures'
@@ -520,10 +518,13 @@ class FPSubSim2:
         fp_specs = [(type(fp), fp.params) for fp in fingerprint]
         table_paths = {repr(fp): _fp_table_path(fp) for fp in fingerprint}
 
-        input_queue: multiprocessing.Queue = multiprocessing.Queue()
-        output_queue: multiprocessing.Queue = multiprocessing.Queue()
-
         n_workers = max(multiprocessing.cpu_count() - 2, 1) if njobs == -1 else max(njobs - 1, 1)
+
+        # Bounded so a full queue blocks _reader_process's put() naturally -
+        # multiprocessing.Queue.qsize() (previously used for a manual
+        # backpressure poll here) raises NotImplementedError on macOS.
+        input_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=BATCH_WRITE_SIZE * n_workers)
+        output_queue: multiprocessing.Queue = multiprocessing.Queue()
 
         reader = multiprocessing.Process(
             target=_reader_process,
@@ -750,16 +751,11 @@ def _reader_process(
         input_queue: multiprocessing.Queue,
 ) -> None:
     """Read molecules from *sd_file* and feed them to the worker queue."""
+    # input_queue is bounded (see _parallel_create) - put() blocks by itself
+    # once it's full, so no manual backpressure polling is needed here.
     with MolSupplier(source=sd_file, total=total, show_progress=progress, start_id=1) as supplier:
-        count = 0
         for mol_id, rdmol in supplier:
             input_queue.put((mol_id, rdmol, rdmol.GetPropsAsDict()))
-            count += 1
-            # Back-pressure: prevent the queue from growing without bound.
-            if count > BATCH_WRITE_SIZE * n_workers * 1.5:
-                while input_queue.qsize() > BATCH_WRITE_SIZE:
-                    time.sleep(10)
-                count = 0
     # Send one termination sentinel per worker.
     for _ in range(n_workers):
         input_queue.put('END')
