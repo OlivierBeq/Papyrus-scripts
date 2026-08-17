@@ -411,6 +411,88 @@ class TestPapyrusDatasetKeepOriginalFiles(unittest.TestCase):
         self.assertEqual(mock_download.call_args.kwargs['keep_xz'], True)
 
 
+class TestPapyrusDatasetDiskMargin(unittest.TestCase):
+    """disk_margin must reach every download_papyrus() call the object API
+    can trigger, not the old hardcoded 0.0.
+    """
+
+    def _run_init(self, **kwargs):
+        with (
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+            # Raise on the first call (cache miss - triggers the download
+            # fallback), succeed on the retry after that download.
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', side_effect=[KeyError(), 0]),
+            patch('src.papyrus_scripts.oop.reader.read_papyrus', return_value=pl.DataFrame()),
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()),
+        ):
+            dataset = PapyrusDataset(version='2022.04.2', download_progress=False, **kwargs)
+            dataset.aggregate()
+        return dataset, mock_download
+
+    def test_defaults_to_ten_percent(self):
+        _, mock_download = self._run_init()
+        self.assertEqual(mock_download.call_args.kwargs['disk_margin'], 0.10)
+
+    def test_custom_value_forwarded_on_initial_download(self):
+        _, mock_download = self._run_init(disk_margin=0.25)
+        self.assertEqual(mock_download.call_args.kwargs['disk_margin'], 0.25)
+
+    def test_from_dataframe_stores_disk_margin(self):
+        with patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()):
+            dataset = PapyrusDataset.from_dataframe(
+                df=pl.DataFrame({'connectivity': []}), is3d=False, version='2022.04.2',
+                disk_margin=0.25,
+            )
+        self.assertEqual(dataset.papyrus_params['disk_margin'], 0.25)
+
+    def test_structures_fallback_forwards_disk_margin(self):
+        dataset, _ = self._run_init(disk_margin=0.25)
+        with (
+            patch(
+                'src.papyrus_scripts.oop.reader.read_molecular_structures',
+                side_effect=[FileNotFoundError, pl.DataFrame({'connectivity': [], 'mol': []})],
+            ),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=0),
+            patch.object(PapyrusDataset, 'aggregate', return_value=pl.DataFrame({'connectivity': []})),
+        ):
+            dataset.molecules().aggregate()
+        self.assertEqual(mock_download.call_args.kwargs['disk_margin'], 0.25)
+
+    def test_descriptor_fallback_forwards_disk_margin(self):
+        dataset, _ = self._run_init(disk_margin=0.25)
+        with (
+            patch(
+                'src.papyrus_scripts.oop.reader.read_molecular_descriptors',
+                side_effect=[FileNotFoundError, pl.DataFrame()],
+            ),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+            patch.object(PapyrusDataset, 'aggregate', return_value=pl.DataFrame({'connectivity': []})),
+        ):
+            dataset.molecular_descriptors('mold2').aggregate()
+        self.assertEqual(mock_download.call_args.kwargs['disk_margin'], 0.25)
+
+    def test_protein_descriptor_fallback_forwards_disk_margin(self):
+        fake_version = MagicMock()
+        fake_version.pystow_path_key = '2022.04.2'
+        papyrus_params = dict(
+            is3d=False, version=fake_version, plusplus=True, chunksize=None,
+            source_path=None, download_progress=False,
+            keep_original_files=False, disk_margin=0.25,
+        )
+        proteins = pl.DataFrame({'target_id': ['P1', 'P2']})
+        protein_set = PapyrusProteinSet(proteins, papyrus_params, num_proteins=2)
+        with (
+            patch(
+                'src.papyrus_scripts.oop.reader.read_protein_descriptors',
+                side_effect=[FileNotFoundError, pl.DataFrame()],
+            ),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+        ):
+            protein_set.protein_descriptors('unirep')
+        self.assertEqual(mock_download.call_args.kwargs['disk_margin'], 0.25)
+
+
 class TestPapyrusDatasetRemoveUsesConsistentFolderKey(unittest.TestCase):
     """Regression test: PapyrusDataset.remove() passed pv.version (the
     canonical new-format string, e.g. '2024.09.2') to remove_papyrus, so for
