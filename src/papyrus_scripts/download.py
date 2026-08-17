@@ -793,6 +793,9 @@ def download_papyrus(outdir: str | Path | None = None,
             genuine hang. Retrying with a short timeout instead lets each
             iteration drain the progress queue, which keeps converting_pbar
             live throughout the wait.
+
+            A dead converter never drains task_queue again, so liveness is
+            checked on every timeout instead of retrying forever.
             """
             assert task_queue is not None
             while True:
@@ -800,6 +803,13 @@ def download_papyrus(outdir: str | Path | None = None,
                     task_queue.put(item, timeout=0.2)
                     return
                 except queue.Full:
+                    if converter_process is not None and not converter_process.is_alive():
+                        assert error_queue is not None
+                        try:
+                            error = error_queue.get(timeout=1.0)
+                        except queue.Empty:
+                            error = 'worker exited unexpectedly'
+                        raise RuntimeError(f'Parquet conversion failed: {error}')
                     _drain_progress_queue()
 
         if not keep_xz:

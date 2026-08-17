@@ -518,6 +518,143 @@ class TestDownloadPapyrusQueuesConversionsAsItGoes(unittest.TestCase):
         )
 
 
+class _AlwaysFullQueue:
+    """task_queue stand-in whose put() always raises queue.Full - simulates
+    a converter that stopped draining task_queue (e.g. because it died).
+    """
+
+    def put(self, item, timeout=None):
+        raise queue.Full
+
+
+class _PresetErrorQueue:
+    """error_queue stand-in with a single error message ready to .get()."""
+
+    def __init__(self, message):
+        self._message = message
+
+    def get(self, timeout=None):
+        return self._message
+
+    def get_nowait(self):
+        return self._message
+
+
+class TestDownloadPapyrusEnqueueDeadlock(unittest.TestCase):
+    """_enqueue must raise RuntimeError instead of retrying task_queue.put()
+    forever when the converter process has died and can no longer drain it.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._old_pystow_home = os.environ.get('PYSTOW_HOME')
+        self.addCleanup(self._restore_pystow_home)
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+            zh.writestr('data_size.json', '{"papyrus_++": 42, "papyrus_proteins": 7}')
+        zip_bytes = zip_buf.getvalue()
+
+        content_by_url = {
+            'https://example.org/readme': b'a readme',
+            'https://example.org/requirements': zip_bytes,
+            'https://example.org/proteins': b'fake-tsv-xz-proteins',
+            'https://example.org/papyruspp': b'fake-tsv-xz-papyruspp',
+        }
+        files = {
+            '05.4': {
+                'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
+                           'size': 8, 'sha256': 'x'},
+                'requirements': {'name': '05.4_additional_files.zip',
+                                 'url': 'https://example.org/requirements',
+                                 'size': len(zip_bytes), 'sha256': 'x'},
+                'proteins': {'name': '05.4_combined_set_protein_targets.tsv.xz',
+                             'url': 'https://example.org/proteins',
+                             'size': 20, 'sha256': 'x'},
+                'papyrus++': {'name': '05.4++_combined_set_without_stereochemistry.tsv.xz',
+                              'url': 'https://example.org/papyruspp',
+                              'size': 21, 'sha256': 'x'},
+            },
+        }
+
+        def fake_get(url, **kwargs):
+            return _FakeResponse(content_by_url[url])
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        # 1st mp.Queue() call is task_queue, 2nd is error_queue, 3rd is
+        # progress_queue (see download_papyrus's `if not keep_xz:` setup).
+        self._queue_factories = [
+            lambda *a, **k: _AlwaysFullQueue(),
+            lambda *a, **k: _PresetErrorQueue('worker crashed: BOOM'),
+            lambda *a, **k: _FakeQueue(),
+        ]
+        self._queue_call_count = 0
+
+        def make_queue(*args, **kwargs):
+            factory = self._queue_factories[self._queue_call_count]
+            self._queue_call_count += 1
+            return factory(*args, **kwargs)
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_queue': patch(
+                'src.papyrus_scripts.download.mp.Queue', side_effect=make_queue,
+            ),
+            # is_alive() always False - the converter is already dead.
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process', side_effect=_FakeProcess,
+            ),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def _restore_pystow_home(self):
+        if self._old_pystow_home is None:
+            os.environ.pop('PYSTOW_HOME', None)
+        else:
+            os.environ['PYSTOW_HOME'] = self._old_pystow_home
+
+    def test_dead_converter_raises_instead_of_hanging(self):
+        with (
+            self.assertWarns(DeprecationWarning),  # links.json legacy-key warning
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        self.assertIn('worker crashed: BOOM', str(ctx.exception))
+
+    def test_error_queue_empty_falls_back_to_generic_message(self):
+        self._queue_factories[1] = lambda *a, **k: _EmptyErrorQueue()
+        with (
+            self.assertWarns(DeprecationWarning),
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        self.assertIn('worker exited unexpectedly', str(ctx.exception))
+
+
+class _EmptyErrorQueue:
+    """error_queue stand-in whose get() always times out (queue.Empty)."""
+
+    def get(self, timeout=None):
+        raise queue.Empty
+
+    def get_nowait(self):
+        raise queue.Empty
+
+
 class TestDownloadPapyrusSingleConvertingProgressBar(unittest.TestCase):
     """download_papyrus shows two simultaneous, position-pinned bars -
     'Downloading version X' at position=0 and 'Converting files' at
