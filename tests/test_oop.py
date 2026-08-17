@@ -22,6 +22,7 @@ from itertools import product
 import numpy as np
 import polars as pl
 from parameterized import parameterized, parameterized_class
+from polars.testing import assert_frame_equal
 
 from src.papyrus_scripts import PapyrusDataset
 from src.papyrus_scripts import reader, preprocess
@@ -79,24 +80,11 @@ class TestPapyrusDataset(unittest.TestCase):
                               chunksize=CHUNKSIZE, source_path=SOURCE_PATH, download_progress=False)
 
     def assertDataFrameEqual(self, df1: pl.DataFrame, df2: pl.DataFrame):
-        # Unlike pandas' NaN, polars represents missing values as `None`
-        # uniformly, and `None == None` is True in a plain list comparison,
-        # so there is no NaN-vs-NaN equality footgun to work around here.
-        # Ensure dataframes are not empty
+        # assert_frame_equal alone would also pass for two empty-but-
+        # matching-schema frames; require actual data on both sides too.
         self.assertFalse(df1.is_empty())
         self.assertFalse(df2.is_empty())
-        # Check number of lines
-        self.assertEqual(len(df1), len(df2))
-        # Check number of columns
-        self.assertEqual(df1.shape[1], df2.shape[1])
-        # Check column names
-        self.assertEqual(list(df1.columns), list(df2.columns))
-        # Check content column by column
-        for col in df1.columns:
-            # First check dtype
-            self.assertEqual(df1.schema[col], df2.schema[col])
-            # Check content
-            self.assertEqual(df1[col].to_list(), df2[col].to_list())
+        assert_frame_equal(df1, df2, check_exact=True)
 
     def test_medium_quality_kinase(self):
         # 1) Obtain data through the functional API
