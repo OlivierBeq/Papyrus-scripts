@@ -2,7 +2,6 @@
 
 """Reading functions for the Papyrus dataset."""
 
-import os
 from functools import reduce
 from pathlib import Path
 from collections.abc import Generator
@@ -13,6 +12,7 @@ from tqdm.auto import tqdm
 
 from .utils.IO import (
     PapyrusVersion,
+    _set_root_folder,
     convert_xz_to_parquet,
     load_data_type_schemas,
     locate_file,
@@ -90,18 +90,12 @@ VersionArg = str | PapyrusVersion
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _set_pystow_home(source_path: str | Path | None) -> None:
-    """Point pystow at *source_path* when it is not None."""
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = str(Path(source_path).resolve())
-
-
 def _resolve_version(
     version: VersionArg,
     source_path: str | Path | None,
 ) -> PapyrusVersion:
     """Set pystow home and validate *version* against local data."""
-    _set_pystow_home(source_path)
+    _set_root_folder(source_path)
     return process_data_version(version=version, root_folder=source_path)
 
 

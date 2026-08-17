@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import inspect
-import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -1183,8 +1182,7 @@ class FPSubSim2Engine:
         name = (f'{pv.pystow_path_key}_combined_set_'
                 f'{stereo}_stereochemistry_FPSubSim2_{dim_tag}.h5')
 
-        if self.papyrus_params['source_path'] is not None:
-            os.environ['PYSTOW_HOME'] = str(Path(self.papyrus_params['source_path']).resolve())
+        IO._set_root_folder(self.papyrus_params['source_path'])
 
         path = pystow.module('papyrus', pv.pystow_path_key).join(name=name)
 

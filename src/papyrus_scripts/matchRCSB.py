@@ -2,7 +2,6 @@
 
 """Match data of the Papyrus dataset with that of the Protein Data Bank."""
 
-import os
 import time
 from collections.abc import Generator, Iterator
 from pathlib import Path
@@ -234,8 +233,7 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
         if update:
             _ = update_rcsb_data(root_folder, verbose=verbose)
         # Set pystow root folder
-        if root_folder is not None:
-            os.environ['PYSTOW_HOME'] = str(Path(root_folder).resolve())
+        IO._set_root_folder(root_folder)
         papyrus_root = pystow.module('papyrus')
         rcsb_data_path = papyrus_root.join('rcsb', name='RCSB_data.tsv.xz')
         # Read the data mapping

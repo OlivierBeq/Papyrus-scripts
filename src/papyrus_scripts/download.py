@@ -3,7 +3,6 @@
 """Download utilities of the Papyrus scripts."""
 
 import multiprocessing as mp
-import os
 import queue
 import shutil
 import textwrap
@@ -18,6 +17,7 @@ from tqdm.auto import tqdm
 
 from .utils.IO import (
     PapyrusVersion,
+    _set_root_folder,
     assert_sha256sum,
     convert_xz_to_parquet,
     enough_disk_space,
@@ -147,12 +147,6 @@ def _parquet_sibling(fpath: Path) -> Path | None:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-def _set_pystow_home(outdir: str | Path | None) -> None:
-    """Point pystow at *outdir* when it is not None."""
-    if outdir is not None:
-        os.environ['PYSTOW_HOME'] = str(Path(outdir).resolve())
-
 
 def _resolve_versions(
     version: str | list[str],
@@ -556,7 +550,7 @@ def download_papyrus(outdir: str | Path | None = None,
         :func:`~papyrus_scripts.utils.IO.convert_gz_to_xz`, which require
         the compressed originals to be present).
     """
-    _set_pystow_home(outdir)
+    _set_root_folder(outdir)
 
     # Warn if any data downloaded with the old versioning format exists on disk.
     _versions_json = pystow.join('papyrus', name='versions.json')
@@ -1014,7 +1008,7 @@ def remove_papyrus(
         strings expand to only the latest revision of each version; when True,
         all revisions present in the links file are included
     """
-    _set_pystow_home(outdir)
+    _set_root_folder(outdir)
 
     files = get_papyrus_links()
     versions = _resolve_versions(version, files, all_revisions=all_revisions)
