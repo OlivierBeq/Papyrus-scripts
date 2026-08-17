@@ -541,24 +541,33 @@ class FPSubSim2:
             for _ in range(n_workers)
         ]
 
-        reader.start()
-        writer.start()
-        for w in workers:
-            w.start()
+        procs = [reader, writer] + workers
+        try:
+            reader.start()
+            writer.start()
+            for w in workers:
+                w.start()
 
-        active = [reader] + workers
-        while active:
-            active[0].join(10)
-            if not active[0].is_alive():
-                del active[0]
+            active = [reader] + workers
+            while active:
+                active[0].join(10)
+                if not active[0].is_alive():
+                    del active[0]
 
-        output_queue.put('STOP')
-        writer.join()
-
-        input_queue.close();
-        input_queue.join_thread()
-        output_queue.close();
-        output_queue.join_thread()
+            output_queue.put('STOP')
+            writer.join()
+        finally:
+            # No-op on the happy path (everything already exited); on an
+            # exception (e.g. KeyboardInterrupt), terminates whatever's
+            # still alive instead of leaving it orphaned.
+            for p in procs:
+                if p.is_alive():
+                    p.terminate()
+                    p.join(timeout=5)
+            input_queue.close()
+            input_queue.join_thread()
+            output_queue.close()
+            output_queue.join_thread()
 
         sort_db_file(self.h5_filename, verbose=progress)
 

@@ -67,5 +67,81 @@ class TestParallelCreateWorkerCount(unittest.TestCase):
         self.assertGreaterEqual(worker_count, 1)
 
 
+class TestParallelCreateCleanup(unittest.TestCase):
+    """Every process still alive when _parallel_create exits - even via an
+    exception (e.g. KeyboardInterrupt) during the wait - must be
+    terminated, not left orphaned.
+    """
+
+    def _fake_process_factory(self, process_instances, alive, raise_on_first_join=None):
+        process_count = [0]
+
+        def fake_process(target=None, args=None, **kwargs):
+            proc = MagicMock()
+            proc.start = MagicMock()
+            proc.is_alive = MagicMock(return_value=alive)
+            proc.terminate = MagicMock()
+            process_count[0] += 1
+            if raise_on_first_join is not None and process_count[0] == 1:
+                # Only the *first* join() call raises (the wait loop's) -
+                # the finally cleanup's later join() must succeed, or its
+                # loop over the remaining processes would be cut short too.
+                join_call_count = [0]
+
+                def join_side_effect(*args, **kwargs):
+                    join_call_count[0] += 1
+                    if join_call_count[0] == 1:
+                        raise raise_on_first_join
+
+                proc.join = MagicMock(side_effect=join_side_effect)
+            else:
+                proc.join = MagicMock()
+            process_instances.append(proc)
+            return proc
+
+        return fake_process
+
+    def test_clean_exit_does_not_terminate_anything(self):
+        engine = make_engine()
+        process_instances: list = []
+        with (
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.cpu_count', return_value=4),
+            patch(
+                'src.papyrus_scripts.subsim_search.multiprocessing.Process',
+                side_effect=self._fake_process_factory(process_instances, alive=False),
+            ),
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.Queue', return_value=MagicMock()),
+            patch('src.papyrus_scripts.subsim_search.sort_db_file') as mock_sort,
+        ):
+            engine._parallel_create(njobs=2, fingerprint=[], progress=False, total=None)
+        for proc in process_instances:
+            proc.terminate.assert_not_called()
+        mock_sort.assert_called_once()
+
+    def test_exception_during_wait_terminates_remaining_processes(self):
+        engine = make_engine()
+        process_instances: list = []
+        with (
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.cpu_count', return_value=4),
+            patch(
+                'src.papyrus_scripts.subsim_search.multiprocessing.Process',
+                # reader (the first process created) raises mid-wait,
+                # simulating e.g. a KeyboardInterrupt; every process stays
+                # "alive" throughout, as if nothing had a chance to clean up.
+                side_effect=self._fake_process_factory(
+                    process_instances, alive=True, raise_on_first_join=RuntimeError('interrupted'),
+                ),
+            ),
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.Queue', return_value=MagicMock()),
+            patch('src.papyrus_scripts.subsim_search.sort_db_file') as mock_sort,
+        ):
+            with self.assertRaises(RuntimeError):
+                engine._parallel_create(njobs=2, fingerprint=[], progress=False, total=None)
+        self.assertTrue(process_instances)
+        for proc in process_instances:
+            proc.terminate.assert_called_once()
+        mock_sort.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
