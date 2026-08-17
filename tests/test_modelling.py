@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import polars as pl
-from sklearn.tree import DecisionTreeClassifier
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from src.papyrus_scripts.modelling import (
     filter_molecular_descriptors,
@@ -107,9 +107,8 @@ class TestFilterMolecularDescriptors(unittest.TestCase):
 
 def _make_bioactivity_data():
     # Small, but crosses every qsar() threshold (num_points, temporal
-    # split, per-class counts) to reach a real fit, not an early
-    # "insufficient data" return. Uses a classifier model to sidestep
-    # model_metrics' sklearn-version-sensitive MSE(squared=...) call.
+    # split, per-class counts, regressor amplitude) to reach a real fit,
+    # not an early "insufficient data" return.
     n = 16
     return {
         'connectivity': [f'C{i}' for i in range(n)],
@@ -133,7 +132,7 @@ class TestQsarAcceptsPolarsInput(unittest.TestCase):
     PapyrusDataset.aggregate() returns.
     """
 
-    def _run_qsar(self, data):
+    def _run_qsar(self, data, model=None):
         # descriptor_chunksize left at its non-None default (50000), so
         # read_molecular_descriptors would really return a pl.LazyFrame -
         # mocked here with one instead of hitting the network/filesystem.
@@ -141,7 +140,7 @@ class TestQsarAcceptsPolarsInput(unittest.TestCase):
             'src.papyrus_scripts.modelling.read_molecular_descriptors',
             return_value=pl.LazyFrame(_make_descriptors()),
         ):
-            return qsar(data, model=DecisionTreeClassifier(), num_points=3, folds=2,
+            return qsar(data, model=model or DecisionTreeClassifier(), num_points=3, folds=2,
                        split_year=2016, verbose=False)
 
     def test_polars_dataframe_input_does_not_raise(self):
@@ -151,6 +150,14 @@ class TestQsarAcceptsPolarsInput(unittest.TestCase):
     def test_pandas_and_polars_input_give_equivalent_results(self):
         pandas_results, _ = self._run_qsar(pd.DataFrame(_make_bioactivity_data()))
         polars_results, _ = self._run_qsar(pl.DataFrame(_make_bioactivity_data()))
+        pd.testing.assert_frame_equal(
+            pandas_results.reset_index(drop=True), polars_results.reset_index(drop=True),
+        )
+
+    def test_regressor_pandas_and_polars_input_give_equivalent_results(self):
+        model = DecisionTreeRegressor()
+        pandas_results, _ = self._run_qsar(pd.DataFrame(_make_bioactivity_data()), model=model)
+        polars_results, _ = self._run_qsar(pl.DataFrame(_make_bioactivity_data()), model=model)
         pd.testing.assert_frame_equal(
             pandas_results.reset_index(drop=True), polars_results.reset_index(drop=True),
         )
