@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import polars as pl
 from scipy.stats import (pearsonr as pearsonR,
                          spearmanr as spearmanR,
                          kendalltau as kendallTau)
@@ -50,30 +51,28 @@ from .neuralnet import (SingleTaskNNClassifier,
 pd.set_option('mode.chained_assignment', None)
 
 
-def filter_molecular_descriptors(data: pd.DataFrame | Iterator,
+def filter_molecular_descriptors(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
                                  column_name: str,
                                  keep_values: Iterable,
                                  progress: bool = True,
                                  total: int | None = None) -> pd.DataFrame:
     """Filter the data so that the desired column contains only the desired data.
 
-    :param data: data to be filtered, either a dataframe or an iterator of chunks
+    :param data: data to be filtered - pandas/polars DataFrame or polars
+        LazyFrame
     :param column_name: name of the column to apply the filter on
     :param keep_values: allowed values
-    :param progress: show progress bar
-    :param total: number of chunks in data if data is an Iterator
+    :param progress: unused - kept for API stability
+    :param total: unused - kept for API stability
     :return: a pandas dataframe
     """
     if isinstance(data, pd.DataFrame):
         return data[data[column_name].isin(keep_values)]
-    elif progress:
-        return pd.concat([chunk[chunk[column_name].isin(keep_values)]
-                          for chunk in tqdm(data, total=total, desc='Loading molecular descriptors')],
-                         axis=0)
-    else:
-        return pd.concat([chunk[chunk[column_name].isin(keep_values)]
-                          for chunk in data],
-                         axis=0)
+    # Filter before collecting a LazyFrame so polars pushes the predicate down.
+    filtered = data.filter(pl.col(column_name).is_in(list(keep_values)))
+    if isinstance(filtered, pl.LazyFrame):
+        filtered = filtered.collect()
+    return filtered.to_pandas()
 
 
 def model_metrics(model: RegressorMixin | ClassifierMixin,
@@ -278,7 +277,7 @@ def train_test_proportional_group_split(data: pd.DataFrame,
     return data[opposite], data[assignment], t_groups, best
 
 
-def qsar(data: pd.DataFrame,
+def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
          endpoint: str = 'pchembl_value_Mean',
          num_points: int = 30,
          delta_activity: float = 2,
@@ -347,6 +346,10 @@ def qsar(data: pd.DataFrame,
     the data splitter for cross-validation, and for each accession in the data:
     the fitted models on each cross-validation fold and the model fitted on the complete training set.
     """
+    if isinstance(data, pl.LazyFrame):
+        data = data.collect()
+    if isinstance(data, pl.DataFrame):
+        data = data.to_pandas()
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster',"
                          "'custom-cluster', 'custom'}")
@@ -630,7 +633,7 @@ def qsar(data: pd.DataFrame,
     return results, return_val
 
 
-def pcm(data: pd.DataFrame,
+def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         endpoint: str = 'pchembl_value_Mean',
         num_points: int = 30,
         delta_activity: float = 2,
@@ -709,6 +712,10 @@ def pcm(data: pd.DataFrame,
     the data splitter for cross-validation, fitted models on each cross-validation fold,
     the model fitted on the complete training set.
     """
+    if isinstance(data, pl.LazyFrame):
+        data = data.collect()
+    if isinstance(data, pl.DataFrame):
+        data = data.to_pandas()
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', "
                          "'custom-cluster', 'custom'}")
