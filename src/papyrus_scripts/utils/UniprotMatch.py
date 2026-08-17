@@ -104,9 +104,13 @@ class UniprotMatch:
         return request.json()["jobId"]
 
     def _get_next_link(self, headers: Any) -> str | None:
-        re_next_link = re.compile(r'<(.+)>; rel="next"')
+        # [^>]+ (not greedy .+) stops at the URL's own '>' - a Link header
+        # can legally hold several comma-separated relations (RFC 8288),
+        # and a bare .+ would swallow past the first '>' hunting for a
+        # later rel="next".
+        re_next_link = re.compile(r'<([^>]+)>; rel="next"')
         if "Link" in headers:
-            match = re_next_link.match(headers["Link"])
+            match = re_next_link.search(headers["Link"])
             if match:
                 return match.group(1)
         return None

@@ -40,5 +40,36 @@ class TestCheckIdMappingResultsReady(unittest.TestCase):
         self.assertTrue(self.mapper._check_id_mapping_results_ready('job1', verbose=False))
 
 
+class TestGetNextLink(unittest.TestCase):
+
+    def setUp(self):
+        with patch('src.papyrus_scripts.utils.UniprotMatch.new_session'):
+            self.mapper = UniprotMatch(polling_interval=0)
+
+    def test_single_relation_header(self):
+        headers = {'Link': '<https://example.org/page2>; rel="next"'}
+        self.assertEqual(self.mapper._get_next_link(headers), 'https://example.org/page2')
+
+    def test_no_link_header_returns_none(self):
+        self.assertIsNone(self.mapper._get_next_link({}))
+
+    def test_multiple_relations_extracts_only_next(self):
+        # A Link header may legally hold several comma-separated relations
+        # (RFC 8288); the 'next' URL must be extracted correctly even when
+        # 'rel="prev"' precedes it.
+        headers = {
+            'Link': '<https://example.org/page0>; rel="prev", '
+                   '<https://example.org/page2>; rel="next"',
+        }
+        self.assertEqual(self.mapper._get_next_link(headers), 'https://example.org/page2')
+
+    def test_next_before_prev_still_extracts_next(self):
+        headers = {
+            'Link': '<https://example.org/page2>; rel="next", '
+                   '<https://example.org/page0>; rel="prev"',
+        }
+        self.assertEqual(self.mapper._get_next_link(headers), 'https://example.org/page2')
+
+
 if __name__ == '__main__':
     unittest.main()
