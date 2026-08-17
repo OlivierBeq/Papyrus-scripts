@@ -340,6 +340,49 @@ class TestConvertXzToParquet(unittest.TestCase):
         self.assertEqual(result.schema['score'], pl.Float64)
         self.assertEqual(result['score'].to_list(), values)
 
+    def _write_source(self, name: str) -> Path:
+        df = pl.DataFrame({'connectivity': ['C1', 'C2'], 'value': [1, 2]})
+        xz_path = Path(self._tmpdir.name) / name
+        with lzma.open(xz_path, 'wb') as fh:
+            fh.write(df.write_csv(separator='\t').encode())
+        return xz_path
+
+    def test_temp_filename_is_unique_per_call(self):
+        # Two concurrent conversions of the same output_file (e.g. two
+        # processes each lazily reading the same not-yet-converted file)
+        # must not race on the same '.converting' temp path.
+        xz_path = self._write_source('unique.tsv.xz')
+        out_path = Path(self._tmpdir.name) / 'unique.parquet'
+        seen_tmp_names = []
+        real_replace = Path.replace
+
+        def spy_replace(self_path, target):
+            seen_tmp_names.append(self_path.name)
+            return real_replace(self_path, target)
+
+        with mock.patch.object(Path, 'replace', spy_replace):
+            IO.convert_xz_to_parquet(xz_path, out_path, separator='\t')
+            IO.convert_xz_to_parquet(xz_path, out_path, separator='\t')
+        self.assertEqual(len(seen_tmp_names), 2)
+        self.assertNotEqual(seen_tmp_names[0], seen_tmp_names[1])
+        for name in seen_tmp_names:
+            self.assertTrue(name.startswith('unique.parquet.'))
+            self.assertTrue(name.endswith('.converting'))
+
+    def test_stale_converting_file_from_a_different_run_is_cleaned_up(self):
+        # A '.converting' file matching output_file's name but under a
+        # different pid/uuid (i.e. left behind by a previous crashed or
+        # interrupted run) must be removed, not accumulate forever.
+        xz_path = self._write_source('stale.tsv.xz')
+        out_path = Path(self._tmpdir.name) / 'stale.parquet'
+        stale = out_path.with_name('stale.parquet.99999.deadbeef.converting')
+        stale.write_bytes(b'leftover from a crashed run')
+
+        IO.convert_xz_to_parquet(xz_path, out_path, separator='\t')
+
+        self.assertFalse(stale.exists())
+        self.assertTrue(out_path.is_file())
+
 
 class TestDataTypeNameStringSchema(unittest.TestCase):
     """Regression test: every data_types.json Papyrus actually ships uses

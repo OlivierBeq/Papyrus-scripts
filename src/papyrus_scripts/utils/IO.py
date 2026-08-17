@@ -14,6 +14,7 @@ import lzma
 import os
 import re
 import shutil
+import uuid
 import warnings
 from collections import namedtuple
 from collections.abc import Callable
@@ -1141,7 +1142,13 @@ def convert_xz_to_parquet(
     # still leave a truncated, invalid file sitting at *output_file* for
     # download_papyrus's "does the .parquet already exist" skip-check to
     # mistake for a completed conversion on every subsequent run.
-    tmp_parquet = output_file.with_name(output_file.name + '.converting')
+    # Unique per call (pid + random suffix) so two concurrent conversions of
+    # the same output_file (e.g. two processes lazily reading it via
+    # reader.py) never collide; any other stale '.converting' file from a
+    # prior crashed run is cleaned up below too, so it can't accumulate.
+    tmp_parquet = output_file.with_name(f'{output_file.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.converting')
+    for stale in output_file.parent.glob(f'{output_file.name}.*.converting'):
+        stale.unlink(missing_ok=True)
     na_values = null_values if null_values is not None else ['', 'NA']
     overrides = _schema_overrides_to_pandas_dtype(schema_overrides) or {}
     forced_string_cols: set[str] = set()

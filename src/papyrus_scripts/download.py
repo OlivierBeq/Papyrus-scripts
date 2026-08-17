@@ -457,10 +457,10 @@ def _convert_worker(
     aborts the current file - including ``KeyboardInterrupt``: hitting
     Ctrl+C delivers ``SIGINT`` to every process in the group, so this one
     receives it too, independently of the parent. ``convert_xz_to_parquet``
-    already removes its own half-written output in that case (it writes
-    under a ``.converting`` suffix and only renames to the final name on
-    success), and that same temp path is removed here again as a backstop,
-    before this process reports the failure back to the parent via
+    writes under a uniquely-named ``.converting`` temp file and only renames
+    it to the final name on success; a half-written one left behind by this
+    failure is cleaned up by that same function's own next attempt (not
+    here), before this process reports the failure back to the parent via
     *error_queue* and exits - it does not keep processing further tasks
     after a failure.
 
@@ -502,7 +502,6 @@ def _convert_worker(
                 )
                 fpath.unlink()
             except BaseException as exc:
-                parquet_path.with_name(parquet_path.name + '.converting').unlink(missing_ok=True)
                 error_queue.put(f'{type(exc).__name__}: {exc}')
                 return
             if progress:

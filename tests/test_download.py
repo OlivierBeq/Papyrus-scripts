@@ -1229,25 +1229,20 @@ class TestConvertWorker(unittest.TestCase):
             (download._PROGRESS_DONE,),
         ])
 
-    def test_exception_removes_half_written_file_and_reports_error(self):
+    def test_exception_reports_error_and_leaves_xz_original(self):
+        # convert_xz_to_parquet (mocked here) now owns its own '.converting'
+        # cleanup (see tests/test_io.py) - this only checks _convert_worker's
+        # error reporting.
         task = self._task('c')
-        tmp_parquet = task['parquet_path'].with_name(task['parquet_path'].name + '.converting')
         task_queue = _FakeQueue()
         task_queue.put(task)
         task_queue.put(download._CONVERSION_DONE)
         error_queue = _FakeQueue()
         progress_queue = _FakeQueue()
 
-        def flaky_convert(input_file, output_file, **kwargs):
-            # Simulate a conversion that got partway through writing before
-            # failing (e.g. a KeyboardInterrupt raised mid-write).
-            Path(output_file).with_name(Path(output_file).name + '.converting').touch()
-            raise KeyboardInterrupt()
-
-        with patch('src.papyrus_scripts.download.convert_xz_to_parquet', side_effect=flaky_convert):
+        with patch('src.papyrus_scripts.download.convert_xz_to_parquet', side_effect=KeyboardInterrupt()):
             download._convert_worker(task_queue, error_queue, progress_queue, progress=False)
 
-        self.assertFalse(tmp_parquet.exists())
         self.assertFalse(task['parquet_path'].exists())
         self.assertEqual(len(error_queue.items), 1)
         self.assertIn('KeyboardInterrupt', error_queue.items[0])
