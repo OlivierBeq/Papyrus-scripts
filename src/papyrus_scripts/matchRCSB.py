@@ -206,10 +206,9 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
                 update: bool = True) -> pd.DataFrame | Generator:
     """
 
-    :param data: Papyrus data to be mapped with PDB identifiers. A
-        :class:`~polars.DataFrame`/:class:`~polars.LazyFrame` (the type
-        produced by the rest of this library) is converted to pandas
-        internally, since the matching/merge logic below is pandas-based.
+    :param data: Papyrus data to be mapped with PDB identifiers; matching
+        runs natively in polars internally, but a pandas DataFrame is
+        always returned
     :param root_folder: Directory where Papyrus bioactivity data is stored (default: pystow's home folder)
     :param verbose: show progress if data is and Iterator or a PandasTextFileReader
     :param total: Total number of chunks for progress display
@@ -220,9 +219,9 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
         return _chunked_get_matches(data, root_folder, verbose, total)
     if isinstance(data, pl.LazyFrame):
         data = data.collect()
-    if isinstance(data, pl.DataFrame):
-        data = data.to_pandas()
     if isinstance(data, pd.DataFrame):
+        data = pl.from_pandas(data)
+    if isinstance(data, pl.DataFrame):
         if 'connectivity' in data.columns:
             identifier = 'InChI_2D'
         elif 'InChIKey' in data.columns:
@@ -240,19 +239,23 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
         papyrus_root = pystow.module('papyrus')
         rcsb_data_path = papyrus_root.join('rcsb', name='RCSB_data.tsv.xz')
         # Read the data mapping
-        rcsb_data = pd.read_csv(rcsb_data_path, sep='\t')
+        rcsb_data = pl.read_csv(rcsb_data_path, separator='\t')
         if 'SMILES' in rcsb_data.columns:
-            rcsb_data = rcsb_data.drop(columns='SMILES')
-        # Process InChI
-        data = data[data['InChI'].isin(rcsb_data[identifier])]
-        data = data.merge(rcsb_data, left_on=['InChI', 'accession'], right_on=[identifier, 'UniProt_accession'])
-        data = data.drop(columns=['InChI_2D', 'InChI_3D', 'UniProt_accession'])
-        data = data.groupby('Activity_ID').aggregate({column: ';'.join
-        if column == 'PDBID_protein'
-        else 'first'
-                                                      for column in data.columns}
-                                                     )
-        return data
+            rcsb_data = rcsb_data.drop('SMILES')
+        # Inner join (default) drops unmatched rows. coalesce=False keeps
+        # both sides' key columns (e.g. InChI_2D), which the .drop() below
+        # expects to exist.
+        data = data.join(
+            rcsb_data, left_on=['InChI', 'accession'], right_on=[identifier, 'UniProt_accession'],
+            maintain_order='left', coalesce=False,
+        )
+        data = data.drop(['InChI_2D', 'InChI_3D', 'UniProt_accession'])
+        other_columns = [c for c in data.columns if c not in ('Activity_ID', 'PDBID_protein')]
+        data = data.group_by('Activity_ID', maintain_order=True).agg(
+            pl.col('PDBID_protein').str.join(';'),
+            *(pl.col(c).first() for c in other_columns),
+        )
+        return data.to_pandas().set_index('Activity_ID')
     else:
         raise TypeError('data can only be a pandas DataFrame, TextFileReader or an Iterator')
 
