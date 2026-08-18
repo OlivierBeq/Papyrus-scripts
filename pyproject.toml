@@ -48,6 +48,7 @@ dependencies = [
     "xgboost",
     "pystow",
     "prodec",
+    "defusedxml",
 ]
 
 [project.urls]

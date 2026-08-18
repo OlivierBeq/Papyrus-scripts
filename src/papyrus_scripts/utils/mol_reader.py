@@ -71,10 +71,9 @@ _TEXT_FORMATS = {'smi', 'mol2'}
 
 
 def _strip_compression_suffix(filename: str) -> tuple[str | None, Callable, bool, str]:
-    """Return ``(label, open_fn, is_binary, inner_filename)`` for a (possibly
-    compressed) filename.
+    """Return ``(label, open_fn, is_binary, inner_filename)`` for *filename*.
 
-    :param filename: the full filename, e.g. ``'data.sd.xz'``
+    :param filename: the full filename, e.g. ``'data.sd.xz'`` (possibly compressed)
     :returns: compression label (or ``None``), the matching ``open`` function,
         whether the decompressed stream is binary, and the filename with the
         compression extension removed.
@@ -158,9 +157,11 @@ class ForwardMol2MolSupplier:
     # ------------------------------------------------------------------
 
     def __enter__(self) -> Self:
+        """Return self, supporting use as a context manager."""
         return self
 
     def __exit__(self, *_) -> None:
+        """Close the supplier on context-manager exit."""
         self.close()
 
     # ------------------------------------------------------------------
@@ -203,11 +204,13 @@ class ForwardMol2MolSupplier:
         )
 
     def __iter__(self) -> Iterator[Chem.Mol | None]:
+        """Return an iterator over parsed molecules."""
         if self._iterator is None:
             self._iterator = self._iterate()
         yield from self._iterator
 
     def __next__(self) -> Chem.Mol | None:
+        """Return the next parsed molecule."""
         if self._iterator is None:
             self._iterator = self._iterate()
         return next(self._iterator)
@@ -286,9 +289,11 @@ class ForwardSmilesMolSupplier:
     # ------------------------------------------------------------------
 
     def __enter__(self) -> Self:
+        """Return self, supporting use as a context manager."""
         return self
 
     def __exit__(self, *_) -> None:
+        """Close the supplier on context-manager exit."""
         self.close()
 
     # ------------------------------------------------------------------
@@ -300,7 +305,8 @@ class ForwardSmilesMolSupplier:
         # Only reached when constructed from a file-like object (see
         # __init__/__iter__): the filename branch sets self._iterator
         # directly and never calls this method.
-        assert self._handle is not None
+        if self._handle is None:
+            raise RuntimeError('_iterate() called without a file handle')
         if self.titleLine:
             self._handle.readline()
 
@@ -338,11 +344,13 @@ class ForwardSmilesMolSupplier:
         return mol
 
     def __iter__(self) -> Iterator[Chem.Mol | None]:
+        """Return an iterator over parsed molecules."""
         if self._iterator is None:
             self._iterator = self._iterate()
         yield from self._iterator
 
     def __next__(self) -> Chem.Mol | None:
+        """Return the next parsed molecule."""
         if self._iterator is None:
             self._iterator = self._iterate()
         return next(self._iterator)
@@ -540,7 +548,8 @@ class MolSupplier:
         kw = self._supplier_kwargs
         if fmt == 'smi':
             # _stream_mode always opens 'smi'/'mol2' in text mode.
-            assert isinstance(handle, io.TextIOBase)
+            if not isinstance(handle, io.TextIOBase):
+                raise RuntimeError('smi format requires a text-mode handle')
             return ForwardSmilesMolSupplier(handle, **kw)
         if fmt == 'mae':
             return MaeMolSupplier(handle, **kw)
@@ -553,7 +562,8 @@ class MolSupplier:
                     'Mol2 format requires a text-mode stream. '
                     'Use an uncompressed file or open with mode="rt".',
                 )
-            assert isinstance(handle, io.TextIOBase)
+            if not isinstance(handle, io.TextIOBase):
+                raise RuntimeError('mol2 format requires a text-mode handle')
             return ForwardMol2MolSupplier(handle, **kw)
         raise ValueError(f'Unsupported format {fmt!r}')  # pragma: no cover - every VALID_FORMATS label is handled above
 
@@ -588,7 +598,8 @@ class MolSupplier:
         one per molecule) once iteration ends, so a dataset with many bad
         entries doesn't spam thousands of individual warnings.
         """
-        assert self._inner_supplier is not None, 'MolSupplier is closed.'
+        if self._inner_supplier is None:
+            raise RuntimeError('MolSupplier is closed.')
         enumerated = enumerate(self._inner_supplier, self._iter_start)
         if self._iter_progress:
             enumerated = tqdm(enumerated, total=self._iter_total, ncols=100)
@@ -615,9 +626,11 @@ class MolSupplier:
     # ------------------------------------------------------------------
 
     def __enter__(self) -> Self:
+        """Return self, supporting use as a context manager."""
         return self
 
     def __exit__(self, *_) -> None:
+        """Close the supplier on context-manager exit."""
         self.close()
 
     # ------------------------------------------------------------------
@@ -625,11 +638,13 @@ class MolSupplier:
     # ------------------------------------------------------------------
 
     def __iter__(self) -> Iterator[tuple[int, Chem.Mol]]:
+        """Return an iterator over ``(mol_id, molecule)`` pairs."""
         if self._iterator is None:
             self._iterator = self._processed_mol_supplier()
         yield from self._iterator
 
     def __next__(self) -> tuple[int, Chem.Mol]:
+        """Return the next ``(mol_id, molecule)`` pair."""
         if self._iterator is None:
             self._iterator = self._processed_mol_supplier()
         return next(self._iterator)

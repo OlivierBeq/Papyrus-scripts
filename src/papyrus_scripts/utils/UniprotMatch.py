@@ -13,6 +13,7 @@ from xml.etree import ElementTree
 
 import pandas as pd
 import requests
+from defusedxml import ElementTree as SafeElementTree
 from requests.adapters import HTTPAdapter, Retry
 
 from .IO import get_user_agent, new_session
@@ -64,6 +65,8 @@ def uniprot_mappings(query: str | list[str],
 
 
 class UniprotMatch:
+    """Submits and polls UniProt ID-mapping jobs, then fetches the paginated results."""
+
     def __init__(self,
                  polling_interval: int = 3,
                  api_url: str = 'https://rest.uniprot.org',
@@ -184,9 +187,9 @@ class UniprotMatch:
         return m.groups()[0] if m else ""
 
     def _merge_xml_results(self, xml_results: list[str]) -> bytes:
-        merged_root = ElementTree.fromstring(xml_results[0])
+        merged_root = SafeElementTree.fromstring(xml_results[0])
         for result in xml_results[1:]:
-            root = ElementTree.fromstring(result)
+            root = SafeElementTree.fromstring(result)
             for child in root.findall("{http://uniprot.org/uniprot}entry"):
                 merged_root.insert(-1, child)
         ElementTree.register_namespace("", self._get_xml_namespace(merged_root[0]))

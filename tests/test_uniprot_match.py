@@ -245,11 +245,11 @@ class TestXmlHelpers(unittest.TestCase):
             self.mapper = UniprotMatch(polling_interval=0)
 
     def test_get_xml_namespace_present(self):
-        element = ElementTree.fromstring('<a xmlns="http://x"/>')
+        element = ElementTree.fromstring('<a xmlns="http://x"/>')  # noqa: S314 - hardcoded literal, not untrusted input
         self.assertEqual(self.mapper._get_xml_namespace(element), 'http://x')
 
     def test_get_xml_namespace_absent(self):
-        element = ElementTree.fromstring('<a/>')
+        element = ElementTree.fromstring('<a/>')  # noqa: S314 - hardcoded literal, not untrusted input
         self.assertEqual(self.mapper._get_xml_namespace(element), '')
 
     def test_merge_xml_results_inserts_entries_before_last_child(self):
@@ -260,7 +260,7 @@ class TestXmlHelpers(unittest.TestCase):
 
         merged = self.mapper._merge_xml_results([xml1, xml2])
 
-        root = ElementTree.fromstring(merged)
+        root = ElementTree.fromstring(merged)  # noqa: S314 - derived from hardcoded literals above, not untrusted input
         entries = root.findall('{http://uniprot.org/uniprot}entry')
         self.assertEqual([e.text for e in entries], ['A', 'B'])
 
