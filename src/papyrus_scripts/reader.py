@@ -2,9 +2,9 @@
 
 """Reading functions for the Papyrus dataset."""
 
+from collections.abc import Generator
 from functools import reduce
 from pathlib import Path
-from collections.abc import Generator
 
 import polars as pl
 from prodec import Descriptor, Transform
@@ -244,7 +244,7 @@ def read_molecular_descriptors(
     if desc_type not in _VALID_DESC_TYPES:
         raise ValueError(
             f'desc_type must be one of {sorted(_VALID_DESC_TYPES)}, '
-            f'got {desc_type!r}'
+            f'got {desc_type!r}',
         )
 
     pv         = _resolve_version(version, source_path)
@@ -295,22 +295,23 @@ def read_protein_descriptors(
     if desc_type == 'custom':
         if source_path is None or not Path(source_path).is_file():
             raise ValueError(
-                'source_path must point to an existing file when desc_type="custom"'
+                'source_path must point to an existing file when desc_type="custom"',
             )
         return _read_custom_protein_descriptors(source_path, ids)
 
     if isinstance(desc_type, (Descriptor, Transform)):
         pv           = _resolve_version(version, source_path)
-        protein_data = read_protein_set(
-            source_path=papyrus_version_module(pv, root_folder=source_path).base, version=pv,
-        )
-        protein_data = protein_data.rename({'TARGET_NAME': 'target_id'})
+        # read_protein_set expects the pystow-home-equivalent root (matching
+        # every other call site in this module) - not a version-specific
+        # subdirectory, which get_downloaded_versions can't resolve against.
+        # read_protein_set already returns a 'target_id' column - no rename needed.
+        protein_data = read_protein_set(source_path=source_path, version=pv)
         if ids is not None:
             protein_data = protein_data.filter(pl.col('target_id').is_in(ids))
         protein_data = protein_data.filter(
             pl.col('Sequence').map_elements(
                 desc_type.Descriptor.is_sequence_valid, return_dtype=pl.Boolean,
-            )
+            ),
         )
         # ProDEC returns a pandas DataFrame; convert to polars.
         import pandas as _pd
@@ -338,7 +339,7 @@ def read_protein_descriptors(
 
     raise ValueError(
         f'desc_type must be "unirep", "custom", or a ProDEC Descriptor/Transform, '
-        f'got {desc_type!r}'
+        f'got {desc_type!r}',
     )
 
 
@@ -410,7 +411,7 @@ def molecular_descriptors_available(
     if desc_type not in _VALID_DESC_TYPES:
         raise ValueError(
             f'desc_type must be one of {sorted(_VALID_DESC_TYPES)}, '
-            f'got {desc_type!r}'
+            f'got {desc_type!r}',
         )
 
     pv         = _resolve_version(version, source_path)

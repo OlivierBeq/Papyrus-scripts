@@ -29,8 +29,11 @@ import tempfile
 import unittest
 import warnings
 from pathlib import Path
+from unittest.mock import Mock
 
+import pandas as pd
 import polars as pl
+from prodec import Descriptor, Transform
 from rdkit import Chem
 
 from src.papyrus_scripts import reader
@@ -434,6 +437,89 @@ class _ReaderOfflineTests:
         with self.assertRaises(ValueError):
             reader.read_protein_descriptors(desc_type='not_a_real_type', version=VERSION, source_path=self.ROOT)
 
+    def test_protein_descriptors_custom_ids_filter(self):
+        with tempfile.TemporaryDirectory() as d:
+            custom_path = Path(d) / 'custom.tsv'
+            pl.DataFrame({
+                'TARGET_NAME': _TARGET_IDS, 'feature': [1, 2],
+            }).write_csv(custom_path, separator='\t')
+            df = reader.read_protein_descriptors(
+                desc_type='custom', source_path=str(custom_path), ids=['P1'],
+            )
+        self.assertEqual(df['target_id'].to_list(), ['P1'])
+
+    def _mock_prodec_transform(self) -> Transform:
+        """A Transform-like mock: real reader.py usage always passes a
+        Transform (not a bare Descriptor - its .Descriptor.is_sequence_valid
+        access only makes sense for a Transform, whose .Descriptor holds the
+        underlying descriptor).
+        """
+        descriptor = Mock(spec=Descriptor)
+        descriptor.is_sequence_valid = Mock(return_value=True)
+        transform = Mock(spec=Transform)
+        transform.Descriptor = descriptor
+        transform.pandas_get = Mock(return_value=pd.DataFrame({
+            'ID': _TARGET_IDS, 'PDT_1': [0.1, 0.2],
+        }))
+        return transform
+
+    def test_protein_descriptors_prodec_transform(self):
+        transform = self._mock_prodec_transform()
+        df = reader.read_protein_descriptors(desc_type=transform, version=VERSION, source_path=self.ROOT)
+        self.assertEqual(sorted(df['target_id']), _TARGET_IDS)
+        self.assertIn('PDT_1', df.columns)
+        transform.pandas_get.assert_called_once()
+
+    def test_protein_descriptors_prodec_transform_ids_filter(self):
+        transform = self._mock_prodec_transform()
+        transform.pandas_get = Mock(return_value=pd.DataFrame({'ID': ['P1'], 'PDT_1': [0.1]}))
+        reader.read_protein_descriptors(desc_type=transform, version=VERSION, source_path=self.ROOT, ids=['P1'])
+        # Only the filtered target's id is passed to pandas_get.
+        target_ids_arg = transform.pandas_get.call_args.args[1]
+        self.assertEqual(target_ids_arg, ['P1'])
+
+    def test_protein_descriptors_prodec_transform_invalid_sequence_excluded(self):
+        transform = self._mock_prodec_transform()
+        transform.Descriptor.is_sequence_valid = Mock(side_effect=lambda seq: seq != 'MKV')
+        reader.read_protein_descriptors(desc_type=transform, version=VERSION, source_path=self.ROOT)
+        sequences_arg = transform.pandas_get.call_args.args[0]
+        self.assertNotIn('MKV', sequences_arg)
+
+    # -- availability checks ----------------------------------------------
+
+    def test_molecular_descriptors_available_true(self):
+        self.assertTrue(
+            reader.molecular_descriptors_available('mold2', is3d=False, version=VERSION, source_path=self.ROOT),
+        )
+
+    def test_molecular_descriptors_available_false(self):
+        # mold2 is 2D-only - no 3D file exists for it in the fixture.
+        self.assertFalse(
+            reader.molecular_descriptors_available('mold2', is3d=True, version=VERSION, source_path=self.ROOT),
+        )
+
+    def test_molecular_descriptors_available_all_2d(self):
+        self.assertTrue(
+            reader.molecular_descriptors_available('all', is3d=False, version=VERSION, source_path=self.ROOT),
+        )
+
+    def test_molecular_descriptors_available_all_3d(self):
+        self.assertTrue(
+            reader.molecular_descriptors_available('all', is3d=True, version=VERSION, source_path=self.ROOT),
+        )
+
+    def test_molecular_descriptors_available_invalid_type_raises(self):
+        with self.assertRaises(ValueError):
+            reader.molecular_descriptors_available('not_a_real_type', version=VERSION, source_path=self.ROOT)
+
+    def test_molecular_structures_available_true(self):
+        self.assertTrue(
+            reader.molecular_structures_available(is3d=False, version=VERSION, source_path=self.ROOT),
+        )
+        self.assertTrue(
+            reader.molecular_structures_available(is3d=True, version=VERSION, source_path=self.ROOT),
+        )
+
     # -- molecular structures --------------------------------------------
 
     def test_molecular_structures_2d(self):
@@ -459,6 +545,33 @@ class _ReaderOfflineTests:
         total = sum(len(c) for c in chunks)
         self.assertEqual(total, 3)
         self.assertTrue(all(len(c) <= 2 for c in chunks))
+
+    def test_molecular_structures_chunked_verbose_shows_progress(self):
+        # verbose=True exercises the tqdm progress-bar update/close paths.
+        chunks = list(reader.read_molecular_structures(
+            is3d=False, version=VERSION, source_path=self.ROOT, chunksize=2, verbose=True,
+        ))
+        self.assertEqual(sum(len(c) for c in chunks), 3)
+
+    def test_molecular_structures_chunked_ids_filter(self):
+        chunks = list(reader.read_molecular_structures(
+            is3d=False, version=VERSION, source_path=self.ROOT, chunksize=2, verbose=False,
+            ids=['CONN1', 'CONN3'],
+        ))
+        connectivities = sorted(c for chunk in chunks for c in chunk['connectivity'])
+        self.assertEqual(connectivities, ['CONN1', 'CONN3'])
+
+    def test_molecular_structures_chunked_invalid_chunksize_raises(self):
+        with self.assertRaises(ValueError):
+            list(reader.read_molecular_structures(
+                is3d=False, version=VERSION, source_path=self.ROOT, chunksize=0, verbose=False,
+            ))
+
+    def test_molecular_structures_ids_filter_matching_nothing_is_empty(self):
+        df = reader.read_molecular_structures(
+            is3d=False, version=VERSION, source_path=self.ROOT, verbose=False, ids=['NOPE'],
+        )
+        self.assertTrue(df.is_empty())
 
 
 def _make_root() -> tempfile.TemporaryDirectory:
@@ -504,6 +617,33 @@ class TestReaderAgainstParquetFiles(_ReaderOfflineTests, unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls._tmpdir.cleanup()
+
+
+class TestMolecularStructuresAvailableFalse(unittest.TestCase):
+    """A version folder with no structures directory at all - the
+    molecular_structures_available() False path the main fixture above
+    (which always has both 2D/3D SD files) can't exercise.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        root = Path(cls._tmpdir.name)
+        version_dir = root / 'papyrus' / VERSION
+        (root / 'papyrus').mkdir(parents=True, exist_ok=True)
+        _write_json(root / 'papyrus' / 'versions.json', [VERSION])
+        _write_json(version_dir / 'data_types.json', {})
+        _write_json(version_dir / 'data_size.json', {})
+        cls.ROOT = cls._tmpdir.name
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmpdir.cleanup()
+
+    def test_molecular_structures_available_false(self):
+        self.assertFalse(
+            reader.molecular_structures_available(is3d=False, version=VERSION, source_path=self.ROOT),
+        )
 
 
 if __name__ == '__main__':
