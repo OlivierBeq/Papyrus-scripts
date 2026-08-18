@@ -28,7 +28,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pystow
 import requests
-from fake_useragent import UserAgent
 from requests.adapters import HTTPAdapter, Retry
 from tqdm.auto import tqdm
 
@@ -36,43 +35,80 @@ from tqdm.auto import tqdm
 # HTTP session helpers
 # ---------------------------------------------------------------------------
 
-#: Static fallback, only used if fake_useragent's bundled browser data can't
-#: be loaded (e.g. broken install). Public scientific APIs (RCSB PDB,
-#: UniProt, ...) rate-limit or reject requests carrying no User-Agent (or a
-#: clearly dead one) more aggressively than ones that look like an
-#: up-to-date browser.
+#: Identifiable default, per API etiquette for scientific APIs (RCSB PDB,
+#: UniProt, ...): lets them contact us if a script misbehaves.
+_DEFAULT_USER_AGENT = 'papyrus-scripts/{version} (+https://github.com/OlivierBeq/Papyrus-scripts)'
+
+#: Static fallback for the randomised path, only used if fake_useragent's
+#: bundled browser data can't be loaded (e.g. broken install).
 _FALLBACK_USER_AGENT = (
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 )
 
-#: Lazily instantiated so import of this module never fails/blocks on
-#: fake_useragent's own initialisation.
-_user_agent_factory: UserAgent | None = None
+#: Lazily instantiated so import never blocks on fake_useragent's own init,
+#: and its cost is only paid if the randomised fallback actually triggers.
+_user_agent_factory: object | None = None
+
+#: Status codes suggesting the request was rejected/throttled based on how
+#: it looks, not a transient server error - worth retrying with a new UA.
+_BLOCKED_STATUS_CODES = frozenset({403, 429})
 
 
-def get_user_agent() -> str:
-    """Return a randomised, up-to-date browser User-Agent string.
+def get_user_agent(randomize: bool = False) -> str:
+    """Return a User-Agent string to send with requests to external APIs.
 
-    Falls back to a static modern-browser string if ``fake_useragent``
-    cannot supply one (e.g. corrupted/missing bundled data).
+    :param randomize: if ``True``, return a randomised, up-to-date browser
+        User-Agent (via ``fake_useragent``) instead of the default
+        identifiable ``papyrus-scripts/...`` string. Falls back to a static
+        modern-browser string if ``fake_useragent`` cannot supply one (e.g.
+        corrupted/missing bundled browser data).
     """
+    if not randomize:
+        from .. import __version__
+        return _DEFAULT_USER_AGENT.format(version=__version__)
     global _user_agent_factory
     try:
         if _user_agent_factory is None:
+            from fake_useragent import UserAgent
             _user_agent_factory = UserAgent()
         return _user_agent_factory.random
     except Exception:
         return _FALLBACK_USER_AGENT
 
 
+def _make_ua_fallback_hook(session: requests.Session) -> Callable[..., requests.Response]:
+    """Build a response hook that retries a blocked (403/429) request once with a randomised User-Agent.
+
+    If the retry succeeds, *session*'s default header is updated so later
+    requests on the same session skip straight to the working UA.
+    """
+    def hook(response: requests.Response, **kwargs) -> requests.Response:
+        request = response.request
+        if response.status_code not in _BLOCKED_STATUS_CODES or request.headers.get('X-Papyrus-UA-Retried'):
+            return response
+        retry_request = request.copy()
+        retry_request.headers['User-Agent'] = get_user_agent(randomize=True)
+        retry_request.headers['X-Papyrus-UA-Retried'] = '1'
+        retried = session.send(retry_request, **kwargs)
+        if retried.ok:
+            session.headers['User-Agent'] = retry_request.headers['User-Agent']
+        retried.history.append(response)
+        return retried
+    return hook
+
+
 def new_session(retries: int = 5, backoff_factor: float = 0.25,
                  status_forcelist: tuple[int, ...] = (500, 502, 503, 504)) -> requests.Session:
-    """Return a :class:`requests.Session` with retries and a modern User-Agent.
+    """Return a :class:`requests.Session` with retries and an identifiable User-Agent.
 
     Reusing one session across repeated requests to the same host keeps the
     underlying TCP connection(s) alive instead of reconnecting (and
     re-handshaking TLS) on every call.
+
+    Starts with an identifiable ``papyrus-scripts/...`` User-Agent; on a
+    blocked (403/429) response, retries once with a randomised browser-like
+    UA and keeps using it for the rest of the session if that unblocks things.
 
     :param retries: total number of retries for failed requests
     :param backoff_factor: backoff factor applied between retry attempts
@@ -80,6 +116,7 @@ def new_session(retries: int = 5, backoff_factor: float = 0.25,
     """
     session = requests.Session()
     session.headers.update({'User-Agent': get_user_agent()})
+    session.hooks['response'].append(_make_ua_fallback_hook(session))
     adapter = HTTPAdapter(max_retries=Retry(
         total=retries, backoff_factor=backoff_factor, status_forcelist=list(status_forcelist),
     ))

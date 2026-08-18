@@ -590,16 +590,60 @@ class TestHttpSessionHelpers(unittest.TestCase):
     def test_get_user_agent_returns_string(self):
         self.assertIsInstance(IO.get_user_agent(), str)
 
+    def test_get_user_agent_default_is_identifiable(self):
+        from src.papyrus_scripts import __version__
+        ua = IO.get_user_agent()
+        self.assertIn('papyrus-scripts/', ua)
+        self.assertIn(__version__, ua)
+
+    def test_get_user_agent_randomize_returns_browser_like_string(self):
+        with mock.patch.object(IO, '_user_agent_factory', mock.Mock(random='Mozilla/5.0 fake')):
+            self.assertEqual(IO.get_user_agent(randomize=True), 'Mozilla/5.0 fake')
+
     def test_get_user_agent_falls_back_on_exception(self):
         with mock.patch.object(IO, '_user_agent_factory', None), \
-             mock.patch('src.papyrus_scripts.utils.IO.UserAgent', side_effect=RuntimeError):
-            self.assertEqual(IO.get_user_agent(), IO._FALLBACK_USER_AGENT)
+             mock.patch('fake_useragent.UserAgent', side_effect=RuntimeError):
+            self.assertEqual(IO.get_user_agent(randomize=True), IO._FALLBACK_USER_AGENT)
 
-    def test_new_session_has_user_agent_and_retry_adapters(self):
+    def test_new_session_has_identifiable_user_agent_and_retry_adapters(self):
         session = IO.new_session(retries=2)
         self.assertIn('User-Agent', session.headers)
+        self.assertIn('papyrus-scripts/', session.headers['User-Agent'])
         self.assertIsNotNone(session.get_adapter('https://example.org'))
         self.assertIsNotNone(session.get_adapter('http://example.org'))
+
+    @staticmethod
+    def _prepared_request(headers=None):
+        return IO.requests.Request('GET', 'https://example.org', headers=headers or {}).prepare()
+
+    def test_new_session_retries_blocked_response_with_randomised_ua(self):
+        session = IO.new_session(retries=2)
+        blocked = mock.Mock(spec=IO.requests.Response)
+        blocked.status_code = 403
+        blocked.request = self._prepared_request()
+        blocked.history = []
+        unblocked = mock.Mock(spec=IO.requests.Response)
+        unblocked.ok = True
+        unblocked.history = []
+        with mock.patch.object(session, 'send', return_value=unblocked) as mock_send, \
+             mock.patch.object(IO, 'get_user_agent', return_value='Mozilla/5.0 fake'):
+            result = session.hooks['response'][0](blocked)
+        mock_send.assert_called_once()
+        retry_request = mock_send.call_args[0][0]
+        self.assertEqual(retry_request.headers['User-Agent'], 'Mozilla/5.0 fake')
+        self.assertEqual(retry_request.headers['X-Papyrus-UA-Retried'], '1')
+        self.assertIs(result, unblocked)
+        self.assertEqual(session.headers['User-Agent'], 'Mozilla/5.0 fake')
+
+    def test_new_session_does_not_retry_already_retried_request(self):
+        session = IO.new_session(retries=2)
+        blocked = mock.Mock(spec=IO.requests.Response)
+        blocked.status_code = 403
+        blocked.request = self._prepared_request(headers={'X-Papyrus-UA-Retried': '1'})
+        with mock.patch.object(session, 'send') as mock_send:
+            result = session.hooks['response'][0](blocked)
+        mock_send.assert_not_called()
+        self.assertIs(result, blocked)
 
 
 class TestGetPapyrusLinksAndAliases(unittest.TestCase):
