@@ -132,11 +132,10 @@ def _print_banner(emoji: str, title: str, *lines: str) -> None:
 
 
 def _parquet_sibling(fpath: Path) -> Path | None:
-    """Return the ``.parquet`` path that a downloaded ``.tsv.xz`` file
-    converts to, or None if *fpath* is not a convertible tabular file.
+    """Return the ``.parquet`` sibling of a downloaded ``.tsv.xz`` file.
 
-    Structure files (``.sd.xz``) and non-data files (zips, JSON, text) are
-    not tabular and are never converted.
+    None if *fpath* is not a convertible tabular file - structure files
+    (``.sd.xz``) and non-data files (zips, JSON, text) are never converted.
     """
     if fpath.name.lower().endswith('.tsv.xz'):
         return fpath.with_suffix('.parquet')
@@ -254,7 +253,7 @@ def _resolve_versions(
                 valid = ['latest', 'all'] + canonical_keys
                 raise ValueError(
                     f'version must be one of [{", ".join(valid)}], got {v!r}',
-                )
+                ) from None
             if pv.version not in files and pv.version_old_fmt not in files:
                 valid = ['latest', 'all'] + canonical_keys
                 raise ValueError(
@@ -299,8 +298,10 @@ def _file_path(papyrus_version_root: pystow.Module, ftype: str, fname: str) -> P
 
 
 def _iter_entries(ftype_data) -> list[dict]:
-    """Return a list of file-entry dicts regardless of whether the raw value
-    is a single dict or a list of dicts.
+    """Return *ftype_data* as a list of file-entry dicts.
+
+    Normalises the raw links-JSON value, which may be a single dict or a
+    list of dicts, to always a list.
 
     :param ftype_data: value from the links JSON for a given file type
     :raises ValueError: if the value is neither a dict nor a list
@@ -627,7 +628,10 @@ def download_papyrus(outdir: str | Path | None = None,
             if 'proteins_prodec' in version_files:
                 downloads.add('proteins_prodec')
             elif 'prodec' in descriptors:
-                warnings.warn(f'ProDEC descriptors are not available for Papyrus version {pv}. Skipping.')
+                warnings.warn(
+                    f'ProDEC descriptors are not available for Papyrus version {pv}. Skipping.',
+                    stacklevel=2,
+                )
 
         # Drop any key that is absent from this version's link table
         downloads = {ft for ft in downloads if ft in version_files}
@@ -704,6 +708,10 @@ def download_papyrus(outdir: str | Path | None = None,
         # live for the whole download+conversion overlap, right below the
         # download bar (position=0), instead of staying hidden until
         # downloading finishes.
+        # noqa: B023 below - these and the nested functions referencing them
+        # are (re)created fresh every 'pv' iteration and only ever called
+        # synchronously within that same iteration, never stored for later,
+        # so the values seen are always current, not a stale closure.
         converter_process: mp.Process | None = None
         task_queue: mp.Queue | None = None
         error_queue: mp.Queue | None = None
@@ -716,13 +724,15 @@ def download_papyrus(outdir: str | Path | None = None,
 
         def _update_current_file_description() -> None:
             # Only ever called once converting_pbar has been created (see call sites).
-            assert converting_pbar is not None
-            total_str = f'{current_total:,}' if current_total is not None else '?'
-            converting_pbar.set_description(f'{current_desc} ({current_rows:,}/{total_str} rows)')
+            if converting_pbar is None:  # noqa: B023
+                raise RuntimeError('converting_pbar not created despite progress=True')
+            total_str = f'{current_total:,}' if current_total is not None else '?'  # noqa: B023
+            converting_pbar.set_description(f'{current_desc} ({current_rows:,}/{total_str} rows)')  # noqa: B023
 
         def _mark_current_file_complete() -> None:
             # Only ever called once converting_pbar has been created (see call sites).
-            assert converting_pbar is not None
+            if converting_pbar is None:  # noqa: B023
+                raise RuntimeError('converting_pbar not created despite progress=True')
             # refresh=False: the caller immediately follows this with
             # update(1), which does its own refresh - two separate refreshes
             # for the same event means two consecutive cursor-repositioning
@@ -730,16 +740,17 @@ def download_papyrus(outdir: str | Path | None = None,
             # between them, which on Windows (even with colorama) has been
             # observed to leave the cursor one line off, so the *next*
             # redraw lands on a fresh line instead of overwriting in place.
-            converting_pbar.set_description(f'{current_desc} (complete)', refresh=False)
+            converting_pbar.set_description(f'{current_desc} (complete)', refresh=False)  # noqa: B023
 
         def _drain_progress_queue() -> None:
             """Apply every conversion-progress message available right now, without blocking."""
             nonlocal files_converted, current_desc, current_rows, current_total
             # Only ever called once progress_queue has been created (see call sites).
-            assert progress_queue is not None
+            if progress_queue is None:  # noqa: B023
+                raise RuntimeError('progress_queue not created despite progress=True')
             while True:
                 try:
-                    message = progress_queue.get_nowait()
+                    message = progress_queue.get_nowait()  # noqa: B023
                 except queue.Empty:
                     return
                 kind = message[0]
@@ -755,7 +766,7 @@ def download_papyrus(outdir: str | Path | None = None,
                 # Defensive only: progress_queue only ever receives messages
                 # when progress is True, which is also when converting_pbar
                 # is created - the two are never out of sync in practice.
-                if converting_pbar is None:  # pragma: no cover
+                if converting_pbar is None:  # pragma: no cover  # noqa: B023
                     continue
                 if kind == _PROGRESS_DONE:
                     # Set the description first (no refresh), then let the
@@ -763,20 +774,21 @@ def download_papyrus(outdir: str | Path | None = None,
                     # the new description together - see
                     # _mark_current_file_complete's own comment for why.
                     _mark_current_file_complete()
-                    converting_pbar.update(1)
+                    converting_pbar.update(1)  # noqa: B023
                 elif kind in (_PROGRESS_START, _PROGRESS_RESET, _PROGRESS_CHUNK):
                     _update_current_file_description()
 
         def _wait_for_converter() -> None:
             """Block until the converter process exits, draining progress messages meanwhile."""
             # Only ever called once converter_process has been started (see call sites).
-            assert converter_process is not None
-            while converter_process.is_alive():
+            if converter_process is None:  # noqa: B023
+                raise RuntimeError('converter_process not started')
+            while converter_process.is_alive():  # noqa: B023
                 _drain_progress_queue()
-                converter_process.join(timeout=0.1)
+                converter_process.join(timeout=0.1)  # noqa: B023
             _drain_progress_queue()
-            if converting_pbar is not None:
-                converting_pbar.close()
+            if converting_pbar is not None:  # noqa: B023
+                converting_pbar.close()  # noqa: B023
 
         def _enqueue(item) -> None:
             """Put *item* on task_queue, staying responsive while backpressured.
@@ -792,19 +804,21 @@ def download_papyrus(outdir: str | Path | None = None,
             A dead converter never drains task_queue again, so liveness is
             checked on every timeout instead of retrying forever.
             """
-            assert task_queue is not None
+            if task_queue is None:  # noqa: B023
+                raise RuntimeError('task_queue not created')
             while True:
                 try:
-                    task_queue.put(item, timeout=0.2)
+                    task_queue.put(item, timeout=0.2)  # noqa: B023
                     return
                 except queue.Full:
-                    if converter_process is not None and not converter_process.is_alive():
-                        assert error_queue is not None
+                    if converter_process is not None and not converter_process.is_alive():  # noqa: B023
+                        if error_queue is None:  # noqa: B023
+                            raise RuntimeError('error_queue not created') from None
                         try:
-                            error = error_queue.get(timeout=1.0)
+                            error = error_queue.get(timeout=1.0)  # noqa: B023
                         except queue.Empty:
                             error = 'worker exited unexpectedly'
-                        raise RuntimeError(f'Parquet conversion failed: {error}')
+                        raise RuntimeError(f'Parquet conversion failed: {error}') from None
                     _drain_progress_queue()
 
         if not keep_xz:
@@ -909,7 +923,8 @@ def download_papyrus(outdir: str | Path | None = None,
                                 # data_size.json is always written as a JSON object.
                                 sizes = cast(dict, read_jsonfile(papyrus_version_root.join(name='data_size.json')))
                                 metadata_loaded = True
-                        assert task_queue is not None
+                        if task_queue is None:
+                            raise RuntimeError('task_queue not created')
                         _enqueue({
                             'fpath': fpath,
                             'parquet_path': parquet_path,
@@ -938,7 +953,8 @@ def download_papyrus(outdir: str | Path | None = None,
             # every redraw from that point on. Closing bottom-up (highest
             # position first) avoids this entirely.
             if converter_process is not None:
-                assert task_queue is not None
+                if task_queue is None:
+                    raise RuntimeError('task_queue not created') from None
                 _enqueue(_CONVERSION_DONE)
                 _wait_for_converter()
             if progress:
@@ -950,8 +966,10 @@ def download_papyrus(outdir: str | Path | None = None,
             # -queued conversion to finish before this version is marked
             # as downloaded. Still before pbar.close() - see the except
             # handler's comment above for why.
-            assert task_queue is not None
-            assert error_queue is not None
+            if task_queue is None:
+                raise RuntimeError('task_queue not created')
+            if error_queue is None:
+                raise RuntimeError('error_queue not created')
             _enqueue(_CONVERSION_DONE)
             _wait_for_converter()
             error = error_queue.get()
@@ -1161,4 +1179,4 @@ def remove_papyrus(
             if not f.name.startswith('.')
         ]
         if not remaining_files:
-            _update_versions_json(papyrus_root_mod, pv, add=False)
+            _update_versions_json(papyrus_root_mod, pv, add=False)
