@@ -323,7 +323,12 @@ def fpsubsim2(indir: str | None, output: str | None, version: tuple[str, ...], i
         # overrides __init__ with its own no-argument signature; mypy only
         # sees the abstract base's.
         for fp_type in Fingerprint.derived():  # type: ignore[union-attr]
-            fp_name = fp_type().name  # type: ignore[call-arg]
+            try:
+                # Skip fingerprints whose optional dependencies (openbabel,
+                # FPSim2) are not installed, matching get_fp_from_name.
+                fp_name = fp_type().name  # type: ignore[call-arg]
+            except ImportError:
+                continue
             fp_params = [
                 (key, value.default)
                 for key, value in inspect.signature(fp_type.__init__).parameters.items()
@@ -371,10 +376,15 @@ def fpsubsim2(indir: str | None, output: str | None, version: tuple[str, ...], i
         # derived() always returns a list here. Every concrete subclass
         # overrides __init__ with its own no-argument signature; mypy only
         # sees the abstract base's.
-        fp_correct_values = {
-            fp_class().name: fp_class().params  # type: ignore[call-arg]
-            for fp_class in Fingerprint.derived()  # type: ignore[union-attr]
-        }
+        fp_correct_values = {}
+        for fp_class in Fingerprint.derived():  # type: ignore[union-attr]
+            try:
+                # Skip fingerprints whose optional dependencies (openbabel,
+                # FPSim2) are not installed, matching get_fp_from_name.
+                fp_instance = fp_class()  # type: ignore[call-arg]
+            except ImportError:
+                continue
+            fp_correct_values[fp_instance.name] = fp_instance.params
         fingerprints = []
         for fp in fingerprint:
             fp_param_list = fp.split(';')
@@ -429,7 +439,7 @@ def fpsubsim2(indir: str | None, output: str | None, version: tuple[str, ...], i
 def convert(indir: str | None, version: str, format: str | None,
            level: int | None, extreme: bool) -> None:
     """CLI to interconvert Papyrus data between GZIP and XZ compression."""
-    if isinstance(version, tuple):
+    if isinstance(version, tuple):  # pragma: no cover - version is multiple=False here, always a str
         version = list(version)
     # resolve version to a PapyrusVersion, then use its on-disk folder name
     pv = process_data_version(version, indir)
