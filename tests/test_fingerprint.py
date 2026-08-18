@@ -84,7 +84,7 @@ class TestFingerprintLengthLookupByName(unittest.TestCase):
         self.assertEqual(self._init('FP4', {}, 'fp4').length, 307)
 
     def test_unrecognised_name_without_nbits_or_fpsize_raises(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValueError):
             self._init('Bogus', {}, 'bogus')
 
 

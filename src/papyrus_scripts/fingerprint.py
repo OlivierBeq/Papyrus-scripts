@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+"""Fingerprint classes wrapping RDKit/Avalon/OpenBabel fingerprint algorithms."""
+
 from __future__ import annotations
 
 import hashlib
@@ -26,7 +28,10 @@ except ImportError:
 
 
 class Fingerprint(ABC):
+    """Base class for a molecular fingerprint algorithm and its parameters."""
+
     def __init__(self, name: str, params: dict, call_func: Callable | str) -> None:
+        """Store *name*/*params*/*call_func* and derive the bit length and a parameter hash."""
         self.name = name
         self.params = params
         self.func = call_func
@@ -45,7 +50,7 @@ class Fingerprint(ABC):
         elif self.name == "FP4":
             length = 307
         if not length:
-            raise Exception("fingerprint size is not specified")
+            raise ValueError("fingerprint size is not specified")
         self.length: int = length
         digest = hashlib.sha256((self.name + json.dumps(self.params, sort_keys=True)).encode()).digest()
         hash_ints = np.frombuffer(digest, dtype=np.int64)
@@ -53,6 +58,7 @@ class Fingerprint(ABC):
         self._hash = f'{hex(hash_int)}'
 
     def __repr__(self) -> str:
+        """Return "<name>_<length>bits_<hash>"."""
         return f'{self.name}_{self.length}bits_{self._hash}'
 
     @classmethod
@@ -78,31 +84,40 @@ class Fingerprint(ABC):
 
     @abstractmethod
     def get(self, mol: Chem.Mol) -> list[int]:
-        """Get the bistring fingerprint of the molecule"""
+        """Get the bitstring fingerprint of the molecule."""
 
 
 class RDKitFingerprint(Fingerprint):
+    """Fingerprint computed via an RDKit callable."""
+
     def get(self, mol: Chem.Mol) -> list[int]:
-        """Get the bistring fingerprint of the molecule and popcounts"""
+        """Get the bitstring fingerprint of the molecule and popcount."""
         if not HAS_FPSIM2:
             raise ImportError('Some required dependencies are missing:\n\ttables, FPSim2')
         # RDKitFingerprint always constructs itself with a real callable (see
         # each subclass' __init__) - only OBFingerprint uses the str variant.
         # Lines below require FPSim2 installed (see the raise above).
-        assert callable(self.func)  # pragma: no cover
+        if not callable(self.func):  # pragma: no cover
+            raise TypeError('self.func must be callable')
         fp = BitStrToIntList(self.func(mol, **self.params).ToBitString())  # pragma: no cover
         popcnt = PyPopcount(np.array(fp, dtype=np.uint64))  # pragma: no cover
         return [*fp, popcnt]  # pragma: no cover
 
 
 class MACCSKeysFingerprint(RDKitFingerprint):
+    """166-bit MACCS structural keys fingerprint."""
+
     def __init__(self) -> None:
+        """Configure the (parameter-free) MACCS keys fingerprint."""
         super().__init__('MACCSKeys', {}, rdMolDescriptors.GetMACCSKeysFingerprint)
 
 
 class AvalonFingerprint(RDKitFingerprint):
+    """Avalon fingerprint (substructure/similarity fingerprint from the Avalon toolkit)."""
+
     def __init__(self, nBits: int = 512, isQuery: bool = False, resetVect: bool = False,
                  bitFlags: int = 15761407) -> None:
+        """Configure the Avalon fingerprint's bit vector size and flags."""
         super().__init__('Avalon',
                                                 {'nBits': nBits,
                                                  'isQuery': isQuery,
@@ -112,8 +127,14 @@ class AvalonFingerprint(RDKitFingerprint):
 
 
 class MorganFingerprint(RDKitFingerprint):
-    def __init__(self, radius: int = 2, nBits: int = 2048, invariants: list = [], fromAtoms: list = [],
-                 useChirality: bool = False, useBondTypes: bool = True, useFeatures: bool = False) -> None:
+    """Morgan (circular, ECFP-like) fingerprint."""
+
+    def __init__(self, radius: int = 2, nBits: int = 2048, invariants: list | None = None,
+                 fromAtoms: list | None = None, useChirality: bool = False, useBondTypes: bool = True,
+                 useFeatures: bool = False) -> None:
+        """Configure the Morgan fingerprint's radius, size and invariants."""
+        invariants = invariants if invariants is not None else []
+        fromAtoms = fromAtoms if fromAtoms is not None else []
         super().__init__('Morgan',
                                                 {'radius': radius,
                                                  'nBits': nBits,
@@ -126,9 +147,12 @@ class MorganFingerprint(RDKitFingerprint):
 
 
 class TopologicalTorsionFingerprint(RDKitFingerprint):
+    """Topological-torsion fingerprint."""
+
     def __init__(self, nBits: int = 2048, targetSize: int = 4, fromAtoms: list | int = 0,
                  ignoreAtoms: list | int = 0, atomInvariants: list | int = 0,
                  includeChirality: bool = False) -> None:
+        """Configure the topological-torsion fingerprint."""
         super().__init__('TopologicalTorsion',
                          {"nBits": nBits,
                           "targetSize": targetSize,
@@ -140,10 +164,13 @@ class TopologicalTorsionFingerprint(RDKitFingerprint):
 
 
 class AtomPairFingerprint(RDKitFingerprint):
+    """Atom-pair fingerprint."""
+
     def __init__(self, nBits: int = 2048, minLength: int = 1, maxLength: int = 30,
                  fromAtoms: list | int = 0, ignoreAtoms: list | int = 0, atomInvariants: list | int = 0,
                  nBitsPerEntry: int = 4, includeChirality: bool = False,
                  use2D: bool = True, confId: int = -1) -> None:
+        """Configure the atom-pair fingerprint."""
         super().__init__('AtomPair',
                                                   {"nBits": nBits,
                                                    "minLength": minLength,
@@ -159,10 +186,13 @@ class AtomPairFingerprint(RDKitFingerprint):
 
 
 class RDKitTopologicalFingerprint(RDKitFingerprint):
+    """RDKit's own (Daylight-like) topological fingerprint."""
+
     def __init__(self, fpSize: int = 2048, minPath: int = 1, maxPath: int = 7, nBitsPerHash: int = 2,
                  useHs: bool = True, tgtDensity: float = 0.0, minSize: int = 128,
                  branchedPaths: bool = True, useBondOrder: bool = True, atomInvariants: list | int = 0,
                  fromAtoms: list | int = 0, atomBits: list | None = None, bitInfo: list | None = None) -> None:
+        """Configure RDKit's topological fingerprint."""
         super().__init__('RDKFingerprint',
                                                           {"minPath": minPath,
                                                            "maxPath": maxPath,
@@ -181,7 +211,12 @@ class RDKitTopologicalFingerprint(RDKitFingerprint):
 
 
 class RDKPatternFingerprint(RDKitFingerprint):
-    def __init__(self, fpSize: int = 2048, atomCounts: list = [], setOnlyBits: list | None = None) -> None:
+    """Pattern fingerprint used by RDKit for substructure screening."""
+
+    def __init__(self, fpSize: int = 2048, atomCounts: list | None = None,
+                 setOnlyBits: list | None = None) -> None:
+        """Configure the pattern fingerprint."""
+        atomCounts = atomCounts if atomCounts is not None else []
         super().__init__('RDKPatternFingerprint',
                                                     {'fpSize': fpSize,
                                                      'atomCounts': atomCounts,
@@ -190,7 +225,10 @@ class RDKPatternFingerprint(RDKitFingerprint):
 
 
 class OBFingerprint(Fingerprint):
+    """Fingerprint computed via OpenBabel, requiring both openbabel and FPSim2."""
+
     def __init__(self, name: str, params: dict, call_func: str) -> None:
+        """Validate openbabel/FPSim2 are installed, then configure like the base class."""
         if not HAS_PYBEL and not HAS_FPSIM2:
             raise ImportError('Some required dependencies are missing:\n\topenbabel, FPSim2')  # pragma: no cover
         elif not HAS_PYBEL:
@@ -200,7 +238,7 @@ class OBFingerprint(Fingerprint):
         super().__init__(name, params, call_func)  # pragma: no cover - needs both deps installed
 
     def get(self, mol: Chem.Mol) -> list[int]:
-        """Get the bistring fingerprint of the molecule and popcounts"""
+        """Get the bitstring fingerprint of the molecule and popcount."""
         binvec = DataStructs.ExplicitBitVect(self.length)  # pragma: no cover
         obmol = pybel.readstring('smi', Chem.MolToSmiles(mol))  # pragma: no cover
         binvec.SetBitsFromList([x - 1 for x in obmol.calcfp(self.func).bits])  # pragma: no cover
@@ -210,29 +248,39 @@ class OBFingerprint(Fingerprint):
 
 
 class FP2Fingerprint(OBFingerprint):
+    """OpenBabel FP2 fingerprint: 1024-bit, path-based (Daylight-like)."""
+
     def __init__(self) -> None:
+        """Configure the (parameter-free) FP2 fingerprint."""
         super().__init__('FP2',
                                              {},
                                              'FP2')
 
 
 class FP3Fingerprint(OBFingerprint):
+    """OpenBabel FP3 fingerprint: 55-bit, based on a small set of SMARTS patterns."""
+
     def __init__(self) -> None:
+        """Configure the (parameter-free) FP3 fingerprint."""
         super().__init__('FP3',
                                              {},
                                              'FP3')
 
 
 class FP4Fingerprint(OBFingerprint):
+    """OpenBabel FP4 fingerprint: 307-bit, based on a larger SMARTS pattern set than FP3."""
+
     def __init__(self) -> None:
+        """Configure the (parameter-free) FP4 fingerprint."""
         super().__init__('FP4',
                                              {},
                                              'FP4')
 
 
 def get_fp_from_name(fp_name: str, **kwargs: Any) -> Fingerprint:
-    """Get the fingerprint TYPE corresponding to a name
-    :param fp_name: Name of the fingerprint
+    """Get a Fingerprint instance for the given name.
+
+    :param fp_name: name of the fingerprint (e.g. 'Morgan', 'MACCSKeys')
     :param kwargs: parameters specific to the desired fingerprint
     :return: fingerprint instance
     """
