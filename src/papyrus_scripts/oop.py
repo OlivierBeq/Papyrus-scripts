@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import polars as pl
@@ -1089,6 +1089,56 @@ class PapyrusDataFilter:
     # Filter methods (keep_quality, keep_source, keep_activity_type,
     # keep_accession, keep_protein_class, keep_organism, contains,
     # not_contains, isin, not_isin) are attached by @_generate_filters above.
+    # Declarations below are for IDE autocomplete/mypy only - never executed,
+    # so they don't conflict with the real methods @_generate_filters
+    # attaches. Regenerate via scripts/generate_oop_filter_stubs.py if a
+    # preprocess.py filter's signature changes.
+    if TYPE_CHECKING:
+        def keep_quality(self, min_quality: str = 'high') -> PapyrusDataset:
+            """Keep only rows at or above the minimum required quality level."""
+            ...
+
+        def keep_source(self, source: list[str] | str = 'all', validate: bool = True) -> PapyrusDataset:
+            """Keep only rows from the specified data source(s)."""
+            ...
+
+        def keep_activity_type(
+                self, activity_types: list[str] | str = 'ic50', validate: bool = True,
+        ) -> PapyrusDataset:
+            """Keep only rows matching the desired activity type(s)."""
+            ...
+
+        def keep_accession(self, accession: list[str] | str = 'all') -> PapyrusDataset:
+            """Keep only rows whose target ID matches the given UniProt accession(s)."""
+            ...
+
+        def keep_protein_class(
+                self, classes: dict | list[dict] | None, generic_regex: bool = False,
+        ) -> PapyrusDataset:
+            """Keep only rows whose target belongs to the desired protein class(es)."""
+            ...
+
+        def keep_organism(
+                self, organism: str | list[str] | None = 'Homo sapiens (Human)', generic_regex: bool = False,
+        ) -> PapyrusDataset:
+            """Keep only rows whose target comes from the specified organism(s)."""
+            ...
+
+        def contains(self, column: str, value: str, case: bool = True, regex: bool = False) -> PapyrusDataset:
+            """Keep only rows where *column* contains *value*."""
+            ...
+
+        def not_contains(self, column: str, value: str, case: bool = True, regex: bool = False) -> PapyrusDataset:
+            """Keep only rows where *column* does **not** contain *value*."""
+            ...
+
+        def isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
+            """Keep only rows where *column* is in *values* (equivalent to ``is_in``)."""
+            ...
+
+        def not_isin(self, column: str, values: Any | list[Any]) -> PapyrusDataset:
+            """Keep only rows where *column* is **not** in *values*."""
+            ...
 
 
 # ---------------------------------------------------------------------------
@@ -1232,7 +1282,30 @@ class FPSubSim2Engine:
 
     # Filter methods (keep_similar_molecules, keep_dissimilar_molecules,
     # keep_substructure_molecules, keep_not_substructure_molecules) are
-    # attached by @_generate_filters above.
+    # attached by @_generate_filters above. See PapyrusDataFilter above for
+    # why the TYPE_CHECKING declarations below exist.
+    if TYPE_CHECKING:
+        def keep_similar_molecules(
+                self, smiles: str | list[str], fp: Fingerprint | None = None,
+                threshold: float = 0.7, cuda: bool = False,
+        ) -> PapyrusDataset:
+            """Keep only rows associated to molecules similar to the query."""
+            ...
+
+        def keep_dissimilar_molecules(
+                self, smiles: str | list[str], fp: Fingerprint | None = None,
+                threshold: float = 0.7, cuda: bool = False,
+        ) -> PapyrusDataset:
+            """Keep only rows associated to molecules **not** similar to the query."""
+            ...
+
+        def keep_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
+            """Keep only rows associated to substructures of the query molecule(s)."""
+            ...
+
+        def keep_not_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
+            """Keep only rows associated to molecules that are **not** substructures of the query."""
+            ...
 
 
 # ---------------------------------------------------------------------------
