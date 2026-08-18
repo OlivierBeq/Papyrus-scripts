@@ -109,13 +109,18 @@ def model_metrics(model: RegressorMixin | ClassifierMixin,
     y_pred = model.predict(x_test)
     # Regression metrics
     if isinstance(model, (RegressorMixin, SingleTaskNNRegressor, MultiTaskNNRegressor)):
+        y_true = np.asarray(y_true)
+        y_pred = np.asarray(y_pred)
         # Slope of predicted vs observed
-        k = sum(xi * yi for xi, yi in zip(y_true, y_pred, strict=True)) / sum(xi ** 2 for xi in y_true)
+        k = np.dot(y_true, y_pred) / np.sum(y_true ** 2)
         # Slope of observed vs predicted
-        k_prime = sum(xi * yi for xi, yi in zip(y_true, y_pred, strict=True)) / sum(yi ** 2 for yi in y_pred)
+        k_prime = np.dot(y_true, y_pred) / np.sum(y_pred ** 2)
         # Mean averages
         y_true_mean = y_true.mean()
         y_pred_mean = y_pred.mean()
+        # Pearson/Spearman r and R2_0/R'2_0 are undefined (and warn) when
+        # y_true or y_pred is constant, e.g. a degenerate tiny test fold.
+        has_variance = len(y_pred) >= 2 and y_true.std() > 0 and y_pred.std() > 0
         return {'number': y_true.size,
                 'R2': R2(y_true, y_pred) if len(y_pred) >= 2 else 0,
                 'MSE': MSE(y_true, y_pred) if len(y_pred) >= 2 else 0,
@@ -127,22 +132,24 @@ def model_metrics(model: RegressorMixin | ClassifierMixin,
                 'Max Error': maxE(y_true, y_pred) if len(y_pred) >= 2 else 0,
                 'Mean Poisson Distrib': MPD(y_true, y_pred) if len(y_pred) >= 2 else 0,
                 'Mean Gamma Distrib': MGD(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Pearson r': pearsonR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
-                'Spearman r': spearmanR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
+                'Pearson r': pearsonR(y_true, y_pred)[0] if has_variance else 0,
+                'Spearman r': spearmanR(y_true, y_pred)[0] if has_variance else 0,
                 'Kendall tau': kendallTau(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
-                'R2_0 (pred. vs. obs.)': 1 - (sum((xi - k_prime * yi) ** 2
-                                                  for xi, yi in zip(y_true, y_pred, strict=True)) /
-                                              sum((xi - y_true_mean) ** 2
-                                                  for xi in y_true)) if len(y_pred) >= 2 else 0,
-                'R\'2_0 (obs. vs. pred.)': 1 - (sum((yi - k * xi) ** 2
-                                                    for xi, yi in zip(y_true, y_pred, strict=True)) /
-                                                sum((yi - y_pred_mean) ** 2
-                                                    for yi in y_pred)) if len(y_pred) >= 2 else 0,
+                'R2_0 (pred. vs. obs.)': 1 - (np.sum((y_true - k_prime * y_pred) ** 2) /
+                                              np.sum((y_true - y_true_mean) ** 2)) if has_variance else 0,
+                'R\'2_0 (obs. vs. pred.)': 1 - (np.sum((y_pred - k * y_true) ** 2) /
+                                                np.sum((y_pred - y_pred_mean) ** 2)) if has_variance else 0,
                 'k slope (pred. vs obs.)': k,
                 'k\' slope (obs. vs pred.)': k_prime,
                 }
     # Classification
     elif isinstance(model, (ClassifierMixin, SingleTaskNNClassifier, MultiTaskNNClassifier)):
+        # ROC AUC is undefined when y_true holds a single class; sklearn now
+        # warns rather than raising, so check upfront instead of catching it.
+        single_class = len(set(y_true)) < 2
+        if single_class:
+            warnings.warn('Only one class present in y_true. ROC AUC score is not defined in that case. '
+                          'Stratify your folds to avoid such warning.', stacklevel=2)
         # Binary classification
         if len(model.classes_) == 2:
             tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=model.classes_).ravel()
@@ -163,17 +170,11 @@ def model_metrics(model: RegressorMixin | ClassifierMixin,
                 y_probas = model.predict_proba(x_test)
                 if y_probas.shape[1] == 1:
                     y_proba = y_probas.ravel()
-                    values['AUC 1'] = ROCAUC(y_true, y_proba)
+                    values['AUC 1'] = np.nan if single_class else ROCAUC(y_true, y_proba)
                 else:
                     for i in range(len(model.classes_)):
                         y_proba = y_probas[:, i].ravel()
-                        try:
-                            values[f'AUC {model.classes_[i]}'] = ROCAUC(y_true, y_proba)
-                        except ValueError:
-                            warnings.warn('Only one class present in y_true. '
-                                          'ROC AUC score is not defined in that case. '
-                                          'Stratify your folds to avoid such warning.', stacklevel=2)
-                            values[f'AUC {model.classes_[i]}'] = np.nan
+                        values[f'AUC {model.classes_[i]}'] = np.nan if single_class else ROCAUC(y_true, y_proba)
         # Multiclasses
         else:
             i = 0
@@ -198,14 +199,12 @@ def model_metrics(model: RegressorMixin | ClassifierMixin,
                 i += 1
             if hasattr(model, "predict_proba"): # able to predict probability
                 y_probas = model.predict_proba(x_test)
-                try:
-                    values['AUC 1 vs 1'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovo")
-                    values['AUC 1 vs All'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovr")
-                except ValueError:
-                    warnings.warn('Only one class present in y_true. ROC AUC score is not defined in that case. '
-                                  'Stratify your folds to avoid such warning.', stacklevel=2)
+                if single_class:
                     values['AUC 1 vs 1'] = np.nan
                     values['AUC 1 vs All'] = np.nan
+                else:
+                    values['AUC 1 vs 1'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovo")
+                    values['AUC 1 vs All'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovr")
         return values
     else:
         raise ValueError('model can only be classifier or regressor.')
