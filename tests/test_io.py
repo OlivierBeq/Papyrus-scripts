@@ -946,7 +946,7 @@ class TestProcessDataVersion(unittest.TestCase):
         # reported as "not available" (False), not propagate the ValueError
         # PapyrusVersion(...) raises while constructing it.
         self.assertFalse(
-            IO.is_local_version_available('not_a_real_version', root_folder=self._tmpdir.name)
+            IO.is_local_version_available('not_a_real_version', root_folder=self._tmpdir.name),
         )
 
     def test_get_latest_downloaded_version_raises_when_none_downloaded(self):

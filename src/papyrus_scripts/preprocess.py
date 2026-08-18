@@ -7,7 +7,6 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import polars as pl
 from sklearn.utils import shuffle as sk_shuffle
 from tqdm.auto import tqdm

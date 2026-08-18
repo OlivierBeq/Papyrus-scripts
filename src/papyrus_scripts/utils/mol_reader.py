@@ -97,7 +97,7 @@ def _detect_format(filename: str) -> str:
             return label
     raise ValueError(
         f'Cannot infer molecular format from filename {filename!r}. '
-        f'Supported extensions: {list(_FORMAT_MAP)}'
+        f'Supported extensions: {list(_FORMAT_MAP)}',
     )
 
 
@@ -148,7 +148,7 @@ class ForwardMol2MolSupplier:
         else:
             raise TypeError(
                 'ForwardMol2MolSupplier requires a filename or a text-mode '
-                f'file object, got {type(fileobj).__name__!r}.'
+                f'file object, got {type(fileobj).__name__!r}.',
             )
 
         self._iterator: Iterator | None = None
@@ -270,7 +270,7 @@ class ForwardSmilesMolSupplier:
                     self.nameColumn,
                     self.titleLine,
                     self.sanitize,
-                )
+                ),
             )
         elif isinstance(fileobj, io.TextIOBase):
             self._handle = fileobj
@@ -278,7 +278,7 @@ class ForwardSmilesMolSupplier:
         else:
             raise TypeError(
                 'ForwardSmilesMolSupplier requires a filename or a text-mode '
-                f'file object, got {type(fileobj).__name__!r}.'
+                f'file object, got {type(fileobj).__name__!r}.',
             )
 
     # ------------------------------------------------------------------
@@ -333,7 +333,7 @@ class ForwardSmilesMolSupplier:
                     self.nameColumn,
                     False,       # titleLine=False — we already handled it
                     self.sanitize,
-                )
+                ),
             )
         return mol
 
@@ -446,7 +446,7 @@ class MolSupplier:
                 if compression not in self.VALID_COMPRESSION:
                     raise ValueError(
                         f'compression must be one of {sorted(self.VALID_COMPRESSION)}, '
-                        f'got {compression!r}'
+                        f'got {compression!r}',
                     )
                 self.compression = compression
                 open_fn, is_binary = self._open_fn_for_label(compression)
@@ -463,7 +463,7 @@ class MolSupplier:
                 if format not in self.VALID_FORMATS:
                     raise ValueError(
                         f'format must be one of {sorted(self.VALID_FORMATS)}, '
-                        f'got {format!r}'
+                        f'got {format!r}',
                     )
                 self.format = format
             else:
@@ -481,12 +481,12 @@ class MolSupplier:
         if isinstance(source, (io.TextIOBase, io.BufferedIOBase)):
             if format is None:
                 raise ValueError(
-                    '`format` must be specified when `source` is a file-like object.'
+                    '`format` must be specified when `source` is a file-like object.',
                 )
             if format not in self.VALID_FORMATS:
                 raise ValueError(
                     f'format must be one of {sorted(self.VALID_FORMATS)}, '
-                    f'got {format!r}'
+                    f'got {format!r}',
                 )
             self.format      = format
             self.compression = None     # unknown / irrelevant
@@ -496,7 +496,7 @@ class MolSupplier:
 
         raise TypeError(
             '`source` must be a filename, a Path, or an open file-like object, '
-            f'got {type(source).__name__!r}.'
+            f'got {type(source).__name__!r}.',
         )
 
     # ------------------------------------------------------------------
@@ -551,7 +551,7 @@ class MolSupplier:
             if isinstance(handle, io.BufferedIOBase):
                 raise TypeError(
                     'Mol2 format requires a text-mode stream. '
-                    'Use an uncompressed file or open with mode="rt".'
+                    'Use an uncompressed file or open with mode="rt".',
                 )
             assert isinstance(handle, io.TextIOBase)
             return ForwardMol2MolSupplier(handle, **kw)

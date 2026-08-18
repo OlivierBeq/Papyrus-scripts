@@ -144,8 +144,8 @@ class TypeEncoder(json.JSONEncoder):
             return {
                 '__type__': {
                     'module': inspect.getmodule(obj).__name__,
-                    'type': obj.__name__
-                }
+                    'type': obj.__name__,
+                },
             }
         return json.JSONEncoder.default(self, obj)
 
@@ -395,14 +395,14 @@ class PapyrusVersion:
                 latest_alias = self.aliases['alias'].max()
                 # revision is a string column; compare numerically so e.g. '10' > '9'
                 latest_rev = max(
-                    self.aliases[self.aliases['alias'] == latest_alias]['revision'], key=int
+                    self.aliases[self.aliases['alias'] == latest_alias]['revision'], key=int,
                 )
                 query = f'alias == "{latest_alias}" and revision == "{latest_rev}"'
             elif version.count('.') == 2:
                 if revision is not None:
                     raise ValueError(
                         'Revision number provided too many times '
-                        '(as `revision` and as part of `version`)'
+                        '(as `revision` and as part of `version`)',
                     )
                 parts = version.split('.')
                 split_version = '.'.join(parts[:2])
@@ -484,9 +484,9 @@ class PapyrusVersion:
                 + str(
                     subset.drop(columns='version')
                     .rename(columns={'alias': 'version'})
-                    .set_index('version')
+                    .set_index('version'),
                 )
-                + '\n\nNarrow your criteria to select a single version.'
+                + '\n\nNarrow your criteria to select a single version.',
             )
 
         self.params: dict = {}
@@ -563,7 +563,7 @@ class PapyrusVersion:
             .set_index('version_long_fmt')
         )
         return df.assign(
-            downloaded=[PapyrusVersion(version=v) in dwnld_versions for v in df.index]
+            downloaded=[PapyrusVersion(version=v) in dwnld_versions for v in df.index],
         )
 
     # ------------------------------------------------------------------
@@ -710,7 +710,7 @@ def process_data_version(
         raise ValueError(
             f'Version {pv.version!r} is not available locally.\n'
             f'Either download it, or use an already downloaded version.\n'
-            f'Downloaded versions: [{available}]'
+            f'Downloaded versions: [{available}]',
         )
     if not pv.is_latest:
         aliases = PapyrusVersion.aliases
@@ -790,7 +790,7 @@ def get_downloaded_papyrus_files(root_folder: str | Path | None = None) -> pd.Da
             'short_name': fi.short_name,
             'file_name': fi.file_name,
             'downloaded': next(matches, None) is not None,
-        }
+        },
         )
     return pd.DataFrame(rows)
 
@@ -848,12 +848,12 @@ def get_num_rows_in_file(
     """
     if filetype not in ('bioactivities', 'structures', 'descriptors'):
         raise ValueError(
-            "filetype must be one of ['bioactivities', 'structures', 'descriptors']"
+            "filetype must be one of ['bioactivities', 'structures', 'descriptors']",
         )
     if filetype == 'descriptors' and descriptor_name not in ('cddd', 'mold2', 'mordred', 'fingerprint'):
         raise ValueError(
             "descriptor_name must be one of ['cddd', 'mold2', 'mordred', 'fingerprint'] "
-            "when filetype is 'descriptors'"
+            "when filetype is 'descriptors'",
         )
 
     pv = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
@@ -869,7 +869,7 @@ def get_num_rows_in_file(
             if 'papyrus++' in sizes:
                 return sizes['papyrus++']
             raise KeyError(
-                "Neither 'papyrus_++' nor 'papyrus++' found in data_size.json"
+                "Neither 'papyrus_++' nor 'papyrus++' found in data_size.json",
             )
         return sizes['papyrus_3D'] if is3D else sizes['papyrus_2D']
     if filetype == 'structures':
@@ -1171,7 +1171,7 @@ def convert_xz_to_parquet(
                 col: ('Float64' if target in _NULLABLE_INT_DTYPES else target)
                 for col, target in overrides.items()
             }
-            dtype.update({col: 'string' for col in forced_string_cols})
+            dtype.update(dict.fromkeys(forced_string_cols, 'string'))
             writer = None
             first_schema: pa.Schema | None = None
             drift: tuple[str, str] | None = None

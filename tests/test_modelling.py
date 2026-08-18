@@ -11,11 +11,10 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import polars as pl
+from sklearn.base import ClassifierMixin
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-
-from sklearn.base import ClassifierMixin
 
 from src.papyrus_scripts.modelling import (
     _fit_and_evaluate,

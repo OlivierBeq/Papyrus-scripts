@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-import json
 import hashlib
+import json
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
-from rdkit import Chem
-from rdkit import DataStructs
-from rdkit.Chem import rdMolDescriptors
+from rdkit import Chem, DataStructs
 from rdkit.Avalon import pyAvalonTools
+from rdkit.Chem import rdMolDescriptors
+
 try:
     from openbabel import pybel
     HAS_PYBEL = True
@@ -135,7 +135,7 @@ class TopologicalTorsionFingerprint(RDKitFingerprint):
                           "fromAtoms": fromAtoms,
                           "ignoreAtoms": ignoreAtoms,
                           "atomInvariants": atomInvariants,
-                          "includeChirality": includeChirality, },
+                          "includeChirality": includeChirality },
                          rdMolDescriptors.GetHashedTopologicalTorsionFingerprintAsBitVect)
 
 

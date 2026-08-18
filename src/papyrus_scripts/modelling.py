@@ -2,51 +2,64 @@
 
 """Modelling capacities of the Papyrus-scripts from the Papyrus dataset."""
 
-from copy import deepcopy
 import warnings
-from itertools import chain, combinations
 from collections import Counter
-
 from collections.abc import Iterable
+from copy import deepcopy
+from itertools import chain, combinations
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import polars as pl
-from scipy.stats import (pearsonr as pearsonR,
-                         spearmanr as spearmanR,
-                         kendalltau as kendallTau)
-
-from tqdm.auto import tqdm
-
 import xgboost
-from sklearn.base import RegressorMixin, ClassifierMixin, ClusterMixin, TransformerMixin
-from sklearn.model_selection import train_test_split, BaseCrossValidator, KFold, StratifiedKFold
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import (r2_score as R2,
-                             mean_squared_error as MSE,
-                             roc_auc_score as ROCAUC,
-                             confusion_matrix,
-                             multilabel_confusion_matrix,
-                             matthews_corrcoef as MCC,
-                             explained_variance_score as eVar,
-                             max_error as maxE,
-                             mean_absolute_error as MAE,
-                             mean_squared_log_error as MSLE,
-                             mean_poisson_deviance as MPD,
-                             mean_gamma_deviance as MGD,
-                             )
-
 from prodec.Descriptor import Descriptor
 from prodec.Transform import Transform
+from scipy.stats import kendalltau as kendallTau
+from scipy.stats import pearsonr as pearsonR
+from scipy.stats import spearmanr as spearmanR
+from sklearn.base import ClassifierMixin, ClusterMixin, RegressorMixin, TransformerMixin
+from sklearn.metrics import (
+    confusion_matrix,
+    multilabel_confusion_matrix,
+)
+from sklearn.metrics import (
+    explained_variance_score as eVar,
+)
+from sklearn.metrics import (
+    matthews_corrcoef as MCC,
+)
+from sklearn.metrics import (
+    max_error as maxE,
+)
+from sklearn.metrics import (
+    mean_absolute_error as MAE,
+)
+from sklearn.metrics import (
+    mean_gamma_deviance as MGD,
+)
+from sklearn.metrics import (
+    mean_poisson_deviance as MPD,
+)
+from sklearn.metrics import (
+    mean_squared_error as MSE,
+)
+from sklearn.metrics import (
+    mean_squared_log_error as MSLE,
+)
+from sklearn.metrics import (
+    r2_score as R2,
+)
+from sklearn.metrics import (
+    roc_auc_score as ROCAUC,
+)
+from sklearn.model_selection import BaseCrossValidator, KFold, StratifiedKFold, train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from tqdm.auto import tqdm
 
-from .reader import read_molecular_descriptors, read_protein_descriptors
+from .neuralnet import MultiTaskNNClassifier, MultiTaskNNRegressor, SingleTaskNNClassifier, SingleTaskNNRegressor
 from .preprocess import yscrambling
-from .neuralnet import (SingleTaskNNClassifier,
-                        SingleTaskNNRegressor,
-                        MultiTaskNNRegressor,
-                        MultiTaskNNClassifier
-                        )
+from .reader import read_molecular_descriptors, read_protein_descriptors
 
 
 def filter_molecular_descriptors(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
@@ -203,21 +216,21 @@ def crossvalidate_model(data: pd.DataFrame,
                         folds: BaseCrossValidator,
                         groups: list[int] | pd.Series | None = None,
                         scale_method: TransformerMixin | None = None,
-                        verbose: bool = False
+                        verbose: bool = False,
                         ) -> tuple[pd.DataFrame, dict[str, RegressorMixin | ClassifierMixin]]:
     """Create a machine learning model predicting values in the first column
 
-   :param data: data containing the dependent vairable (in the first column) and other features
-   :param model: estimator (either classifier or regressor) to use for model building
-   :param folds: cross-validator
-   :param groups: groups to split the labels according to
-   :param scale_method: if given, fit anew on each fold's training split
+    :param data: data containing the dependent vairable (in the first column) and other features
+    :param model: estimator (either classifier or regressor) to use for model building
+    :param folds: cross-validator
+    :param groups: groups to split the labels according to
+    :param scale_method: if given, fit anew on each fold's training split
        only (never on its held-out split) to avoid leaking test-fold
        statistics into the scaling; also fit once on the entire dataset for
        the final "Full model" - left fitted on that full-dataset call when
        this function returns, so a caller can reuse it as-is
-   :param verbose: whether to show fold progression
-   :return: cross-validated performance and model trained on the entire dataset
+    :param verbose: whether to show fold progression
+    :return: cross-validated performance and model trained on the entire dataset
     """
     X, y = data.iloc[:, 1:], data.iloc[:, 0].values.ravel()
     fold_metrics: list[dict[str, Any]] = []
@@ -260,15 +273,15 @@ def crossvalidate_model(data: pd.DataFrame,
 def train_test_proportional_group_split(data: pd.DataFrame,
                                         groups: list[int] | np.ndarray,
                                         test_size: float = 0.30,
-                                        verbose: bool = False
+                                        verbose: bool = False,
                                         ) -> tuple[pd.DataFrame, pd.DataFrame, list[int], tuple[int, ...]]:
     """Split the data into training and test sets according to the groups that respect most test_size (based on MSE)
 
-   :param data: the data to be split up into training and test sets
-   :param groups: groups to split the data according to
-   :param test_size: approximate proportion of the input dataset to determine the test set
-   :param verbose: whether to log to stdout or not
-   :return: training and test sets and training and test groups
+    :param data: the data to be split up into training and test sets
+    :param groups: groups to split the data according to
+    :param test_size: approximate proportion of the input dataset to determine the test set
+    :param verbose: whether to log to stdout or not
+    :return: training and test sets and training and test groups
     """
     counts = Counter(groups)
     size = sum(counts.values())
@@ -466,7 +479,7 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
          scale_method: TransformerMixin = StandardScaler(),
          yscramble: bool = False,
          random_state: int = 1234,
-         verbose: bool = True
+         verbose: bool = True,
          ) -> tuple[pd.DataFrame, dict[str,
                                        None | (TransformerMixin | LabelEncoder |
                                                       BaseCrossValidator | dict[str, ClassifierMixin])]]:
@@ -704,7 +717,7 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         scale_method: TransformerMixin = StandardScaler(),
         yscramble: bool = False,
         random_state: int = 1234,
-        verbose: bool = True
+        verbose: bool = True,
         ) -> tuple[pd.DataFrame, dict[str,
                                       (TransformerMixin | LabelEncoder |
                                             BaseCrossValidator | RegressorMixin | ClassifierMixin)]]:

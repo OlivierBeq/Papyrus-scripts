@@ -896,7 +896,7 @@ class TestAggTriggersDownloadForNeverBeforeSeenVersion(unittest.TestCase):
                 side_effect=[
                     ValueError(
                         "Version '2022.04.2' is not available locally.\n"
-                        "Downloaded versions: [2022.11.4, 2024.09.2]"
+                        "Downloaded versions: [2022.11.4, 2024.09.2]",
                     ),
                     self.bioactivity_df,
                 ],

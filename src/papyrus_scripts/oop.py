@@ -652,7 +652,7 @@ class PapyrusDataset:
         if fp is None:
             fp = MorganFingerprint()
         return self._fpsubsim2.keep_similar_molecules(smiles=smiles, fp=fp,
-                                                      threshold=threshold, cuda=cuda
+                                                      threshold=threshold, cuda=cuda,
                                                       )
 
     def keep_dissimilar_molecules(
@@ -672,7 +672,7 @@ class PapyrusDataset:
         if fp is None:
             fp = MorganFingerprint()
         return self._fpsubsim2.keep_dissimilar_molecules(smiles=smiles, fp=fp,
-                                                         threshold=threshold, cuda=cuda
+                                                         threshold=threshold, cuda=cuda,
                                                          )
 
     def keep_substructure_molecules(self, smiles: str | list[str]) -> PapyrusDataset:
@@ -1192,7 +1192,7 @@ class FPSubSim2Engine:
         parent = path.parent
         if not parent.is_dir():
             raise NotADirectoryError(
-                f'Cannot create the FPSubSim2 file in a non-existing folder: {parent!r}'
+                f'Cannot create the FPSubSim2 file in a non-existing folder: {parent!r}',
             )
         return path
 

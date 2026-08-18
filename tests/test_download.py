@@ -1285,6 +1285,7 @@ class TestDownloadPapyrusConvertWorkerIntegration(unittest.TestCase):
 
     def test_real_subprocess_converts_and_signals_completion(self):
         import lzma
+
         import polars as pl
 
         df = pl.DataFrame({'connectivity': ['C1', 'C2'], 'value': [1, 2]})

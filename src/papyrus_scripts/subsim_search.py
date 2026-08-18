@@ -35,12 +35,14 @@ except ImportError:
 try:
     # This whole block only runs with FPSim2 installed; every line below the
     # first import is unreachable otherwise (the first import raises first).
+    from FPSim2.base import BaseEngine  # pragma: no cover
     from FPSim2.FPSim2 import FPSim2Engine
     from FPSim2.FPSim2Cuda import FPSim2CudaEngine  # pragma: no cover
-    from FPSim2.base import BaseEngine  # pragma: no cover
     from FPSim2.io.backends.base import BaseStorageBackend  # pragma: no cover
     from FPSim2.io.backends.pytables import (  # pragma: no cover
-        BATCH_WRITE_SIZE, calc_popcnt_bins_pytables, create_schema,
+        BATCH_WRITE_SIZE,
+        calc_popcnt_bins_pytables,
+        create_schema,
     )
     from FPSim2.io.chem import load_molecule  # pragma: no cover
     HAS_FPSIM2 = True  # pragma: no cover
@@ -56,9 +58,8 @@ except ImportError:
     BATCH_WRITE_SIZE = 32_000  # FPSim2's own default; only used for queue sizing here
 
 from .fingerprint import Fingerprint, MorganFingerprint, get_fp_from_name
-from .utils.IO import PapyrusVersion, _set_root_folder, get_num_rows_in_file, locate_file, process_data_version
+from .utils.IO import PapyrusVersion, _set_root_folder, get_num_rows_in_file, locate_file
 from .utils.mol_reader import MolSupplier
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -73,7 +74,7 @@ def _check_optional_deps() -> None:
         missing.append('FPSim2')
     if missing:
         raise ImportError(
-            'Some required dependencies are missing:\n\t' + ', '.join(missing)
+            'Some required dependencies are missing:\n\t' + ', '.join(missing),
         )
 
 
@@ -185,7 +186,7 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
     with tb.open_file(tmp_filename, mode='r') as src:
         with tb.open_file(filename, mode='w') as dst:
             siminfo_group = dst.create_group(
-                dst.root, 'similarity_info', 'Infos for similarity search'
+                dst.root, 'similarity_info', 'Infos for similarity search',
             )
             simfp_groups = list(src.walk_groups('/similarity_info/'))
 
@@ -193,13 +194,13 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
                 if not simfp_group._v_name:
                     continue
                 dst_group = simfp_group._f_copy(
-                    siminfo_group, recursive=False, filters=filters, stats=stats
+                    siminfo_group, recursive=False, filters=filters, stats=stats,
                 )
                 fp_tables = list(src.iter_nodes(simfp_group, classname='Table'))
                 table_iter = (
                     tqdm(fp_tables,
                          desc=f'Optimizing tables of group ({i}/{len(simfp_groups)})',
-                         leave=False
+                         leave=False,
                          )
                     if verbose else fp_tables
                 )
@@ -220,7 +221,7 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
                     popcnt_bins = calc_popcnt_bins_pytables(dst_fp_table, fp_table.attrs.length)
                     popcounts = dst.create_vlarray(
                         dst_group, 'popcounts', tb.ObjectAtom(),
-                        f'Popcounts of {dst_group._v_name}'
+                        f'Popcounts of {dst_group._v_name}',
                     )
                     for x in popcnt_bins:
                         popcounts.append(x)
@@ -303,7 +304,7 @@ class FPSubSim2:
         _set_root_folder(root_folder)
 
         structure_dir = pystow.join(
-            'papyrus', self.version.pystow_path_key, 'structures'
+            'papyrus', self.version.pystow_path_key, 'structures',
         )
         filenames = locate_file(
             structure_dir,
@@ -351,7 +352,7 @@ class FPSubSim2:
         dim_tag = '3D' if self.is3d else '2D'
         version_str = str(self.version) if self.version is not None else 'custom'
         self.h5_filename = Path(outfile) if outfile is not None else Path(
-            f'Papyrus_{version_str}_FPSubSim2_{dim_tag}.h5'
+            f'Papyrus_{version_str}_FPSubSim2_{dim_tag}.h5',
         )
 
         if not isinstance(njobs, int) or njobs < -1:
@@ -360,10 +361,10 @@ class FPSubSim2:
         filters = tb.Filters()
         with tb.open_file(self.h5_filename, mode='w') as h5file:
             simil_group = h5file.create_group(
-                h5file.root, 'similarity_info', 'Infos for similarity search'
+                h5file.root, 'similarity_info', 'Infos for similarity search',
             )
             subst_group = h5file.create_group(
-                h5file.root, 'substructure_info', 'Infos for substructure search'
+                h5file.root, 'substructure_info', 'Infos for substructure search',
             )
             h5file.create_earray(
                 subst_group, 'substruct_lib', tb.UInt64Atom(), (0,),
@@ -375,7 +376,7 @@ class FPSubSim2:
                     ('idnumber', '<i8'),
                     ('connectivity', 'S14'),
                     ('InChIKey', 'S27'),
-                ]
+                ],
                 ),
                 'Molecular mappings',
                 expectedrows=1_300_000,
@@ -389,11 +390,11 @@ class FPSubSim2:
                 rdkit.__version__,
                 self.version.pystow_path_key if self.version is not None else '',
                 dim_tag,
-            ]
+            ],
             )
             for fp_type in fingerprint:
                 fp_group = h5file.create_group(
-                    simil_group, repr(fp_type), f'Similarity {repr(fp_type)}'
+                    simil_group, repr(fp_type), f'Similarity {repr(fp_type)}',
                 )
                 particle = create_schema(fp_type.length)
                 fp_table = h5file.create_table(
@@ -434,7 +435,7 @@ class FPSubSim2:
             warnings.warn(
                 f'RDKit version mismatch: library was built with {rdkit_version}, '
                 f'current version is {rdkit.__version__}. '
-                'Consider regenerating the FPSubSim2 library to avoid unexpected behaviour.'
+                'Consider regenerating the FPSubSim2 library to avoid unexpected behaviour.',
             )
 
         self.is3d = (dim_tag == '3D')
@@ -466,7 +467,7 @@ class FPSubSim2:
             mappings = []
 
             with MolSupplier(source=self.sd_file, total=total,
-                             show_progress=progress, start_id=1
+                             show_progress=progress, start_id=1,
                              ) as supplier:
                 for mol_id, rdmol in supplier:
                     lib.AddMol(rdmol)
@@ -479,7 +480,7 @@ class FPSubSim2:
                     if len(fps[repr(fingerprint[0])]) == BATCH_WRITE_SIZE:
                         for fp_type in fingerprint:
                             h5file.get_node(table_paths[repr(fp_type)]).append(
-                                fps[repr(fp_type)]
+                                fps[repr(fp_type)],
                             )
                         mappings_table.append(mappings)
                         fps, mappings = defaultdict(list), []
@@ -640,7 +641,7 @@ class FPSubSim2:
         if fp_signature not in available:
             raise ValueError(
                 f'Fingerprint {fp_signature!r} not available. '
-                f'Choose one of: {list(available)}'
+                f'Choose one of: {list(available)}',
             )
         engine_cls = FPSubSim2CudaEngine if cuda else FPSubSim2Engine
         return engine_cls(self.h5_filename, fp_signature)
@@ -882,7 +883,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
         if fp_signature not in self._fp_table_mappings:
             raise ValueError(
                 f'Fingerprint {fp_signature!r} not available. '
-                f'Choose one of: {", ".join(self._fp_table_mappings)}'
+                f'Choose one of: {", ".join(self._fp_table_mappings)}',
             )
 
         self._current_fp = fp_signature
@@ -952,7 +953,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
         with tb.open_file(self.fp_filename, mode='a') as fp_file:
             fps_table = fp_file.get_node(self._current_fp_path)
             start_id = max(
-                (row['fp_id'] for row in fps_table.iterrows()), default=1
+                (row['fp_id'] for row in fps_table.iterrows()), default=1,
             )
             supplier.set_start_progress_total(start_id, progress, total)
             fps = []
@@ -998,7 +999,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
         self.fp_type, self.fp_params, self.rdkit_ver = self.read_parameters()
         self._fp_func = get_fp_from_name(self.fp_type, **self.fp_params)
         print(f'Empty table created for {self._current_fp!r}. '
-              'Call `append_fps` to populate it.'
+              'Call `append_fps` to populate it.',
               )
 
 
@@ -1135,13 +1136,13 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
     def substructure(self, query_string: str, n_workers: int = 1):
         raise NotImplementedError(
             'Use the FPSubSim2 substructure library (get_substructure_lib) '
-            'for exact subgraph isomorphism.'
+            'for exact subgraph isomorphism.',
         )
 
     def on_disk_substructure(self, query_string: str, n_workers: int = 1, chunk_size: int | None = None):
         raise NotImplementedError(
             'Use the FPSubSim2 substructure library (get_substructure_lib) '
-            'for exact subgraph isomorphism.'
+            'for exact subgraph isomorphism.',
         )
 
 
@@ -1250,7 +1251,7 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
             useQueryQueryMatches=useQueryQueryMatches,
             numThreads=numThreads,
             maxResults=maxResults,
-        )
+        ),
         )
         if not ids:
             return pl.DataFrame(schema={

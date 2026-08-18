@@ -22,7 +22,6 @@ from .utils.IO import (
     convert_xz_to_parquet,
     enough_disk_space,
     get_disk_space,
-    get_downloaded_versions,
     get_papyrus_links,
     load_data_type_schemas,
     new_session,
@@ -240,7 +239,7 @@ def _resolve_versions(
             if not matching_keys:
                 valid = ['latest', 'all'] + canonical_keys
                 raise ValueError(
-                    f'version must be one of [{", ".join(valid)}], got {v!r}'
+                    f'version must be one of [{", ".join(valid)}], got {v!r}',
                 )
             for key in matching_keys:
                 with warnings.catch_warnings():
@@ -254,12 +253,12 @@ def _resolve_versions(
             except ValueError:
                 valid = ['latest', 'all'] + canonical_keys
                 raise ValueError(
-                    f'version must be one of [{", ".join(valid)}], got {v!r}'
+                    f'version must be one of [{", ".join(valid)}], got {v!r}',
                 )
             if pv.version not in files and pv.version_old_fmt not in files:
                 valid = ['latest', 'all'] + canonical_keys
                 raise ValueError(
-                    f'version must be one of [{", ".join(valid)}], got {v!r}'
+                    f'version must be one of [{", ".join(valid)}], got {v!r}',
                 )
             resolved.append(pv)
 
@@ -312,7 +311,7 @@ def _iter_entries(ftype_data) -> list[dict]:
         return ftype_data
     raise ValueError(
         f'Papyrus links file corrupted: expected dict or list, '
-        f'got {type(ftype_data).__name__!r}.'
+        f'got {type(ftype_data).__name__!r}.',
     )
 
 
@@ -377,7 +376,7 @@ def _get_version_files(files: dict, pv: PapyrusVersion) -> dict:
     else:
         raise KeyError(
             f"No download links found for version {pv.version!r} "
-            f"(also tried legacy key {pv.version_old_fmt!r})."
+            f"(also tried legacy key {pv.version_old_fmt!r}).",
         )
     msg = entry.get('__deprecated__')
     if msg:
@@ -1027,7 +1026,7 @@ def remove_papyrus(
     if papyrus_root:
         if not force:
             confirmation = input(
-                'Confirm the removal of ALL Papyrus data and versions (Y/N): '
+                'Confirm the removal of ALL Papyrus data and versions (Y/N): ',
             )
             if confirmation != 'Y':
                 print('Removal was aborted.')
@@ -1047,7 +1046,7 @@ def remove_papyrus(
         if version_root:
             if not force:
                 confirmation = input(
-                    f'Confirm the removal of version {pv} of Papyrus data (Y/N): '
+                    f'Confirm the removal of version {pv} of Papyrus data (Y/N): ',
                 )
                 if confirmation != 'Y':
                     print('Removal was aborted.')
@@ -1121,7 +1120,7 @@ def remove_papyrus(
         if progress:
             print(
                 f'Number of files to be removed: {len(present)}\n'
-                f'Total size: {tqdm.format_sizeof(total)}B'
+                f'Total size: {tqdm.format_sizeof(total)}B',
             )
 
         if not present:

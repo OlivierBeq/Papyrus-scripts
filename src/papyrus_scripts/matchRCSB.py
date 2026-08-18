@@ -45,13 +45,13 @@ def get_all_pdb_ids_with_ligands(session: requests.Session | None = None) -> lis
             "parameters": {
                 "attribute": "rcsb_entry_info.nonpolymer_entity_count",
                 "operator": "greater",
-                "value": 0
-            }
+                "value": 0,
+            },
         },
         "return_type": "entry",
         "request_options": {
-            "return_all_hits": True  # Ensures we get the whole archive, no pagination
-        }
+            "return_all_hits": True,  # Ensures we get the whole archive, no pagination
+        },
     }
     response = session.post(search_url, json=search_query)
     response.raise_for_status()
@@ -63,7 +63,7 @@ def get_all_pdb_ids_with_ligands(session: requests.Session | None = None) -> lis
 
 def update_rcsb_data(root_folder: str | Path | None = None,
                      overwrite: bool = False,
-                     verbose: bool = True
+                     verbose: bool = True,
                      ) -> pd.DataFrame:
     """Update the local data of the RCSB.
 
@@ -80,12 +80,12 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     if (output_path.is_file() and (time.time() - output_path.stat().st_mtime) < 86400) and not overwrite:
         if verbose:
             print(f'RCSB data was obtained less than 24 hours ago: {output_path}\n'
-                  f'Set overwrite=True to force the fetching of data again.'
+                  f'Set overwrite=True to force the fetching of data again.',
                   )
         return pd.read_csv(output_path, sep='\t')
     # Get all ligands
     if verbose:
-        print(f'Obtaining RCSB ligands codes')
+        print('Obtaining RCSB ligands codes')
     session = new_session()
     pdb_ids = get_all_pdb_ids_with_ligands(session)
     # Obtain the PDB structure code to PDB ligand code
@@ -124,7 +124,7 @@ def update_rcsb_data(root_folder: str | Path | None = None,
             # Make the GraphQL request for the current chunk
             response = session.post(
                 url,
-                json={"query": query, "variables": {"pdbIds": chunk}}
+                json={"query": query, "variables": {"pdbIds": chunk}},
             )
             if response.status_code != 200:
                 message = f"WARNING:\tFailed to fetch batch {current_chunk}/{total_chunks}. Status Code: {response.status_code}"
@@ -165,8 +165,8 @@ def update_rcsb_data(root_folder: str | Path | None = None,
                                 "InChI_2D": Chem.MolToInchi(mol_2D),
                                 "PDBID_ligand": ligand_id,
                                 "PDBID_protein": protein_id,
-                                "SMILES": smiles_stereo
-                            }
+                                "SMILES": smiles_stereo,
+                            },
                             )
                 # 4. Respect API rate limits (Wait 0.5 seconds between requests)
                 if len(pdb_ids) > chunk_size:
@@ -180,14 +180,14 @@ def update_rcsb_data(root_folder: str | Path | None = None,
         )
     # Map PDBID prot to UniProt acessions
     if verbose:
-        print(f'Obtaining mappings from protein PDB ID to UniProt accessions')
+        print('Obtaining mappings from protein PDB ID to UniProt accessions')
     uniprot_mapping = UniprotMatch.uniprot_mappings(results_df.PDBID_protein.unique().tolist(),
                                                     map_from='PDB',
-                                                    map_to='UniProtKB_AC-ID'
+                                                    map_to='UniProtKB_AC-ID',
                                                     )  # Forces the use of SIFTS
     # Join on the RCSB data
     if verbose:
-        print(f'Combining RCSB and UniProt data')
+        print('Combining RCSB and UniProt data')
     pdb_data = results_df.merge(uniprot_mapping, left_on='PDBID_protein', right_on='PDB')
     # Rename columns
     pdb_data = pdb_data.rename(columns={'UniProtKB_AC-ID': 'UniProt_accession'})
@@ -197,7 +197,7 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     pdb_data = pdb_data[['InChI_3D', 'InChI_2D', 'PDBID_ligand', 'SMILES', 'PDBID_protein', 'UniProt_accession']]
     # Write to disk and return
     if verbose:
-        print(f'Writing results to disk')
+        print('Writing results to disk')
     pdb_data.to_csv(output_path, sep='\t', index=False)
     return pdb_data
 

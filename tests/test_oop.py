@@ -24,9 +24,7 @@ import polars as pl
 from parameterized import parameterized, parameterized_class
 from polars.testing import assert_frame_equal
 
-from src.papyrus_scripts import PapyrusDataset
-from src.papyrus_scripts import reader, preprocess
-
+from src.papyrus_scripts import PapyrusDataset, preprocess, reader
 
 # Size of chunks of raw file to read
 CHUNKSIZE = int(1e6)
@@ -53,7 +51,7 @@ def parametrized_testclass_name_func(cls, _, params_dict):
     list(product(
         [True, False],
         ['2022.04.2', '2022.08.3', '2022.11.4', '2024.09.2'],
-        [True, False]
+        [True, False],
     )), class_name_func=parametrized_testclass_name_func)
 class TestPapyrusDataset(unittest.TestCase):
     """Each parametrization downloads (or reuses a cached download of) one
@@ -184,7 +182,7 @@ class TestPapyrusDataset(unittest.TestCase):
         self.assertTrue(oop_data_agg['type_EC50'].drop_nulls().cast(pl.Int64).unique().item() == 0)
         type_other = oop_data_agg['type_other']
         type_other_present = type_other.filter(
-            type_other.is_not_null() & ~type_other.str.to_lowercase().is_in(['na', 'nan'])
+            type_other.is_not_null() & ~type_other.str.to_lowercase().is_in(['na', 'nan']),
         )
         self.assertTrue(type_other_present.is_empty() or type_other_present.cast(pl.Int64).unique().item() == 0)
         kd_ki_rows = oop_data_agg.select(['type_KD', 'type_Ki']).cast(pl.Int64).unique().rows()

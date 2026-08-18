@@ -21,7 +21,7 @@ from .IO import get_user_agent, new_session
 def uniprot_mappings(query: str | list[str],
                      map_from: str = 'ID',
                      map_to: str = 'PDB_ID',
-                     taxon: str | None = None
+                     taxon: str | None = None,
                      ) -> pd.DataFrame:
     """Map identifiers using the UniProt identifier mapping tool.
 
@@ -42,7 +42,7 @@ def uniprot_mappings(query: str | list[str],
     if map_from in ['PDB', 'PDB_ID'] and map_to in ['UniProtKB_AC-ID', 'ACC']:
         # Obtain mappings from SIFTS
         data = pd.read_csv('ftp://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/tsv/uniprot_pdb.tsv.gz',
-                           sep='\t', skiprows=[0]
+                           sep='\t', skiprows=[0],
                  ).rename(columns={'SP_PRIMARY': map_to, 'PDB': map_from})
         # Reorganize columns
         data = data[[map_from, map_to]]
@@ -98,7 +98,7 @@ class UniprotMatch:
         else:
             request = self._session.post(
                 f"{self._api_url}/idmapping/run",
-                data={"from": from_db, "to": to_db, "ids": ",".join(ids), "taxId": taxon}
+                data={"from": from_db, "to": to_db, "ids": ",".join(ids), "taxId": taxon},
             )
         request.raise_for_status()
         return request.json()["jobId"]
@@ -239,12 +239,12 @@ class UniprotMatch:
 
     def uniprot_id_mapping(self,
             ids: list[str], from_db: str = "UniProtKB_AC-ID", to_db: str | None = None,
-            taxon: str | None = None, verbose: bool = True
+            taxon: str | None = None, verbose: bool = True,
     ) -> dict[str, str] | None:
         """
         Map Uniprot identifiers into other databases.
 
-		For a list of the available identifiers, check the
+        For a list of the available identifiers, check the
         `To database` list on https://www.uniprot.org/id-mapping
 
         :param ids: IDs to be mapped from
