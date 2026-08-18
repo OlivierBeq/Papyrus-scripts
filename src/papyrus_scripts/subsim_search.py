@@ -1281,4 +1281,4 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
 
     def substructure(self, query: str | Chem.Mol) -> pl.DataFrame:
         """Alias for :meth:`GetMatches` with default parameters."""
-        return self.GetMatches(query)
+        return self.GetMatches(query)

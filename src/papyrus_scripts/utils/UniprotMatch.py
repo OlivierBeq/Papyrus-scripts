@@ -273,4 +273,4 @@ class UniprotMatch:
                 elif isinstance(subset_df["to"].tolist()[0], dict):
                     query_to_newIDs[id] = " ".join(set(subset_df["to"].apply(lambda row: row['primaryAccession'])))
             return query_to_newIDs
-        return None
+        return None

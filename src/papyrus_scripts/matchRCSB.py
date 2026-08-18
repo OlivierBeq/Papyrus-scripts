@@ -271,4 +271,4 @@ def _chunked_get_matches(chunks: PandasTextFileReader | Iterator, root_folder: s
         pbar = chunks
     for chunk in pbar:
         processed_chunk = get_matches(chunk, root_folder, update=False)
-        yield processed_chunk
+        yield processed_chunk
