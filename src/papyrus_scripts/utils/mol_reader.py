@@ -555,7 +555,7 @@ class MolSupplier:
                 )
             assert isinstance(handle, io.TextIOBase)
             return ForwardMol2MolSupplier(handle, **kw)
-        raise ValueError(f'Unsupported format {fmt!r}')
+        raise ValueError(f'Unsupported format {fmt!r}')  # pragma: no cover - every VALID_FORMATS label is handled above
 
     # ------------------------------------------------------------------
     # Iteration-control setter (kept for backwards compatibility)
@@ -582,18 +582,31 @@ class MolSupplier:
     # ------------------------------------------------------------------
 
     def _processed_mol_supplier(self) -> Iterator[tuple[int, Chem.Mol]]:
-        """Yield ``(mol_id, rdmol)`` pairs, skipping ``None`` entries."""
+        """Yield ``(mol_id, rdmol)`` pairs, skipping ``None`` entries.
+
+        Skipped indices are reported as a single summary warning (instead of
+        one per molecule) once iteration ends, so a dataset with many bad
+        entries doesn't spam thousands of individual warnings.
+        """
         assert self._inner_supplier is not None, 'MolSupplier is closed.'
         enumerated = enumerate(self._inner_supplier, self._iter_start)
         if self._iter_progress:
             enumerated = tqdm(enumerated, total=self._iter_total, ncols=100)
 
-        for mol_id, rdmol in enumerated:
-            if rdmol is not None:
-                yield mol_id, rdmol
-            else:
+        failed_ids: list[int] = []
+        try:
+            for mol_id, rdmol in enumerated:
+                if rdmol is not None:
+                    yield mol_id, rdmol
+                else:
+                    failed_ids.append(mol_id)
+        finally:
+            if failed_ids:
+                preview = ', '.join(map(str, failed_ids[:10]))
+                more = f', +{len(failed_ids) - 10} more' if len(failed_ids) > 10 else ''
                 warnings.warn(
-                    f'Molecule at index {mol_id} could not be parsed and was skipped.',
+                    f'{len(failed_ids)} molecule(s) could not be parsed and were skipped '
+                    f'(indices: {preview}{more}).',
                     stacklevel=2,
                 )
 

@@ -9,15 +9,33 @@ enough to exercise the supplier/compression/format-detection logic.
 
 import bz2
 import gzip
+import io
 import lzma
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
+from unittest.mock import patch
 
 from rdkit import Chem
 
 from src.papyrus_scripts.utils import mol_reader as mr
-from src.papyrus_scripts.utils.mol_reader import MolSupplier, ForwardSmilesMolSupplier
+from src.papyrus_scripts.utils.mol_reader import ForwardMol2MolSupplier, ForwardSmilesMolSupplier, MolSupplier
+
+_MOL2_BLOCK = """@<TRIPOS>MOLECULE
+ethanol
+    3     2    0    0    0
+SMALL
+NO_CHARGES
+
+@<TRIPOS>ATOM
+      1 C1          0.0000    0.0000    0.0000 C.3     1  LIG1        0.0000
+      2 C2          1.5000    0.0000    0.0000 C.3     1  LIG1        0.0000
+      3 O1          2.0000    1.0000    0.0000 O.3     1  LIG1        0.0000
+@<TRIPOS>BOND
+     1    1    2    1
+     2    2    3    1
+"""
 
 
 class TestCompressionDetection(unittest.TestCase):
@@ -226,6 +244,196 @@ class TestMolSupplierSMI(unittest.TestCase):
         with MolSupplier(path) as ms:
             mols = list(ms)
         self.assertEqual(len(mols), 2)
+
+
+class TestProcessedMolSupplierWarnings(unittest.TestCase):
+
+    def test_multiple_unparseable_molecules_emit_a_single_summary_warning(self):
+        # Regression test: one warnings.warn() per bad molecule used to spam
+        # thousands of warnings on datasets with many unparseable entries.
+        mol = Chem.MolFromSmiles('CCO')
+        with MolSupplier(supplier=[mol, None, mol, None, None]) as ms:
+            with self.assertWarns(UserWarning) as ctx:
+                mols = list(ms)
+        self.assertEqual(len(mols), 2)
+        self.assertEqual(len(ctx.warnings), 1)
+        self.assertIn('3 molecule(s)', str(ctx.warnings[0].message))
+
+    def test_no_warning_when_all_molecules_parse(self):
+        mol = Chem.MolFromSmiles('CCO')
+        with MolSupplier(supplier=[mol, mol]) as ms:
+            with warnings.catch_warnings():
+                warnings.simplefilter('error')
+                mols = list(ms)
+        self.assertEqual(len(mols), 2)
+
+
+class TestForwardMol2MolSupplier(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.mol2_path = Path(self._tmpdir.name) / 'mol.mol2'
+        with open(self.mol2_path, 'w') as f:
+            f.write(_MOL2_BLOCK)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_reads_single_record_from_filename(self):
+        with ForwardMol2MolSupplier(self.mol2_path) as sup:
+            mols = list(sup)
+        self.assertEqual(len(mols), 1)
+        self.assertIsNotNone(mols[0])
+
+    def test_reads_from_open_text_handle(self):
+        with open(self.mol2_path) as fh:
+            sup = ForwardMol2MolSupplier(fh)
+            mols = list(sup)
+        self.assertEqual(len(mols), 1)
+
+    def test_reads_multiple_records(self):
+        path = Path(self._tmpdir.name) / 'multi.mol2'
+        with open(path, 'w') as f:
+            f.write(_MOL2_BLOCK + _MOL2_BLOCK)
+        with ForwardMol2MolSupplier(path) as sup:
+            mols = list(sup)
+        self.assertEqual(len(mols), 2)
+
+    def test_invalid_source_type_raises(self):
+        with self.assertRaises(TypeError):
+            ForwardMol2MolSupplier(123)
+
+    def test_next_protocol(self):
+        with ForwardMol2MolSupplier(self.mol2_path) as sup:
+            mol = next(sup)
+        self.assertIsNotNone(mol)
+
+    def test_close_does_not_close_caller_owned_handle(self):
+        with open(self.mol2_path) as fh:
+            sup = ForwardMol2MolSupplier(fh)
+            list(sup)
+            sup.close()
+            self.assertFalse(fh.closed)
+
+    def test_reads_across_buffer_boundary(self):
+        # A tiny buffer forces multiple read() calls before a separator is
+        # found within the accumulated buffer.
+        with patch.object(ForwardMol2MolSupplier, '_BUFFER_SIZE', 4):
+            with ForwardMol2MolSupplier(self.mol2_path) as sup:
+                mols = list(sup)
+        self.assertEqual(len(mols), 1)
+
+
+class TestForwardSmilesMolSupplierDirect(unittest.TestCase):
+    """Direct construction, as opposed to via MolSupplier (which always
+    hands over an already-open handle, never a filename).
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.smi_path = Path(self._tmpdir.name) / 'mols.smi'
+        with open(self.smi_path, 'w') as f:
+            f.write('SMILES\tName\n')
+            f.write('CCO\tethanol\n')
+            f.write('c1ccccc1\tbenzene\n')
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_constructed_from_filename(self):
+        sup = ForwardSmilesMolSupplier(self.smi_path)
+        mols = list(sup)
+        self.assertEqual(len(mols), 2)
+
+    def test_invalid_source_type_raises(self):
+        with self.assertRaises(TypeError):
+            ForwardSmilesMolSupplier(123)
+
+    def test_next_protocol_from_handle(self):
+        with open(self.smi_path) as fh:
+            fh.readline()
+            sup = ForwardSmilesMolSupplier(fh, delimiter='\t', titleLine=False)
+            mol = next(sup)
+        self.assertIsNotNone(mol)
+
+    def test_close_is_a_no_op(self):
+        sup = ForwardSmilesMolSupplier(self.smi_path)
+        sup.close()  # must not raise
+
+    def test_context_manager_from_handle(self):
+        with open(self.smi_path) as fh:
+            with ForwardSmilesMolSupplier(fh) as sup:
+                mols = list(sup)
+        self.assertEqual(len(mols), 2)
+
+    def test_reads_across_buffer_boundary(self):
+        with open(self.smi_path) as fh, patch.object(ForwardSmilesMolSupplier, '_BUFFER_SIZE', 4):
+            sup = ForwardSmilesMolSupplier(fh)
+            mols = list(sup)
+        self.assertEqual(len(mols), 2)
+
+    def test_last_line_without_trailing_newline_is_still_parsed(self):
+        path = Path(self._tmpdir.name) / 'no_trailing_newline.smi'
+        with open(path, 'w') as f:
+            f.write('SMILES\tName\nCCO\tethanol')  # no final '\n'
+        with open(path) as fh:
+            mols = list(ForwardSmilesMolSupplier(fh))
+        self.assertEqual(len(mols), 1)
+
+
+class TestMolSupplierFileLikeSource(unittest.TestCase):
+
+    def test_file_like_source_with_valid_format(self):
+        handle = io.StringIO('SMILES\tName\nCCO\tethanol\n')
+        with MolSupplier(handle, format='smi') as ms:
+            mols = list(ms)
+        self.assertEqual(len(mols), 1)
+
+    def test_file_like_source_with_invalid_format_raises(self):
+        handle = io.StringIO('CCO')
+        with self.assertRaises(ValueError):
+            MolSupplier(handle, format='bogus')
+
+    def test_mol2_format_dispatch(self):
+        handle = io.StringIO(_MOL2_BLOCK)
+        with MolSupplier(handle, format='mol2') as ms:
+            mols = list(ms)
+        self.assertEqual(len(mols), 1)
+
+    def test_mol2_binary_handle_raises_type_error(self):
+        handle = io.BytesIO(_MOL2_BLOCK.encode())
+        with self.assertRaises(TypeError):
+            MolSupplier(handle, format='mol2')
+
+    @patch('src.papyrus_scripts.utils.mol_reader.MaeMolSupplier')
+    def test_mae_format_dispatches_to_mae_supplier(self, mock_cls):
+        handle = io.BytesIO(b'dummy')
+        MolSupplier(handle, format='mae')
+        mock_cls.assert_called_once()
+
+
+class TestMolSupplierIterationControl(unittest.TestCase):
+
+    def test_set_start_progress_total(self):
+        mol = Chem.MolFromSmiles('CCO')
+        ms = MolSupplier(supplier=[mol])
+        ms.set_start_progress_total(start=5, progress=False, total=1)
+        self.assertEqual(ms._iter_start, 5)
+        self.assertFalse(ms._iter_progress)
+        self.assertEqual(ms._iter_total, 1)
+
+    def test_show_progress_renders_tqdm_bar(self):
+        mol = Chem.MolFromSmiles('CCO')
+        with MolSupplier(supplier=[mol, mol], show_progress=True, total=2) as ms:
+            mols = list(ms)
+        self.assertEqual(len(mols), 2)
+
+    def test_next_protocol(self):
+        mol = Chem.MolFromSmiles('CCO')
+        with MolSupplier(supplier=[mol]) as ms:
+            mol_id, rdmol = next(ms)
+        self.assertEqual(mol_id, 0)
+        self.assertIsNotNone(rdmol)
 
 
 if __name__ == '__main__':
