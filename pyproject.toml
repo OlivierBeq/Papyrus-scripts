@@ -72,6 +72,19 @@ dnn = [
     "torch",
     "skorch",
 ]
+subsim = [
+    "tables",
+    "FPSim2",
+]
+gpu = [
+    "cupy-cuda12x",
+]
+simgpu = [
+    "papyrus_scripts[subsim,gpu]"
+]
+all = [
+    "papyrus_scripts[dnn,simgpu]"
+]
 
 [tool.coverage.run]
 source = ["src/papyrus_scripts"]
