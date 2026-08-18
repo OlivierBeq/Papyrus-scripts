@@ -5,7 +5,7 @@
 import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 from sklearn.utils import shuffle as sk_shuffle
@@ -35,6 +35,43 @@ def _validate_data_type(data: object) -> None:
             f'data must be a pl.DataFrame or pl.LazyFrame, '
             f'got {type(data).__name__!r}.',
         )
+
+
+# ---------------------------------------------------------------------------
+# Type-narrowed join/concat helpers
+# ---------------------------------------------------------------------------
+#
+# polars' DataFrame.join()/pl.concat() overloads can't express "same
+# concrete type" for a DataFrame | LazyFrame union - narrowing via
+# isinstance here does it once, instead of a type: ignore per call site.
+
+def _safe_join(
+        left: DataInput,
+        right: DataInput,
+        *,
+        on: str | list[str],
+        how: str = 'inner',
+) -> DataOutput:
+    """Join *left* and *right*, which must both be a DataFrame or both a LazyFrame."""
+    if isinstance(left, pl.LazyFrame) and isinstance(right, pl.LazyFrame):
+        return left.join(right, on=on, how=how)
+    if isinstance(left, pl.DataFrame) and isinstance(right, pl.DataFrame):
+        return left.join(right, on=on, how=how)
+    raise TypeError(
+        f'left and right must both be pl.DataFrame or both pl.LazyFrame, '
+        f'got {type(left).__name__} and {type(right).__name__}.',
+    )
+
+
+def _safe_concat(parts: list[DataInput], *, how: str = 'diagonal') -> DataOutput:
+    """Concatenate *parts*, which must be all DataFrames or all LazyFrames."""
+    # mypy can't narrow a list's element type via a per-element isinstance
+    # check (unlike _safe_join's per-variable narrowing) - cast() is still needed.
+    if all(isinstance(p, pl.LazyFrame) for p in parts):
+        return pl.concat(cast(list[pl.LazyFrame], parts), how=how)
+    if all(isinstance(p, pl.DataFrame) for p in parts):
+        return pl.concat(cast(list[pl.DataFrame], parts), how=how)
+    raise TypeError('parts must be all pl.DataFrame or all pl.LazyFrame.')
 
 
 # ---------------------------------------------------------------------------
@@ -180,8 +217,8 @@ def equalize_cell_size_in_column(
     # lengths is a non-empty Series of list-lengths (checked above), so
     # .max()/.min() always yield a genuine int - narrower than the broad
     # scalar union polars' stubs declare for a generic Series.
-    max_len = int(lengths.max())  # type: ignore[arg-type]
-    min_len = int(lengths.min())  # type: ignore[arg-type]
+    max_len = cast(int, lengths.max())
+    min_len = cast(int, lengths.min())
 
     if fill_mode == 'trim':
         result = series.list.head(min_len)
@@ -388,7 +425,7 @@ def _unnest_and_filter(
             pl.col(c).list.concat(pl.col(c).list.last().repeat_by(row_max_len)).list.head(row_max_len)
             for c in split_cols
         ])
-        .explode(split_cols)
+        .explode(split_cols, empty_as_null=True)
         # On a genuinely empty frame, the padding expressions above lose
         # their inner dtype (infer List(Null) regardless of upstream casts,
         # a Polars empty-input quirk) - re-cast after exploding, where a
@@ -399,15 +436,14 @@ def _unnest_and_filter(
     included = included.filter(keep_mask())
 
     # included and excluded are both derived from the same df, so they are
-    # guaranteed to share the same concrete type; polars' overloaded join()
-    # can't express that invariant for a plain DataFrame | LazyFrame union.
+    # guaranteed to share the same concrete type - see _safe_join.
     if not aggregate:
-        result = included.join(excluded, on='Activity_ID', how='inner')  # type: ignore[arg-type]
+        result = _safe_join(included, excluded, on='Activity_ID')
         result_schema = result.collect_schema()
         return result.select([c for c in ordered_columns if c in result_schema])
 
     aggregated = process_groups(included, additional_columns)
-    result     = aggregated.join(excluded, on='Activity_ID', how='inner')  # type: ignore[arg-type]
+    result     = _safe_join(aggregated, excluded, on='Activity_ID')
     result_schema = result.collect_schema()
     final_cols = [c for c in ordered_columns if c in result_schema]
     return result.select(final_cols)
@@ -502,10 +538,9 @@ def keep_source(
     )
 
     # All four parts are derived from the same data, so they are
-    # guaranteed to share the same concrete type; polars' concat() can't
-    # express that invariant for a plain DataFrame | LazyFrame union.
+    # guaranteed to share the same concrete type - see _safe_concat.
     parts = [preserved.drop(added), filtered, preserved_binary.drop(added), binary_data]
-    return pl.concat(parts, how='diagonal')  # type: ignore[type-var]
+    return _safe_concat(parts)
 
 
 def _activity_type_expr(type_cols: list[str], schema) -> pl.Expr:
@@ -592,10 +627,9 @@ def keep_type(
     )
 
     # All four parts are derived from the same data, so they are
-    # guaranteed to share the same concrete type; polars' concat() can't
-    # express that invariant for a plain DataFrame | LazyFrame union.
+    # guaranteed to share the same concrete type - see _safe_concat.
     parts = [preserved.drop(added), filtered, preserved_binary.drop(added), binary_data]
-    return pl.concat(parts, how='diagonal')  # type: ignore[type-var]
+    return _safe_concat(parts)
 
 
 def keep_accession(
@@ -692,7 +726,8 @@ def keep_protein_class(
     if not level_frames:
         return data.filter(pl.lit(False))
 
-    split_classes = pl.concat(level_frames, how='horizontal')
+    # level_frames always share len(protein_data) rows, so this never pads.
+    split_classes = pl.concat(level_frames, how='horizontal_extend')
 
     # Build the boolean mask over protein rows.
     mask = pl.Series([False] * len(split_classes))
@@ -726,10 +761,7 @@ def keep_protein_class(
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         target_df = target_df.lazy()
-    # data and target_df are guaranteed to be the same concrete type by the
-    # isinstance check above; polars' overloaded join() can't express that
-    # invariant for a plain DataFrame | LazyFrame union.
-    return data.filter(pl.col('target_id').is_in(target_ids)).join(target_df, on='target_id')  # type: ignore[arg-type]
+    return _safe_join(data.filter(pl.col('target_id').is_in(target_ids.implode())), target_df, on='target_id')
 
 
 def keep_organism(
@@ -770,12 +802,11 @@ def keep_organism(
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         organism_df = organism_df.lazy()
-    # data and organism_df are guaranteed to be the same concrete type by the
-    # isinstance check above; polars' overloaded join() can't express that
-    # invariant for a plain DataFrame | LazyFrame union.
-    return data.filter(
-        pl.col('target_id').is_in(matched_target_ids),
-    ).join(organism_df, on='target_id')  # type: ignore[arg-type]
+    return _safe_join(
+        data.filter(pl.col('target_id').is_in(matched_target_ids.implode())),
+        organism_df,
+        on='target_id',
+    )
 
 
 def keep_match(
@@ -931,12 +962,10 @@ def keep_similar(
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         scores = scores.lazy()
-    # data and scores are guaranteed to be the same concrete type by the
-    # isinstance check above; polars' overloaded join() can't express that
-    # invariant for a plain DataFrame | LazyFrame union.
-    return (
-        data.filter(pl.col('InChIKey').is_in(similar_mols['InChIKey']))
-        .join(scores, on='InChIKey')  # type: ignore[arg-type]
+    return _safe_join(
+        data.filter(pl.col('InChIKey').is_in(similar_mols['InChIKey'].implode())),
+        scores,
+        on='InChIKey',
     )
 
 
@@ -963,7 +992,7 @@ def keep_dissimilar(
         molecule_smiles = [molecule_smiles]
     fpss2        = _load_fpsubsim2(fpsubsim2_file, fingerprint)
     similar_mols = _collect_similar_molecules(fpss2, molecule_smiles, fingerprint, threshold, cuda)
-    return data.filter(~pl.col('InChIKey').is_in(similar_mols['InChIKey']))
+    return data.filter(~pl.col('InChIKey').is_in(similar_mols['InChIKey'].implode()))
 
 
 def _collect_substructure_molecules(
@@ -991,7 +1020,7 @@ def keep_substructure(
         molecule_smiles = [molecule_smiles]
     fpss2             = _load_fpsubsim2(fpsubsim2_file, fingerprint=None)
     substructure_mols = _collect_substructure_molecules(fpss2, molecule_smiles)
-    return data.filter(pl.col('InChIKey').is_in(substructure_mols['InChIKey']))
+    return data.filter(pl.col('InChIKey').is_in(substructure_mols['InChIKey'].implode()))
 
 
 def keep_not_substructure(
@@ -1009,7 +1038,7 @@ def keep_not_substructure(
         molecule_smiles = [molecule_smiles]
     fpss2             = _load_fpsubsim2(fpsubsim2_file, fingerprint=None)
     substructure_mols = _collect_substructure_molecules(fpss2, molecule_smiles)
-    return data.filter(~pl.col('InChIKey').is_in(substructure_mols['InChIKey']))
+    return data.filter(~pl.col('InChIKey').is_in(substructure_mols['InChIKey'].implode()))
 
 
 # ---------------------------------------------------------------------------
