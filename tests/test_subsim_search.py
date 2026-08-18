@@ -4,9 +4,10 @@
 
 multiprocessing.Process/Queue are mocked entirely: no real worker processes
 are spawned, no .h5 file or SD file is touched. FPSubSim2.__init__ is
-bypassed (via __new__) since it requires optional deps (tables, FPSim2)
-that aren't installed in this environment; the module itself imports fine
-without them (the dependency check only runs on instantiation).
+bypassed (via __new__) in most tests to avoid depending on optional deps
+(tables, FPSim2) being installed. Tests simulating an absent dep must
+explicitly patch its HAS_* flag rather than rely on ambient absence, since
+these must pass regardless of what's actually installed.
 """
 
 import unittest
@@ -272,8 +273,9 @@ class TestSortDbFile(unittest.TestCase):
 class TestFPSubSim2Init(unittest.TestCase):
 
     def test_raises_when_deps_missing(self):
-        with self.assertRaises(ImportError):
-            FPSubSim2()
+        with patch.object(ss, 'HAS_TABLES', False), patch.object(ss, 'HAS_FPSIM2', False):
+            with self.assertRaises(ImportError):
+                FPSubSim2()
 
     def test_sets_defaults_when_deps_available(self):
         with patch.object(ss, 'HAS_TABLES', True), patch.object(ss, 'HAS_FPSIM2', True):
@@ -315,6 +317,7 @@ class TestCreateFromPapyrus(unittest.TestCase):
         mock_create.assert_called_once_with(
             sd_file=Path('/fake/mols.sd.xz'), outfile='out.h5', fingerprint=ANY,
             total=42, progress=False, njobs=2,
+            n_shards=None, pattern_holder_bits=ss.DEFAULT_PATTERN_HOLDER_BITS,
         )
 
 
@@ -458,7 +461,7 @@ class TestGetSubstructureLib(unittest.TestCase):
         with self.assertRaises(ValueError):
             engine.get_substructure_lib()
 
-    def test_deserializes_library(self):
+    def test_deserializes_legacy_single_blob_library(self):
         from rdkit.Chem.rdSubstructLibrary import CachedMolHolder, PatternHolder, SubstructLibrary
         lib = SubstructLibrary(CachedMolHolder(), PatternHolder())
         lib.AddMol(Chem.MolFromSmiles('CCO'))
@@ -469,6 +472,8 @@ class TestGetSubstructureLib(unittest.TestCase):
         engine = make_engine()
         engine.h5_filename = Path('fake.h5')
         h5file = MagicMock()
+        # Must set explicitly: MagicMock auto-creates attrs, so getattr(..., default) never falls back.
+        h5file.root.substructure_info._v_attrs.format_version = 1
         h5file.root.substructure_info.substruct_lib.attrs.padding = padding
         h5file.root.substructure_info.substruct_lib.read.return_value = ints
         with (
@@ -479,6 +484,44 @@ class TestGetSubstructureLib(unittest.TestCase):
             mock_tb.open_file.return_value.__enter__.return_value = h5file
             result = engine.get_substructure_lib()
         self.assertEqual(result.GetMatches.__self__.__class__.__name__, 'PapyrusSubstructureLibrary')
+        self.assertEqual(result.fp_filename, Path('fake.h5'))
+
+    def test_deserializes_sharded_library(self):
+        from rdkit.Chem.rdSubstructLibrary import CachedSmilesMolHolder, PatternHolder, SubstructLibrary
+        shard_libs = []
+        for smi in ('CCO', 'c1ccccc1'):
+            lib = SubstructLibrary(CachedSmilesMolHolder(), PatternHolder())
+            lib.AddMol(Chem.MolFromSmiles(smi))
+            shard_libs.append(lib)
+
+        engine = make_engine()
+        engine.h5_filename = Path('fake.h5')
+        h5file = MagicMock()
+        h5file.root.substructure_info._v_attrs.format_version = 2
+        h5file.root.substructure_info._v_attrs.n_shards = 2
+
+        def fake_get_node(path):
+            shard_idx = int(path.split('shard_')[1].split('/')[0])
+            node = MagicMock()
+            if path.endswith('mol_ids'):
+                node.read.return_value = np.array([shard_idx + 1], dtype=np.int64)
+                return node
+            lib_bytes = _serialize_substruct_lib(shard_libs[shard_idx])
+            padded = _pad_to_int64(lib_bytes)
+            node.attrs.padding = _padding_for(lib_bytes)
+            node.read.return_value = np.frombuffer(padded, dtype=np.int64)
+            return node
+
+        with (
+            patch.object(ss, 'tb', create=True) as mock_tb,
+            patch.object(Path, 'is_file', return_value=True),
+            patch.object(ss, 'HAS_TABLES', True), patch.object(ss, 'HAS_FPSIM2', True),
+        ):
+            mock_tb.open_file.return_value.__enter__.return_value = h5file
+            h5file.get_node.side_effect = fake_get_node
+            result = engine.get_substructure_lib()
+        self.assertIsInstance(result, ss.PapyrusShardedSubstructureLibrary)
+        self.assertEqual(result.n_shards, 2)
         self.assertEqual(result.fp_filename, Path('fake.h5'))
 
 
@@ -512,8 +555,26 @@ class TestGetSimilarityLib(unittest.TestCase):
             patch.object(ss, 'FPSubSim2Engine', create=True) as mock_engine_cls,
         ):
             result = engine.get_similarity_lib()
-        mock_engine_cls.assert_called_once_with(Path('fake.h5'), 'sig1')
+        mock_engine_cls.assert_called_once_with(
+            Path('fake.h5'), 'sig1', in_memory_fps=True, fps_sort=False,
+        )
         self.assertIs(result, mock_engine_cls.return_value)
+
+    def test_passes_through_in_memory_fps_and_fps_sort(self):
+        engine = make_engine()
+        engine.h5_filename = Path('fake.h5')
+        with (
+            patch.object(Path, 'is_file', return_value=True),
+            patch.object(
+                FPSubSim2, 'available_fingerprints',
+                new_callable=lambda: property(lambda self: {'sig1': MagicMock()}),
+            ),
+            patch.object(ss, 'FPSubSim2Engine', create=True) as mock_engine_cls,
+        ):
+            engine.get_similarity_lib(in_memory_fps=False, fps_sort=True)
+        mock_engine_cls.assert_called_once_with(
+            Path('fake.h5'), 'sig1', in_memory_fps=False, fps_sort=True,
+        )
 
     def test_cuda_flag_selects_cuda_engine(self):
         engine = make_engine()
@@ -528,6 +589,42 @@ class TestGetSimilarityLib(unittest.TestCase):
         ):
             engine.get_similarity_lib(cuda=True)
         mock_engine_cls.assert_called_once_with(Path('fake.h5'), 'sig1')
+
+    def test_cuda_auto_uses_cuda_engine_when_available(self):
+        engine = make_engine()
+        engine.h5_filename = Path('fake.h5')
+        with (
+            patch.object(Path, 'is_file', return_value=True),
+            patch.object(
+                FPSubSim2, 'available_fingerprints',
+                new_callable=lambda: property(lambda self: {'sig1': MagicMock()}),
+            ),
+            patch.object(ss, 'FPSubSim2CudaEngine', create=True) as mock_cuda_cls,
+            patch.object(ss, 'FPSubSim2Engine', create=True) as mock_cpu_cls,
+        ):
+            result = engine.get_similarity_lib(cuda='auto')
+        mock_cuda_cls.assert_called_once_with(Path('fake.h5'), 'sig1')
+        mock_cpu_cls.assert_not_called()
+        self.assertIs(result, mock_cuda_cls.return_value)
+
+    def test_cuda_auto_falls_back_to_cpu_engine_with_warning(self):
+        engine = make_engine()
+        engine.h5_filename = Path('fake.h5')
+        with (
+            patch.object(Path, 'is_file', return_value=True),
+            patch.object(
+                FPSubSim2, 'available_fingerprints',
+                new_callable=lambda: property(lambda self: {'sig1': MagicMock()}),
+            ),
+            patch.object(ss, 'FPSubSim2CudaEngine', create=True, side_effect=ImportError('no cupy')),
+            patch.object(ss, 'FPSubSim2Engine', create=True) as mock_cpu_cls,
+        ):
+            with self.assertWarns(UserWarning):
+                result = engine.get_similarity_lib(cuda='auto')
+        mock_cpu_cls.assert_called_once_with(
+            Path('fake.h5'), 'sig1', in_memory_fps=True, fps_sort=False,
+        )
+        self.assertIs(result, mock_cpu_cls.return_value)
 
 
 class TestAddFingerprint(unittest.TestCase):
@@ -560,53 +657,107 @@ class TestAddFingerprint(unittest.TestCase):
 
 class TestAddMolecules(unittest.TestCase):
 
-    def test_appends_to_every_fingerprint_and_substructure_lib(self):
+    def _patch_mol_supplier(self, mols):
+        # Yields the same (mol_id, rdmol) pairs regardless of call-site kwargs.
+        return patch.object(ss, 'MolSupplier', side_effect=lambda *a, **kw: MagicMock(
+            __enter__=MagicMock(return_value=iter(mols)),
+            __exit__=MagicMock(return_value=False),
+            __iter__=lambda self: iter(mols),
+        ))
+
+    def test_legacy_format_appends_mappings_fingerprints_and_substruct_lib(self):
         from rdkit.Chem.rdSubstructLibrary import CachedMolHolder, PatternHolder, SubstructLibrary
         engine = make_engine()
         mol = Chem.MolFromSmiles('CCO')
 
         fake_lib = SubstructLibrary(CachedMolHolder(), PatternHolder())
+        fake_lib.fp_filename = 'fake.h5'
         fake_lib.AddMol = MagicMock(wraps=fake_lib.AddMol)
+
+        h5file = MagicMock()
+        h5file.root.mol_mappings.iterrows.return_value = iter([{'idnumber': 5}])
+        h5file.root.substructure_info._v_attrs.format_version = 1
+
         with (
             patch.object(
                 FPSubSim2, 'available_fingerprints',
                 new_callable=lambda: property(lambda self: {'sig1': MagicMock()}),
             ),
             patch.object(ss, 'PyTablesMultiFpStorageBackend') as mock_backend_cls,
-            patch.object(ss, 'MolSupplier', side_effect=lambda *a, **kw: MagicMock(
-                __enter__=MagicMock(return_value=iter([(1, mol)])), __exit__=MagicMock(return_value=False),
-                __iter__=lambda self: iter([(1, mol)]),
-            )),
+            self._patch_mol_supplier([(6, mol)]),
             patch.object(engine, 'get_substructure_lib', return_value=fake_lib),
             patch.object(ss, 'tb', create=True) as mock_tb,
             patch.object(ss, 'sort_db_file') as mock_sort,
         ):
-            mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
+            mock_tb.open_file.return_value.__enter__.return_value = h5file
             engine.add_molecules(papyrus_sd_file='mols.sd', progress=False, total=1)
 
+        h5file.root.mol_mappings.append.assert_called_once_with([(6, ANY, ANY)])
         mock_backend_cls.return_value.append_fps.assert_called_once()
         fake_lib.AddMol.assert_called_once_with(mol)
+        h5file.remove_node.assert_called_once()
+        mock_sort.assert_called_once()
+
+    def test_sharded_format_appends_only_touched_shards(self):
+        engine = make_engine()
+        mol1 = Chem.MolFromSmiles('CCO')
+        mol2 = Chem.MolFromSmiles('c1ccccc1')
+
+        fake_shard0, fake_shard1 = MagicMock(), MagicMock()
+        fake_shard0.Serialize.return_value = b'\x01' * 8
+        fake_shard1.Serialize.return_value = b'\x02' * 8
+        fake_sharded_lib = MagicMock()
+        fake_sharded_lib.n_shards = 2
+        fake_sharded_lib._resident = [fake_shard0, fake_shard1]
+
+        h5file = MagicMock()
+        h5file.root.mol_mappings.iterrows.return_value = iter([])
+        h5file.root.substructure_info._v_attrs.format_version = 2
+
+        with (
+            patch.object(
+                FPSubSim2, 'available_fingerprints',
+                new_callable=lambda: property(lambda self: {}),
+            ),
+            self._patch_mol_supplier([(1, mol1), (2, mol2)]),
+            patch.object(engine, 'get_substructure_lib', return_value=fake_sharded_lib),
+            patch.object(ss, 'tb', create=True) as mock_tb,
+            patch.object(ss, 'sort_db_file') as mock_sort,
+        ):
+            mock_tb.open_file.return_value.__enter__.return_value = h5file
+            engine.add_molecules(papyrus_sd_file='mols.sd', progress=False, total=2)
+
+        fake_shard0.AddMol.assert_called_once_with(mol2)  # mol_id 2 % 2 == 0
+        fake_shard1.AddMol.assert_called_once_with(mol1)  # mol_id 1 % 2 == 1
         mock_sort.assert_called_once()
 
 
 class TestReaderProcess(unittest.TestCase):
 
-    def test_feeds_queue_and_sends_end_sentinels(self):
+    def test_routes_to_shard_queues_and_sends_end_sentinels(self):
         mol = Chem.MolFromSmiles('CCO')
-        input_queue = MagicMock()
+        input_queues = [MagicMock(), MagicMock(), MagicMock()]
         with patch.object(ss, 'MolSupplier') as mock_supplier_cls:
-            mock_supplier_cls.return_value.__enter__.return_value = iter([(1, mol)])
+            # mol_id 1 -> shard 1, mol_id 2 -> shard 2, mol_id 4 -> shard 1 (4 % 3 == 1)
+            mock_supplier_cls.return_value.__enter__.return_value = iter([(1, mol), (2, mol), (4, mol)])
             mock_supplier_cls.return_value.__exit__.return_value = False
-            ss._reader_process('mols.sd', n_workers=3, total=1, progress=False, input_queue=input_queue)
-        calls = input_queue.put.call_args_list
-        self.assertEqual(calls[0].args[0][0], 1)
-        end_count = sum(1 for c in calls if c.args[0] == 'END')
-        self.assertEqual(end_count, 3)
+            ss._reader_process('mols.sd', n_shards=3, total=3, progress=False, input_queues=input_queues)
+
+        shard1_ids = [
+            m[0] for c in input_queues[1].put.call_args_list if c.args[0] != 'END' for m in c.args[0]
+        ]
+        shard2_ids = [
+            m[0] for c in input_queues[2].put.call_args_list if c.args[0] != 'END' for m in c.args[0]
+        ]
+        self.assertEqual(shard1_ids, [1, 4])
+        self.assertEqual(shard2_ids, [2])
+        for q in input_queues:
+            self.assertTrue(any(c.args[0] == 'END' for c in q.put.call_args_list))
 
 
 class TestWorkerProcess(unittest.TestCase):
 
-    def test_processes_one_molecule_then_stops_on_end(self):
+    def test_processes_one_batch_then_stops_on_end(self):
         class _FakeFp:
             def __init__(self, **params):
                 pass
@@ -619,63 +770,104 @@ class TestWorkerProcess(unittest.TestCase):
 
         mol = Chem.MolFromSmiles('CCO')
         input_queue = MagicMock()
-        input_queue.get.side_effect = [(1, mol, mol.GetPropsAsDict()), 'END']
-        output_queue = MagicMock()
+        input_queue.get.side_effect = [[(1, mol, mol.GetPropsAsDict())], 'END']
+        fp_output_queue = MagicMock()
+        shard_result_queue = MagicMock()
         fp_specs = [(_FakeFp, {})]
-        ss._worker_process(fp_specs, input_queue, output_queue)
-        kinds = [c.args[0][0] for c in output_queue.put.call_args_list]
-        self.assertEqual(kinds, ['substructure', 'mappings', 'similarity'])
+
+        ss._worker_process(0, fp_specs, 2048, input_queue, fp_output_queue, shard_result_queue)
+
+        fp_output_queue.put.assert_called_once()
+        kind, mappings_batch, fps_batch = fp_output_queue.put.call_args.args[0]
+        self.assertEqual(kind, 'rows')
+        self.assertEqual(mappings_batch, [(1, ANY, ANY)])
+        self.assertIn('FakeFp_1bits_0x0', fps_batch)
+
+        shard_result_queue.put.assert_called_once()
+        shard_idx, lib_bytes, padding, mol_ids = shard_result_queue.put.call_args.args[0]
+        self.assertEqual(shard_idx, 0)
+        self.assertEqual(mol_ids, [1])
+        self.assertIsInstance(lib_bytes, bytes)
 
 
-class TestWriterProcess(unittest.TestCase):
+class TestFpWriterProcess(unittest.TestCase):
 
-    def test_flushes_on_stop(self):
-        mol = Chem.MolFromSmiles('CCO')
-        output_queue = MagicMock()
-        output_queue.get.side_effect = [
-            ('substructure', mol),
-            ('mappings', (1, 'CONN', 'INCHI')),
-            ('similarity', 'sig1', (1, 0, 1)),
+    def test_flushes_on_stop_and_sets_done_event(self):
+        fp_output_queue = MagicMock()
+        fp_output_queue.get.side_effect = [
+            ('rows', [(1, 'CONN', 'INCHI')], {'sig1': [(1, 0, 1)]}),
             'STOP',
         ]
         h5file = MagicMock()
+        fp_writer_done = MagicMock()
         with patch.object(ss, 'tb', create=True) as mock_tb:
             mock_tb.open_file.return_value.__enter__.return_value = h5file
-            ss._writer_process(
-                'fake.h5', output_queue, table_paths={'sig1': '/similarity_info/sig1/fps'},
-                total=1, progress=False,
+            ss._fp_writer_process(
+                'fake.h5', fp_output_queue, table_paths={'sig1': '/similarity_info/sig1/fps'},
+                total=1, progress=False, fp_writer_done=fp_writer_done,
             )
         h5file.root.mol_mappings.append.assert_called()
         h5file.get_node.return_value.append.assert_called()
-        h5file.root.substructure_info.substruct_lib.append.assert_called_once()
+        fp_writer_done.set.assert_called_once()
 
     def test_batch_flush_mid_stream(self):
-        messages = (
-            [('mappings', (i, 'CONN', 'INCHI')) for i in range(3)]
-            + [('similarity', 'sig1', (i, 0, 1)) for i in range(3)]
-            + ['STOP']
-        )
-        output_queue = MagicMock()
-        output_queue.get.side_effect = messages
+        messages = [
+            ('rows', [(i, 'CONN', 'INCHI') for i in range(3)], {'sig1': [(i, 0, 1) for i in range(3)]}),
+            'STOP',
+        ]
+        fp_output_queue = MagicMock()
+        fp_output_queue.get.side_effect = messages
         h5file = MagicMock()
+        fp_writer_done = MagicMock()
         with (
             patch.object(ss, 'tb', create=True) as mock_tb,
             patch.object(ss, 'BATCH_WRITE_SIZE', 2, create=True),
         ):
             mock_tb.open_file.return_value.__enter__.return_value = h5file
-            ss._writer_process(
-                'fake.h5', output_queue, table_paths={'sig1': '/similarity_info/sig1/fps'},
-                total=None, progress=True,
+            ss._fp_writer_process(
+                'fake.h5', fp_output_queue, table_paths={'sig1': '/similarity_info/sig1/fps'},
+                total=None, progress=True, fp_writer_done=fp_writer_done,
             )
-        # append() called at least twice: once for the mid-stream flush, once at STOP.
-        self.assertGreaterEqual(h5file.root.mol_mappings.append.call_count, 2)
-        # Similarity batch-flush branch (separate from the STOP flush) ran at least once.
+        self.assertGreaterEqual(h5file.root.mol_mappings.append.call_count, 1)
         self.assertGreaterEqual(h5file.get_node.return_value.append.call_count, 1)
+        fp_writer_done.set.assert_called_once()
+
+    def test_sets_done_event_even_on_exception(self):
+        fp_output_queue = MagicMock()
+        fp_output_queue.get.side_effect = RuntimeError('boom')
+        fp_writer_done = MagicMock()
+        with patch.object(ss, 'tb', create=True) as mock_tb:
+            mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
+            with self.assertRaises(RuntimeError):
+                ss._fp_writer_process(
+                    'fake.h5', fp_output_queue, table_paths={},
+                    total=None, progress=False, fp_writer_done=fp_writer_done,
+                )
+        fp_writer_done.set.assert_called_once()
+
+
+class TestSubstWriterProcess(unittest.TestCase):
+
+    def test_waits_for_fp_writer_done_before_writing(self):
+        shard_result_queue = MagicMock()
+        shard_result_queue.get.side_effect = [
+            (0, b'\x01' * 8, 0, [1, 3]),
+            (1, b'\x02' * 8, 0, [2, 4]),
+        ]
+        fp_writer_done = MagicMock()
+        h5file = MagicMock()
+        with patch.object(ss, 'tb', create=True) as mock_tb:
+            mock_tb.open_file.return_value.__enter__.return_value = h5file
+            ss._subst_writer_process('fake.h5', shard_result_queue, n_shards=2, fp_writer_done=fp_writer_done)
+
+        fp_writer_done.wait.assert_called_once()
+        # 2 shards x (substruct_lib append + mol_ids append)
+        self.assertEqual(h5file.get_node.return_value.append.call_count, 4)
 
 
 class TestSingleProcessCreate(unittest.TestCase):
 
-    def _run(self, n_mols, batch_write_size):
+    def _run(self, n_mols, batch_write_size, n_shards=2, pattern_holder_bits=2048):
         mols = [Chem.MolFromSmiles('CCO') for _ in range(n_mols)]
         engine = make_engine()
         h5file = MagicMock()
@@ -698,7 +890,10 @@ class TestSingleProcessCreate(unittest.TestCase):
             mock_tb.open_file.return_value.__enter__.return_value = h5file
             mock_supplier_cls.return_value.__enter__.return_value = enumerate(mols, 1)
             mock_supplier_cls.return_value.__exit__.return_value = False
-            engine._single_process_create(fingerprint=[_FakeFp()], progress=False, total=n_mols)
+            engine._single_process_create(
+                fingerprint=[_FakeFp()], progress=False, total=n_mols,
+                n_shards=n_shards, pattern_holder_bits=pattern_holder_bits,
+            )
 
         mock_sort.assert_called_once()
         return h5file
@@ -853,7 +1048,8 @@ class TestPyTablesMultiFpStorageBackend(unittest.TestCase):
             supplier.set_start_progress_total = MagicMock()
             supplier.__iter__.return_value = iter([(1, mol), (2, mol)])
             backend.append_fps(supplier, progress=False, total=2, sort=True)
-        supplier.set_start_progress_total.assert_called_once_with(5, False, 2)
+        # +1: continues after the last existing fp_id (5) rather than reusing it.
+        supplier.set_start_progress_total.assert_called_once_with(6, False, 2)
         mock_sort.assert_called_once()
 
     def test_append_fps_final_partial_batch_without_sort(self):
@@ -939,12 +1135,21 @@ class TestMappingMixinGetMapping(unittest.TestCase):
                 obj._get_mapping([999])
 
 
+class _ConcreteMultiFpEngine(ss.BaseMultiFpEngine):
+    """Minimal concrete subclass - BaseMultiFpEngine is abstract (real FPSim2's
+    BaseEngine declares `similarity` abstract).
+    """
+
+    def similarity(self, query_string, threshold, n_workers=1):
+        raise NotImplementedError
+
+
 class TestBaseMultiFpEngine(unittest.TestCase):
 
     def test_init_builds_pytables_backend(self):
         with patch.object(ss, 'PyTablesMultiFpStorageBackend') as mock_backend_cls, \
              patch.object(ss, 'HAS_TABLES', True), patch.object(ss, 'HAS_FPSIM2', True):
-            engine = ss.BaseMultiFpEngine.__new__(ss.BaseMultiFpEngine)
+            engine = _ConcreteMultiFpEngine.__new__(_ConcreteMultiFpEngine)
             ss.BaseMultiFpEngine.__init__(
                 engine, 'fake.h5', 'sig1', storage_backend='pytables',
                 in_memory_fps=True, fps_sort=False,
@@ -953,13 +1158,13 @@ class TestBaseMultiFpEngine(unittest.TestCase):
         self.assertIs(engine.storage, mock_backend_cls.return_value)
 
     def test_load_query_raises_on_unparseable_molecule(self):
-        engine = ss.BaseMultiFpEngine.__new__(ss.BaseMultiFpEngine)
+        engine = _ConcreteMultiFpEngine.__new__(_ConcreteMultiFpEngine)
         with patch.object(ss, 'load_molecule', create=True, return_value=None):
             with self.assertRaises(ValueError):
                 engine.load_query('not a molecule')
 
     def test_load_query_builds_fingerprint_array(self):
-        engine = ss.BaseMultiFpEngine.__new__(ss.BaseMultiFpEngine)
+        engine = _ConcreteMultiFpEngine.__new__(_ConcreteMultiFpEngine)
         engine.storage = MagicMock()
         engine.storage.fp_type = 'Morgan'
         engine.storage.fp_params = {}
@@ -1004,7 +1209,8 @@ class TestFPSubSim2EngineMethods(unittest.TestCase):
         with patch.object(ss, 'FPSim2Engine', create=True) as mock_cls:
             mock_cls.similarity.return_value = [(1, 0.9)]
             df = engine.similarity('CCO', 0.7)
-        self.assertIn('score', df.columns) if 'score' in df.columns else None
+        # By keyword: FPSim2's real signature has gained positional params ahead of n_workers.
+        mock_cls.similarity.assert_called_once_with(engine, 'CCO', 0.7, n_workers=1)
         self.assertTrue(any('Tanimoto' in c for c in df.columns))
 
     def test_on_disk_similarity(self):
@@ -1012,6 +1218,9 @@ class TestFPSubSim2EngineMethods(unittest.TestCase):
         with patch.object(ss, 'FPSim2Engine', create=True) as mock_cls:
             mock_cls.on_disk_similarity.return_value = [(1, 0.9)]
             df = engine.on_disk_similarity('CCO', 0.7)
+        mock_cls.on_disk_similarity.assert_called_once_with(
+            engine, 'CCO', 0.7, n_workers=1, chunk_size=0,
+        )
         self.assertTrue(any('Tanimoto' in c for c in df.columns))
 
     def test_tversky_builds_df_with_tversky_label(self):
@@ -1019,6 +1228,7 @@ class TestFPSubSim2EngineMethods(unittest.TestCase):
         with patch.object(ss, 'FPSim2Engine', create=True) as mock_cls:
             mock_cls.tversky.return_value = [(1, 0.9)]
             df = engine.tversky('CCO', 0.7, a=0.5, b=0.5)
+        mock_cls.tversky.assert_called_once_with(engine, 'CCO', 0.7, 0.5, 0.5, n_workers=1)
         self.assertTrue(any('Tversky' in c for c in df.columns))
 
     def test_on_disk_tversky(self):
@@ -1026,7 +1236,27 @@ class TestFPSubSim2EngineMethods(unittest.TestCase):
         with patch.object(ss, 'FPSim2Engine', create=True) as mock_cls:
             mock_cls.on_disk_tversky.return_value = [(1, 0.9)]
             df = engine.on_disk_tversky('CCO', 0.7, a=0.5, b=0.5)
+        mock_cls.on_disk_tversky.assert_called_once_with(
+            engine, 'CCO', 0.7, 0.5, 0.5, n_workers=1, chunk_size=None,
+        )
         self.assertTrue(any('Tversky' in c for c in df.columns))
+
+    def test_similarity_handles_numpy_structured_array_results(self):
+        # Guards against bool() on a multi-element numpy array (raises).
+        engine = self._make_engine()
+        raw = np.array([(1, 0.9)], dtype=[('mol_id', '<u4'), ('coeff', '<f4')])
+        with patch.object(ss, 'FPSim2Engine', create=True) as mock_cls:
+            mock_cls.similarity.return_value = raw
+            df = engine.similarity('CCO', 0.7)
+        self.assertEqual(df.height, 1)
+
+    def test_similarity_handles_empty_numpy_structured_array_results(self):
+        engine = self._make_engine()
+        raw = np.array([], dtype=[('mol_id', '<u4'), ('coeff', '<f4')])
+        with patch.object(ss, 'FPSim2Engine', create=True) as mock_cls:
+            mock_cls.similarity.return_value = raw
+            df = engine.similarity('CCO', 0.7)
+        self.assertEqual(df.height, 0)
 
     def test_substructure_raises_not_implemented(self):
         engine = self._make_engine()
@@ -1042,21 +1272,38 @@ class TestFPSubSim2EngineMethods(unittest.TestCase):
 class TestFPSubSim2CudaEngineImportGuard(unittest.TestCase):
 
     def test_raises_without_cupy(self):
-        with self.assertRaises(ImportError):
-            ss.FPSubSim2CudaEngine('fake.h5', 'sig1')
+        with patch.object(ss, 'HAS_CUPY', False):
+            with self.assertRaises(ImportError):
+                ss.FPSubSim2CudaEngine('fake.h5', 'sig1')
 
     def test_raises_on_invalid_kernel(self):
         with patch.object(ss, 'HAS_CUPY', True):
             with self.assertRaises(ValueError):
                 ss.FPSubSim2CudaEngine('fake.h5', 'sig1', kernel='bogus')
 
-    # Past the kernel-validation check, self.fps/self.raw_kernel/ew_kernel
-    # are set up by the real FPSim2CudaEngine base class's own __init__ (not
-    # invoked by our MRO) - unavailable without cupy+FPSim2 actually
-    # installed, so construction still builds the storage backend
-    # correctly (covered below) but then fails reaching those attributes;
-    # that failure itself is excluded from coverage (see pragma comments in
-    # subsim_search.py).
+    @unittest.skipIf(
+        hasattr(ss.FPSim2CudaEngine, 'ew_kernel'),
+        'only meaningful against an FPSim2 version without an element-wise kernel',
+    )
+    def test_element_wise_kernel_raises_when_unsupported_by_installed_fpsim2(self):
+        with patch.object(ss, 'HAS_CUPY', True):
+            with self.assertRaises(NotImplementedError):
+                ss.FPSubSim2CudaEngine('fake.h5', 'sig1', kernel='element_wise')
+
+    def test_element_wise_kernel_guard_is_skipped_when_ew_kernel_exists(self):
+        with (
+            patch.object(ss, 'HAS_CUPY', True),
+            patch.object(ss, 'cupy', create=True),
+            patch.object(ss.FPSim2CudaEngine, 'ew_kernel', 'fake_kernel_source', create=True),
+            patch.object(ss, 'PyTablesMultiFpStorageBackend') as mock_backend_cls,
+        ):
+            mock_backend_cls.return_value = MagicMock(spec=[])
+            # Guard skipped; fails downstream instead (missing `fps`).
+            with self.assertRaises(AttributeError):
+                ss.FPSubSim2CudaEngine('fake.h5', 'sig1', kernel='element_wise')
+
+    # spec=[] means the mocked storage backend has no `fps` attr, so
+    # constructing the engine fails deterministically past kernel validation.
     def test_builds_storage_backend_then_fails_on_the_cupy_specific_branch(self):
         with (
             patch.object(ss, 'HAS_CUPY', True),
@@ -1064,6 +1311,7 @@ class TestFPSubSim2CudaEngineImportGuard(unittest.TestCase):
             patch.object(ss, 'cupy', create=True),
             patch.object(ss, 'PyTablesMultiFpStorageBackend') as mock_backend_cls,
         ):
+            mock_backend_cls.return_value = MagicMock(spec=[])
             with self.assertRaises(AttributeError):
                 ss.FPSubSim2CudaEngine('fake.h5', 'sig1', kernel='raw')
         mock_backend_cls.assert_called_once_with(
@@ -1079,6 +1327,7 @@ class TestPapyrusSubstructureLibraryGetMatches(unittest.TestCase):
             lib = ss.PapyrusSubstructureLibrary.__new__(ss.PapyrusSubstructureLibrary)
         SubstructLibrary.__init__(lib, CachedMolHolder(), PatternHolder())
         lib.fp_filename = 'fake.h5'
+        lib.mol_ids = None
         return lib
 
     def test_no_matches_returns_empty_schema(self):
@@ -1115,52 +1364,39 @@ class TestPapyrusSubstructureLibraryGetMatches(unittest.TestCase):
 class TestParallelCreateWorkerCount(unittest.TestCase):
     """Regression test: n_workers = multiprocessing.cpu_count() - 2 (njobs=-1
     branch) had no floor, unlike the njobs>=0 branch's max(njobs - 1, 1).
-    On a <=2-core machine this produced 0 (or negative) workers, and with
-    no worker ever draining the reader's queue, _reader_process's
-    back-pressure guard slept forever - an indefinite hang.
+    On a <=2-core machine this produced 0 (or negative) workers. This floor
+    is now resolved in create() (which computes n_shards == n_workers before
+    dispatching to _parallel_create - see _parallel_create's own docstring),
+    not inside _parallel_create itself, so the regression is tested there.
     """
 
-    def _run_with_mocked_multiprocessing(self, njobs, cpu_count):
+    def _resolved_n_shards(self, njobs, cpu_count):
         engine = make_engine()
-        process_instances = []
-
-        def fake_process(target=None, args=None, **kwargs):
-            proc = MagicMock()
-            proc.start = MagicMock()
-            proc.join = MagicMock()
-            proc.is_alive = MagicMock(return_value=False)
-            process_instances.append((target, proc))
-            return proc
-
-        with patch('src.papyrus_scripts.subsim_search.multiprocessing.cpu_count', return_value=cpu_count), \
-             patch('src.papyrus_scripts.subsim_search.multiprocessing.Process', side_effect=fake_process), \
-             patch('src.papyrus_scripts.subsim_search.multiprocessing.Queue', return_value=MagicMock()), \
-             patch('src.papyrus_scripts.subsim_search.sort_db_file'):
-            engine._parallel_create(njobs, fingerprint=[], progress=False, total=None)
-
-        return process_instances
+        with (
+            patch.object(ss, 'tb', create=True) as mock_tb,
+            patch.object(ss, 'create_schema', create=True),
+            patch.object(ss.multiprocessing, 'cpu_count', return_value=cpu_count),
+            patch.object(engine, '_parallel_create') as mock_parallel,
+            patch.object(engine, 'load'),
+        ):
+            mock_tb.Filters.return_value = MagicMock()
+            mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
+            engine.create(sd_file='mols.sd', fingerprint=[MorganFingerprint()], njobs=njobs, progress=False)
+        # _parallel_create(njobs, fingerprint, progress, total, n_shards, pattern_holder_bits)
+        return mock_parallel.call_args.args[4]
 
     def test_njobs_minus_one_never_spawns_zero_workers_on_single_core(self):
-        instances = self._run_with_mocked_multiprocessing(njobs=-1, cpu_count=1)
-        worker_count = sum(
-            1 for target, _ in instances
-            if target is not None and target.__name__ == '_worker_process'
-        )
-        self.assertGreaterEqual(worker_count, 1)
+        self.assertGreaterEqual(self._resolved_n_shards(njobs=-1, cpu_count=1), 1)
 
     def test_njobs_minus_one_never_spawns_zero_workers_on_dual_core(self):
-        instances = self._run_with_mocked_multiprocessing(njobs=-1, cpu_count=2)
-        worker_count = sum(
-            1 for target, _ in instances
-            if target is not None and target.__name__ == '_worker_process'
-        )
-        self.assertGreaterEqual(worker_count, 1)
+        self.assertGreaterEqual(self._resolved_n_shards(njobs=-1, cpu_count=2), 1)
 
 
 class TestParallelCreateCleanup(unittest.TestCase):
     """Every process still alive when _parallel_create exits - even via an
     exception (e.g. KeyboardInterrupt) during the wait - must be
-    terminated, not left orphaned.
+    terminated, not left orphaned. Topology: reader + n_workers workers +
+    fp_writer + subst_writer.
     """
 
     def _fake_process_factory(self, process_instances, alive, raise_on_first_join=None):
@@ -1200,10 +1436,16 @@ class TestParallelCreateCleanup(unittest.TestCase):
                 'src.papyrus_scripts.subsim_search.multiprocessing.Process',
                 side_effect=self._fake_process_factory(process_instances, alive=False),
             ),
-            patch('src.papyrus_scripts.subsim_search.multiprocessing.Queue', return_value=MagicMock()),
+            # Fresh MagicMock per Queue() call, so per-queue cleanup is assertable.
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.Queue', side_effect=lambda *a, **kw: MagicMock()),
             patch('src.papyrus_scripts.subsim_search.sort_db_file') as mock_sort,
         ):
-            engine._parallel_create(njobs=2, fingerprint=[], progress=False, total=None)
+            engine._parallel_create(
+                njobs=2, fingerprint=[], progress=False, total=None,
+                n_shards=1, pattern_holder_bits=2048,
+            )
+        # reader + 1 worker + fp_writer + subst_writer
+        self.assertEqual(len(process_instances), 4)
         for proc in process_instances:
             proc.terminate.assert_not_called()
         mock_sort.assert_called_once()
@@ -1222,11 +1464,14 @@ class TestParallelCreateCleanup(unittest.TestCase):
                     process_instances, alive=True, raise_on_first_join=RuntimeError('interrupted'),
                 ),
             ),
-            patch('src.papyrus_scripts.subsim_search.multiprocessing.Queue', return_value=MagicMock()),
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.Queue', side_effect=lambda *a, **kw: MagicMock()),
             patch('src.papyrus_scripts.subsim_search.sort_db_file') as mock_sort,
         ):
             with self.assertRaises(RuntimeError):
-                engine._parallel_create(njobs=2, fingerprint=[], progress=False, total=None)
+                engine._parallel_create(
+                    njobs=2, fingerprint=[], progress=False, total=None,
+                    n_shards=1, pattern_holder_bits=2048,
+                )
         self.assertTrue(process_instances)
         for proc in process_instances:
             proc.terminate.assert_called_once()
