@@ -71,6 +71,17 @@ dnn = [
     "skorch",
 ]
 
+[tool.coverage.run]
+source = ["src/papyrus_scripts"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 95
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
 [tool.setuptools.dynamic]
 version = { attr = "papyrus_scripts.__version__" }
 
