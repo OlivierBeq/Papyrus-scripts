@@ -9,19 +9,24 @@ without any network access.
 """
 
 import inspect
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import polars as pl
 
+from src.papyrus_scripts import oop as oop_mod
 from src.papyrus_scripts.fingerprint import MorganFingerprint
 from src.papyrus_scripts.oop import (
     PapyrusDataset,
     PapyrusDescriptorSet,
     PapyrusMoleculeSet,
+    PapyrusPDBProteinSet,
     PapyrusProteinSet,
 )
+from src.papyrus_scripts.utils import IO
 
 
 def make_dataset():
@@ -913,6 +918,372 @@ class TestAggTriggersDownloadForNeverBeforeSeenVersion(unittest.TestCase):
         self.mocks['download'].assert_called_once()
         self.assertEqual(self.mocks['read_papyrus'].call_count, 2)
         self.assertEqual(result['connectivity'].to_list(), ['C1'])
+
+
+class TestModuleHelperFunctions(unittest.TestCase):
+    """Pure functions: _ensure_papyrus_version / _ceil_div / _num_chunks / _Deferred / _resolve."""
+
+    def test_ensure_papyrus_version_passthrough(self):
+        pv = IO.PapyrusVersion('2022.04.2')
+        self.assertIs(oop_mod._ensure_papyrus_version(pv), pv)
+
+    def test_ensure_papyrus_version_from_string(self):
+        pv = oop_mod._ensure_papyrus_version('2022.04.2')
+        self.assertIsInstance(pv, IO.PapyrusVersion)
+
+    def test_ceil_div(self):
+        self.assertEqual(oop_mod._ceil_div(10, 3), 4)
+        self.assertEqual(oop_mod._ceil_div(9, 3), 3)
+
+    def test_num_chunks_with_chunksize(self):
+        self.assertEqual(oop_mod._num_chunks(10, 3), 4)
+
+    def test_num_chunks_without_chunksize(self):
+        self.assertIsNone(oop_mod._num_chunks(10, None))
+
+    def test_deferred_get_caches_loader_result(self):
+        loader = MagicMock(return_value='value')
+        deferred = oop_mod._Deferred(loader=loader)
+        self.assertEqual(deferred.get(), 'value')
+        self.assertEqual(deferred.get(), 'value')
+        loader.assert_called_once()
+
+    def test_resolve_calls_deferred_get(self):
+        deferred = oop_mod._Deferred(loader=lambda: 42)
+        self.assertEqual(oop_mod._resolve(deferred), 42)
+
+    def test_resolve_passthrough_for_non_deferred(self):
+        self.assertEqual(oop_mod._resolve(42), 42)
+
+
+class TestPapyrusSourceInternals(unittest.TestCase):
+    """_PapyrusSource - the internal download-once-per-chain helper behind PapyrusDataset."""
+
+    def _make_source(self):
+        pv = IO.PapyrusVersion('2022.04.2')
+        return oop_mod._PapyrusSource(
+            pv, is3d=False, plusplus=True, chunksize=None, source_path=None,
+            download_progress=False, keep_original_files=False, disk_margin=0.10,
+        )
+
+    def test_missing_registered_extras_true_when_structures_missing(self):
+        source = self._make_source()
+        source._need_structures = True
+        with patch('src.papyrus_scripts.oop.reader.molecular_structures_available', return_value=False):
+            self.assertTrue(source._missing_registered_extras())
+
+    def test_missing_registered_extras_true_on_not_available_locally(self):
+        source = self._make_source()
+        source._descriptor_types = {'mold2'}
+        with patch(
+            'src.papyrus_scripts.oop.reader.molecular_descriptors_available',
+            side_effect=FileNotFoundError,
+        ):
+            self.assertTrue(source._missing_registered_extras())
+
+    def test_ensure_loaded_only_loads_once(self):
+        source = self._make_source()
+        with (
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=1),
+            patch('src.papyrus_scripts.oop.reader.read_papyrus', return_value=pl.DataFrame()) as mock_read,
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()),
+        ):
+            source._ensure_loaded()
+            source._ensure_loaded()
+        mock_read.assert_called_once()
+
+    def test_get_proteins_and_get_num_rows(self):
+        source = self._make_source()
+        proteins = pl.DataFrame({'target_id': ['P1']})
+        with (
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=5),
+            patch('src.papyrus_scripts.oop.reader.read_papyrus', return_value=pl.DataFrame()),
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=proteins),
+        ):
+            self.assertIs(source.get_proteins(), proteins)
+            self.assertEqual(source.get_num_rows(), 5)
+
+
+class TestPapyrusDatasetNumRowsResetRemoveRepr(unittest.TestCase):
+
+    def test_num_rows_without_source_uses_params(self):
+        dataset = make_dataset()
+        self.assertEqual(dataset._num_rows(), 3)
+
+    def test_num_rows_with_source_delegates(self):
+        with (
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=7),
+            patch('src.papyrus_scripts.oop.reader.read_papyrus', return_value=pl.DataFrame()),
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()),
+        ):
+            dataset = PapyrusDataset(version='2022.04.2', download_progress=False)
+            self.assertEqual(dataset._num_rows(), 7)
+
+    def test_repr_lists_public_params(self):
+        dataset = make_dataset()
+        text = repr(dataset)
+        self.assertIn('PapyrusDataset<', text)
+        self.assertNotIn('_source', text)
+
+    def test_reset_true_for_dataset_created_via_constructor(self):
+        dataset = PapyrusDataset(version='2022.04.2', download_progress=False)
+        self.assertTrue(dataset.reset())
+
+    def test_reset_false_for_from_data_dataset(self):
+        dataset = make_dataset()
+        self.assertFalse(dataset.reset())
+
+    def test_remove_with_latest_sentinel_skips_version_resolution(self):
+        with patch('src.papyrus_scripts.oop.download.remove_papyrus') as mock_remove:
+            PapyrusDataset.remove(
+                version='latest', remove_papyruspp=False, remove_bioactivities=False,
+                remove_proteins=False, remove_nostereo=False, remove_stereo=False,
+                remove_structures=False, remove_descriptors=[], remove_other_files=False,
+                remove_version_root=False, remove_papyrus_root=False,
+            )
+        self.assertEqual(mock_remove.call_args.kwargs['version'], 'latest')
+
+
+class TestPapyrusDatasetProteinsAndRCSB(unittest.TestCase):
+
+    def test_proteins_filters_to_dataset_targets(self):
+        dataset = make_dataset()
+        result = dataset.proteins().aggregate()
+        self.assertEqual(sorted(result['target_id'].to_list()), ['P1', 'P2'])
+
+    def test_match_rcsb_pdb_delegates_to_get_pdb_matches(self):
+        dataset = make_dataset()
+        structures = pd.DataFrame({'target_id': ['P1'], 'pdb_id': ['1ABC']})
+        with patch('src.papyrus_scripts.oop.get_pdb_matches', return_value=structures) as mock_match:
+            result = dataset.match_rcsb_pdb(update=False, progress=False)
+        mock_match.assert_called_once()
+        self.assertIsInstance(result, oop_mod.PapyrusPDBProteinSet)
+        self.assertIs(result.data, structures)
+
+    def test_match_rcsb_pdb_resolves_lazy_bioactivity_first(self):
+        resolved = pl.DataFrame({'connectivity': ['C1'], 'target_id': ['P1']})
+        dataset = make_dataset()
+        dataset.papyrus_bioactivity_data = oop_mod._LazyBioactivity(loader=lambda: resolved)
+        dataset.papyrus_params['num_rows'] = 1
+        structures = pd.DataFrame({'target_id': ['P1'], 'pdb_id': ['1ABC']})
+        with patch('src.papyrus_scripts.oop.get_pdb_matches', return_value=structures) as mock_match:
+            dataset.match_rcsb_pdb(update=False, progress=False)
+        self.assertIs(mock_match.call_args.args[0], resolved)
+
+
+class TestPapyrusDatasetAggregateChunkedPath(unittest.TestCase):
+    """aggregate()/consume_chunks()/to_dataframe() when the bioactivity data
+    is still a raw chunk iterator (neither _LazyBioactivity nor an already
+    materialised pl.DataFrame).
+    """
+
+    def _chunked_dataset(self):
+        chunks = iter([pl.DataFrame({'a': [1]}), pl.DataFrame({'a': [2]})])
+        params = dict(
+            is3d=False, version=None, plusplus=True, chunksize=2,
+            source_path=None, num_rows=5, download_progress=False,
+            keep_original_files=False, disk_margin=0.10,
+        )
+        return PapyrusDataset._from_data(
+            papyrus_bioactivity_data=chunks,
+            papyrus_protein_data=pl.DataFrame({'target_id': []}),
+            papyrus_params=params,
+        )
+
+    def test_aggregate_consumes_chunks_with_correct_total(self):
+        dataset = self._chunked_dataset()
+        expected = pl.DataFrame({'a': [1, 2]})
+        with patch('src.papyrus_scripts.oop.preprocess.consume_chunks', return_value=expected) as mock_consume:
+            result = dataset.aggregate()
+        self.assertIs(result, expected)
+        self.assertEqual(mock_consume.call_args.kwargs['total'], 3)  # ceil(5/2)
+
+    def test_consume_chunks_and_to_dataframe_aliases(self):
+        dataset = self._chunked_dataset()
+        expected = pl.DataFrame({'a': [1, 2]})
+        with patch('src.papyrus_scripts.oop.preprocess.consume_chunks', return_value=expected):
+            self.assertIs(dataset.consume_chunks(), expected)
+            self.assertIs(dataset.to_dataframe(), expected)
+
+
+class TestFPSubSim2EngineDirectMethods(unittest.TestCase):
+    """FPSubSim2Engine.__call__/_resolve_path/_ensure_loaded, and the
+    optional_defaults factory-resolution path in _build_filter_method's
+    generated method body (only reachable when fp is left unset - the
+    PapyrusDataset wrapper methods always resolve it before delegating).
+    """
+
+    def setUp(self):
+        self.fpsubsim2_class_patch = patch('src.papyrus_scripts.oop.subsim_search.FPSubSim2')
+        self.fpsubsim2_class_patch.start()
+        self.addCleanup(self.fpsubsim2_class_patch.stop)
+        self.dataset = make_dataset()
+        self.dataset.papyrus_params['version'] = IO.PapyrusVersion('2022.04.2')
+
+    def test_call_configures_engine(self):
+        engine = self.dataset._fpsubsim2
+        fp = MorganFingerprint()
+        result = engine(fp=fp, path='fpsubsim2.h5', progress=True)
+        self.assertIs(result, engine)
+        self.assertIs(engine.fp, fp)
+        self.assertEqual(engine.path, 'fpsubsim2.h5')
+        self.assertTrue(engine.progress)
+
+    def test_call_defaults_fp_when_none(self):
+        engine = self.dataset._fpsubsim2
+        engine(fp=None, path=None, progress=False)
+        self.assertIsInstance(engine.fp, MorganFingerprint)
+
+    def test_resolve_path_raises_for_missing_parent_dir(self):
+        engine = self.dataset._fpsubsim2
+        fake_module = MagicMock()
+        fake_module.join.return_value = Path('/nonexistent_dir_xyz/sub/file.h5')
+        with patch('src.papyrus_scripts.oop.pystow.module', return_value=fake_module):
+            with self.assertRaises(NotADirectoryError):
+                engine._resolve_path()
+
+    def test_resolve_path_returns_path_when_parent_exists(self):
+        engine = self.dataset._fpsubsim2
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_module = MagicMock()
+            fake_module.join.return_value = Path(tmp) / 'file.h5'
+            with patch('src.papyrus_scripts.oop.pystow.module', return_value=fake_module):
+                path = engine._resolve_path()
+            self.assertEqual(path, Path(tmp) / 'file.h5')
+
+    def test_ensure_loaded_loads_existing_file(self):
+        engine = self.dataset._fpsubsim2
+        with tempfile.NamedTemporaryFile() as tmp:
+            engine.path = tmp.name
+            engine._ensure_loaded()
+        engine.fpsubsim2.load.assert_called_once_with(fpsubsim_path=tmp.name)
+
+    def test_ensure_loaded_creates_when_file_missing(self):
+        engine = self.dataset._fpsubsim2
+        engine.path = '/nonexistent_xyz/file.h5'
+        engine._ensure_loaded()
+        engine.fpsubsim2.create_from_papyrus.assert_called_once()
+
+    def test_ensure_loaded_resolves_path_when_none(self):
+        engine = self.dataset._fpsubsim2
+        engine.path = None
+        with patch.object(type(engine), '_resolve_path', return_value=Path('/nonexistent_xyz/file.h5')):
+            engine._ensure_loaded()
+        engine.fpsubsim2.create_from_papyrus.assert_called_once()
+
+    def test_keep_similar_molecules_resolves_default_fingerprint_when_unset(self):
+        engine = self.dataset._fpsubsim2
+        with (
+            patch('src.papyrus_scripts.oop.preprocess.keep_similar', return_value=pl.DataFrame()) as mock_keep,
+            patch.object(type(engine), '_ensure_loaded', return_value=None),
+        ):
+            engine.keep_similar_molecules(smiles='CCO', threshold=0.5)
+        self.assertIsInstance(mock_keep.call_args.kwargs['fingerprint'], MorganFingerprint)
+
+
+class TestPapyrusMoleculeSetExtras(unittest.TestCase):
+
+    def test_aggregate_chunked_path(self):
+        dataset = make_dataset()
+        mol_set = dataset.molecules()
+        mol_set.data = iter([pl.DataFrame({'connectivity': ['C1']})])
+        mol_set.num_rows = 5
+        mol_set.papyrus_params['chunksize'] = 2
+        expected = pl.DataFrame({'connectivity': ['C1']})
+        with patch('src.papyrus_scripts.oop.preprocess.consume_chunks', return_value=expected) as mock_consume:
+            result = mol_set.aggregate()
+        self.assertIs(result, expected)
+        self.assertEqual(mock_consume.call_args.kwargs['total'], 3)  # ceil(5/2)
+
+    def test_repr_iterator_branch(self):
+        dataset = make_dataset()
+        mol_set = dataset.molecules()
+        mol_set.data = iter([pl.DataFrame({'connectivity': ['C1']})])
+        self.assertIn('iterator of molecules', repr(mol_set))
+
+    def test_molecular_descriptors_registers_with_source(self):
+        with (
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=1),
+            patch('src.papyrus_scripts.oop.reader.read_papyrus', return_value=pl.DataFrame()),
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()),
+        ):
+            dataset = PapyrusDataset(version='2022.04.2', download_progress=False)
+        mol_set = dataset.molecules()
+        desc_set = mol_set.molecular_descriptors('mold2')
+        self.assertIsInstance(desc_set, PapyrusDescriptorSet)
+        self.assertIn('mold2', dataset.papyrus_params['_source']._descriptor_types)
+
+
+class TestPapyrusDescriptorSetExtras(unittest.TestCase):
+
+    def _desc_set(self):
+        dataset = make_dataset()
+        return dataset.molecular_descriptors('mold2')
+
+    def test_ensure_loaded_skips_when_already_loaded(self):
+        desc_set = self._desc_set()
+        desc_set.data = pl.DataFrame({'connectivity': ['C1']})
+        with patch('src.papyrus_scripts.oop.reader.read_molecular_descriptors') as mock_read:
+            desc_set._ensure_loaded(progress=False)
+        mock_read.assert_not_called()
+
+    def test_consume_chunks_and_to_dataframe_aliases(self):
+        desc_set = self._desc_set()
+        desc_set.data = pl.DataFrame({'connectivity': ['C1']})
+        expected = pl.DataFrame({'connectivity': ['C1']})
+        with patch('src.papyrus_scripts.oop.preprocess.consume_chunks', return_value=expected):
+            self.assertIs(desc_set.consume_chunks(), expected)
+            self.assertIs(desc_set.to_dataframe(), expected)
+
+    def test_repr_not_yet_materialised(self):
+        desc_set = self._desc_set()
+        self.assertIn('not yet materialised', repr(desc_set))
+
+    def test_repr_materialised(self):
+        desc_set = self._desc_set()
+        desc_set.data = pl.DataFrame({'connectivity': ['C1']})
+        text = repr(desc_set)
+        self.assertNotIn('not yet materialised', text)
+        self.assertIn('mold2', text)
+
+
+class TestPapyrusProteinSetAndPDBProteinSet(unittest.TestCase):
+
+    def test_protein_set_aggregate_chunked_path_and_aliases(self):
+        chunks = iter([pl.DataFrame({'target_id': ['P1']})])
+        pset = PapyrusProteinSet(chunks, {'chunksize': 2}, num_proteins=5)
+        expected = pl.DataFrame({'target_id': ['P1']})
+        with patch('src.papyrus_scripts.oop.preprocess.consume_chunks', return_value=expected) as mock_consume:
+            self.assertIs(pset.aggregate(), expected)
+            self.assertIs(pset.agg(), expected)
+            self.assertIs(pset.consume_chunks(), expected)
+            self.assertIs(pset.to_dataframe(), expected)
+        self.assertEqual(mock_consume.call_args.kwargs['total'], 3)  # ceil(5/2)
+
+    def test_protein_set_repr_iterator_branch(self):
+        pset = PapyrusProteinSet(iter([]), {'chunksize': None}, num_proteins=0)
+        self.assertIn('iterator of proteins', repr(pset))
+
+    def test_pdb_protein_set_with_dataframe(self):
+        df = pd.DataFrame({'target_id': ['P1']})
+        pset = PapyrusPDBProteinSet(df, {'chunksize': None})
+        self.assertEqual(pset.num_rows, 1)
+        self.assertIs(pset.aggregate(), df)
+        self.assertIs(pset.agg(), df)
+        self.assertIs(pset.consume_chunks(), df)
+        self.assertIs(pset.to_dataframe(), df)
+        self.assertIn('1 protein structures', repr(pset))
+
+    def test_pdb_protein_set_with_iterator(self):
+        df = pd.DataFrame({'target_id': ['P1']})
+        chunks = iter([df])
+        pset = PapyrusPDBProteinSet(chunks, {'chunksize': 2})
+        self.assertIsNone(pset.num_rows)
+        self.assertIn('iterator of protein structures', repr(pset))
+        expected = pd.DataFrame({'target_id': ['P1', 'P2']})
+        with patch('src.papyrus_scripts.oop.preprocess.consume_chunks', return_value=expected) as mock_consume:
+            self.assertIs(pset.aggregate(), expected)
+        self.assertIsNone(mock_consume.call_args.kwargs['total'])  # num_rows None -> _num_chunks None
 
 
 if __name__ == '__main__':
