@@ -16,11 +16,11 @@ from rdkit.Avalon import pyAvalonTools
 try:
     from openbabel import pybel
     HAS_PYBEL = True
-except ImportError:
+except ImportError:  # pragma: no cover - only taken when openbabel isn't installed
     HAS_PYBEL = False
 try:
     from FPSim2.FPSim2lib.utils import BitStrToIntList, PyPopcount
-    HAS_FPSIM2 = True
+    HAS_FPSIM2 = True  # pragma: no cover - only taken when FPSim2 is installed
 except ImportError:
     HAS_FPSIM2 = False
 
@@ -88,10 +88,11 @@ class RDKitFingerprint(Fingerprint):
             raise ImportError('Some required dependencies are missing:\n\ttables, FPSim2')
         # RDKitFingerprint always constructs itself with a real callable (see
         # each subclass' __init__) - only OBFingerprint uses the str variant.
-        assert callable(self.func)
-        fp = BitStrToIntList(self.func(mol, **self.params).ToBitString())
-        popcnt = PyPopcount(np.array(fp, dtype=np.uint64))
-        return [*fp, popcnt]
+        # Lines below require FPSim2 installed (see the raise above).
+        assert callable(self.func)  # pragma: no cover
+        fp = BitStrToIntList(self.func(mol, **self.params).ToBitString())  # pragma: no cover
+        popcnt = PyPopcount(np.array(fp, dtype=np.uint64))  # pragma: no cover
+        return [*fp, popcnt]  # pragma: no cover
 
 
 class MACCSKeysFingerprint(RDKitFingerprint):
@@ -191,21 +192,21 @@ class RDKPatternFingerprint(RDKitFingerprint):
 class OBFingerprint(Fingerprint):
     def __init__(self, name: str, params: dict, call_func: str) -> None:
         if not HAS_PYBEL and not HAS_FPSIM2:
-            raise ImportError('Some required dependencies are missing:\n\topenbabel, FPSim2')
+            raise ImportError('Some required dependencies are missing:\n\topenbabel, FPSim2')  # pragma: no cover
         elif not HAS_PYBEL:
-            raise ImportError('Some required dependencies are missing:\n\topenbabel')
+            raise ImportError('Some required dependencies are missing:\n\topenbabel')  # pragma: no cover
         elif not HAS_FPSIM2:
             raise ImportError('Some required dependencies are missing:\n\tFPSim2')
-        super().__init__(name, params, call_func)
+        super().__init__(name, params, call_func)  # pragma: no cover - needs both deps installed
 
     def get(self, mol: Chem.Mol) -> list[int]:
         """Get the bistring fingerprint of the molecule and popcounts"""
-        binvec = DataStructs.ExplicitBitVect(self.length)
-        obmol = pybel.readstring('smi', Chem.MolToSmiles(mol))
-        binvec.SetBitsFromList([x - 1 for x in obmol.calcfp(self.func).bits])
-        fp = BitStrToIntList(binvec.ToBitString())
-        popcnt = PyPopcount(np.array(fp, dtype=np.uint64))
-        return [*fp, popcnt]
+        binvec = DataStructs.ExplicitBitVect(self.length)  # pragma: no cover
+        obmol = pybel.readstring('smi', Chem.MolToSmiles(mol))  # pragma: no cover
+        binvec.SetBitsFromList([x - 1 for x in obmol.calcfp(self.func).bits])  # pragma: no cover
+        fp = BitStrToIntList(binvec.ToBitString())  # pragma: no cover
+        popcnt = PyPopcount(np.array(fp, dtype=np.uint64))  # pragma: no cover
+        return [*fp, popcnt]  # pragma: no cover
 
 
 class FP2Fingerprint(OBFingerprint):

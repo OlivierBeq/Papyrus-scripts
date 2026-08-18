@@ -58,6 +58,36 @@ class TestFingerprintConstruction(unittest.TestCase):
         self.assertNotEqual(f1._hash, f2._hash)
 
 
+class TestFingerprintLengthLookupByName(unittest.TestCase):
+    """Exercises Fingerprint.__init__'s name-based length lookup directly, by
+    calling it with a plain, unrelated object as 'self' - this deliberately
+    avoids ever subclassing Fingerprint here, since any such subclass would
+    permanently register in Fingerprint.__subclasses__() and pollute
+    derived()/get_fp_from_name() for every other test in this file.
+    """
+
+    class _Holder:
+        """Unrelated to Fingerprint - just something with a writable __dict__."""
+
+    def _init(self, name, params, call_func):
+        obj = self._Holder()
+        fp.Fingerprint.__init__(obj, name, params, call_func)
+        return obj
+
+    def test_fp2_length(self):
+        self.assertEqual(self._init('FP2', {}, 'fp2').length, 1024)
+
+    def test_fp3_length(self):
+        self.assertEqual(self._init('FP3', {}, 'fp3').length, 55)
+
+    def test_fp4_length(self):
+        self.assertEqual(self._init('FP4', {}, 'fp4').length, 307)
+
+    def test_unrecognised_name_without_nbits_or_fpsize_raises(self):
+        with self.assertRaises(Exception):
+            self._init('Bogus', {}, 'bogus')
+
+
 class TestFingerprintDerived(unittest.TestCase):
 
     def test_derived_lists_all_leaf_subclasses(self):
