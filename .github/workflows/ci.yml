@@ -48,3 +48,5 @@ jobs:
       - run: pytest tests/ --ignore=tests/test_oop.py --cov=src/papyrus_scripts --cov-report=term-missing -x
         env:
           KMP_DUPLICATE_LIB_OK: "TRUE"
+          OMP_NUM_THREADS: "1"
+          VECLIB_MAXIMUM_THREADS: "1"
