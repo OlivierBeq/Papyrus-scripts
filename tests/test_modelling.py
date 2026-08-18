@@ -18,7 +18,7 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from src.papyrus_scripts.modelling import (
     _fit_and_evaluate,
-    _InsufficientData,
+    _InsufficientDataError,
     crossvalidate_model,
     filter_molecular_descriptors,
     model_metrics,
@@ -188,7 +188,7 @@ class TestFitAndEvaluateSplitModes(unittest.TestCase):
             'y': [0] * n, 'Year': [2010] * 5 + [2020] * 5,
             'f1': range(n), 'f2': range(n),
         })
-        with self.assertRaises(_InsufficientData):
+        with self.assertRaises(_InsufficientDataError):
             _fit_and_evaluate(**self._kwargs(data, model_type='classifier', split_by='year'))
 
     def test_year_split_single_class_test_raises_when_strict(self):
@@ -198,7 +198,7 @@ class TestFitAndEvaluateSplitModes(unittest.TestCase):
             'Year': [2010] * 5 + [2020] * 5,
             'f1': range(n), 'f2': range(n),
         })
-        with self.assertRaises(_InsufficientData):
+        with self.assertRaises(_InsufficientDataError):
             _fit_and_evaluate(**self._kwargs(data, model_type='classifier', split_by='year'))
 
     def test_cluster_split(self):
@@ -371,7 +371,7 @@ class TestQsarPcmValidation(unittest.TestCase):
             ),
         ):
             # No row reaches Year 2030, so the temporal split's test set is
-            # empty - _fit_and_evaluate raises _InsufficientData, which pcm()
+            # empty - _fit_and_evaluate raises _InsufficientDataError, which pcm()
             # re-raises as ValueError.
             with self.assertRaises(ValueError):
                 pcm(data, num_points=3, split_year=2030)

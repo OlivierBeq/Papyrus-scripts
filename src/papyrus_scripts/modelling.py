@@ -89,7 +89,7 @@ def filter_molecular_descriptors(data: pd.DataFrame | pl.DataFrame | pl.LazyFram
 def model_metrics(model: RegressorMixin | ClassifierMixin,
                   y_true: pd.Series | np.ndarray,
                   x_test: pd.DataFrame) -> dict[str, Any]:
-    """Determine performance metrics of a model
+    """Determine performance metrics of a model.
 
     Beware R2 = 1 - (Residual sum of squares) / (Total sum of squares) != (Pearson r)²
 
@@ -110,9 +110,9 @@ def model_metrics(model: RegressorMixin | ClassifierMixin,
     # Regression metrics
     if isinstance(model, (RegressorMixin, SingleTaskNNRegressor, MultiTaskNNRegressor)):
         # Slope of predicted vs observed
-        k = sum(xi * yi for xi, yi in zip(y_true, y_pred)) / sum(xi ** 2 for xi in y_true)
+        k = sum(xi * yi for xi, yi in zip(y_true, y_pred, strict=True)) / sum(xi ** 2 for xi in y_true)
         # Slope of observed vs predicted
-        k_prime = sum(xi * yi for xi, yi in zip(y_true, y_pred)) / sum(yi ** 2 for yi in y_pred)
+        k_prime = sum(xi * yi for xi, yi in zip(y_true, y_pred, strict=True)) / sum(yi ** 2 for yi in y_pred)
         # Mean averages
         y_true_mean = y_true.mean()
         y_pred_mean = y_pred.mean()
@@ -131,11 +131,11 @@ def model_metrics(model: RegressorMixin | ClassifierMixin,
                 'Spearman r': spearmanR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
                 'Kendall tau': kendallTau(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
                 'R2_0 (pred. vs. obs.)': 1 - (sum((xi - k_prime * yi) ** 2
-                                                  for xi, yi in zip(y_true, y_pred)) /
+                                                  for xi, yi in zip(y_true, y_pred, strict=True)) /
                                               sum((xi - y_true_mean) ** 2
                                                   for xi in y_true)) if len(y_pred) >= 2 else 0,
                 'R\'2_0 (obs. vs. pred.)': 1 - (sum((yi - k * xi) ** 2
-                                                    for xi, yi in zip(y_true, y_pred)) /
+                                                    for xi, yi in zip(y_true, y_pred, strict=True)) /
                                                 sum((yi - y_pred_mean) ** 2
                                                     for yi in y_pred)) if len(y_pred) >= 2 else 0,
                 'k slope (pred. vs obs.)': k,
@@ -168,32 +168,32 @@ def model_metrics(model: RegressorMixin | ClassifierMixin,
                     for i in range(len(model.classes_)):
                         y_proba = y_probas[:, i].ravel()
                         try:
-                            values['AUC %s' % model.classes_[i]] = ROCAUC(y_true, y_proba)
+                            values[f'AUC {model.classes_[i]}'] = ROCAUC(y_true, y_proba)
                         except ValueError:
                             warnings.warn('Only one class present in y_true. '
                                           'ROC AUC score is not defined in that case. '
-                                          'Stratify your folds to avoid such warning.')
-                            values['AUC %s' % model.classes_[i]] = np.nan
+                                          'Stratify your folds to avoid such warning.', stacklevel=2)
+                            values[f'AUC {model.classes_[i]}'] = np.nan
         # Multiclasses
         else:
             i = 0
             values = {}
             for contingency_matrix in multilabel_confusion_matrix(y_true, y_pred):
                 tn, fp, fn, tp = contingency_matrix.ravel()
-                values['%s|MCC' % model.classes_[i]] = MCC(y_true, y_pred)
-                values['%s|number' % model.classes_[i]] = int(sum(y_true == model.classes_[i]))
-                values['%s|ACC' % model.classes_[i]] = (tp + tn) / (tp + tn + fp + fn) \
+                values[f'{model.classes_[i]}|MCC'] = MCC(y_true, y_pred)
+                values[f'{model.classes_[i]}|number'] = int(sum(y_true == model.classes_[i]))
+                values[f'{model.classes_[i]}|ACC'] = (tp + tn) / (tp + tn + fp + fn) \
                     if (tp + tn + fp + fn) != 0\
                     else 0
-                values['%s|BACC' % model.classes_[i]] = (tp / (tp + fn) + tn / (tn + fp)) / 2
-                values['%s|Sensitivity' % model.classes_[i]] = tp / (tp + fn) if tp + fn != 0 else 0
-                values['%s|Specificity' % model.classes_[i]] = tn / (tn + fp) if tn + fp != 0 else 0
-                values['%s|PPV' % model.classes_[i]] = tp / (tp + fp) if tp + fp != 0 else 0
-                values['%s|NPV' % model.classes_[i]] = tn / (tn + fn) if tn + fn != 0 else 0
-                values['%s|F1' % model.classes_[i]] = \
-                    2 * values['%s|Sensitivity' % model.classes_[i]] * values['%s|PPV' % model.classes_[i]] / \
-                    (values['%s|Sensitivity' % model.classes_[i]] + values['%s|PPV' % model.classes_[i]]) \
-                     if (values['%s|Sensitivity' % model.classes_[i]] + values['%s|PPV' % model.classes_[i]]) != 0 \
+                values[f'{model.classes_[i]}|BACC'] = (tp / (tp + fn) + tn / (tn + fp)) / 2
+                values[f'{model.classes_[i]}|Sensitivity'] = tp / (tp + fn) if tp + fn != 0 else 0
+                values[f'{model.classes_[i]}|Specificity'] = tn / (tn + fp) if tn + fp != 0 else 0
+                values[f'{model.classes_[i]}|PPV'] = tp / (tp + fp) if tp + fp != 0 else 0
+                values[f'{model.classes_[i]}|NPV'] = tn / (tn + fn) if tn + fn != 0 else 0
+                values[f'{model.classes_[i]}|F1'] = \
+                    2 * values[f'{model.classes_[i]}|Sensitivity'] * values[f'{model.classes_[i]}|PPV'] / \
+                    (values[f'{model.classes_[i]}|Sensitivity'] + values[f'{model.classes_[i]}|PPV']) \
+                     if (values[f'{model.classes_[i]}|Sensitivity'] + values[f'{model.classes_[i]}|PPV']) != 0 \
                      else 0
                 i += 1
             if hasattr(model, "predict_proba"): # able to predict probability
@@ -203,7 +203,7 @@ def model_metrics(model: RegressorMixin | ClassifierMixin,
                     values['AUC 1 vs All'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovr")
                 except ValueError:
                     warnings.warn('Only one class present in y_true. ROC AUC score is not defined in that case. '
-                                  'Stratify your folds to avoid such warning.')
+                                  'Stratify your folds to avoid such warning.', stacklevel=2)
                     values['AUC 1 vs 1'] = np.nan
                     values['AUC 1 vs All'] = np.nan
         return values
@@ -218,7 +218,7 @@ def crossvalidate_model(data: pd.DataFrame,
                         scale_method: TransformerMixin | None = None,
                         verbose: bool = False,
                         ) -> tuple[pd.DataFrame, dict[str, RegressorMixin | ClassifierMixin]]:
-    """Create a machine learning model predicting values in the first column
+    """Create a machine learning model predicting values in the first column.
 
     :param data: data containing the dependent vairable (in the first column) and other features
     :param model: estimator (either classifier or regressor) to use for model building
@@ -275,7 +275,7 @@ def train_test_proportional_group_split(data: pd.DataFrame,
                                         test_size: float = 0.30,
                                         verbose: bool = False,
                                         ) -> tuple[pd.DataFrame, pd.DataFrame, list[int], tuple[int, ...]]:
-    """Split the data into training and test sets according to the groups that respect most test_size (based on MSE)
+    """Split the data into training and test sets according to the groups that respect most test_size (based on MSE).
 
     :param data: the data to be split up into training and test sets
     :param groups: groups to split the data according to
@@ -290,7 +290,7 @@ def train_test_proportional_group_split(data: pd.DataFrame,
     # Get proportion of each permutation
     proportions = [sum(counts[x] for x in p) / size for p in permutations]
     # Get permutation minimizing difference to test_size
-    best, proportion = min(zip(permutations, proportions), key=lambda x: (x[1] - test_size) ** 2)
+    best, proportion = min(zip(permutations, proportions, strict=True), key=lambda x: (x[1] - test_size) ** 2)
     del counts, permutations, proportions
     if verbose:
         print(f'Best group permutation corresponds to {proportion:.2%} of the data')
@@ -302,9 +302,10 @@ def train_test_proportional_group_split(data: pd.DataFrame,
     return data[opposite], data[assignment], t_groups, best
 
 
-class _InsufficientData(Exception):
-    """Raised by _fit_and_evaluate when a split/class-balance check fails -
-    caught and logged by qsar() (per target, loop continues), re-raised as
+class _InsufficientDataError(Exception):
+    """Raised by _fit_and_evaluate when a split/class-balance check fails.
+
+    Caught and logged by qsar() (per target, loop continues), re-raised as
     a ValueError by pcm() (single combined model, nothing to continue to).
     """
 
@@ -331,16 +332,16 @@ def _fit_and_evaluate(data: pd.DataFrame,
                       verbose: bool,
                       strict_split_checks: bool,
                       ) -> tuple[pd.DataFrame, dict[str, Any], dict[str, RegressorMixin | ClassifierMixin]]:
-    """Split *data*, fit *model* via cross-validation, and evaluate on the
-    held-out test set - shared by qsar() (once per target) and pcm() (once
-    on the whole dataset).
+    """Split *data*, fit *model* via cross-validation, and evaluate on the held-out test set.
+
+    Shared by qsar() (once per target) and pcm() (once on the whole dataset).
 
     :param drop_columns: columns to drop before splitting into X/y - qsar()
         also drops 'target_id' here (loops per target); pcm() already
         dropped it after merging protein descriptors
     :param strict_split_checks: qsar() also requires >= *folds* training
         rows and balanced test-set classes; pcm() checks neither
-    :raises _InsufficientData: if a split/class-balance check fails
+    :raises _InsufficientDataError: if a split/class-balance check fails
     :returns: (performance, return_val, cv_models) - return_val holds the
         scaler/label_encoder/data_splitter (as applicable); cv_models is
         crossvalidate_model's per-fold-plus-"Full model" dict
@@ -348,26 +349,27 @@ def _fit_and_evaluate(data: pd.DataFrame,
     if split_by.lower() == 'year':
         test_set = data[data['Year'] >= split_year]
         if test_set.empty:
-            raise _InsufficientData(f'No test data for temporal split at {split_year}')
+            raise _InsufficientDataError(f'No test data for temporal split at {split_year}')
         training_set = data[~data.index.isin(test_set.index)]
         if training_set.empty or (strict_split_checks and training_set.shape[0] < folds):
-            raise _InsufficientData(f'Not enough training data for temporal split at {split_year}')
+            raise _InsufficientDataError(f'Not enough training data for temporal split at {split_year}')
         if model_type == 'classifier':
             train_data_classes = Counter(training_set[endpoint])
             if len(train_data_classes) < 2:
-                raise _InsufficientData(
+                raise _InsufficientDataError(
                     f'Only one activity class in the training set for temporal split at {split_year}')
             if strict_split_checks:
                 test_data_classes = Counter(test_set[endpoint])
                 if len(test_data_classes) < 2:
-                    raise _InsufficientData(
+                    raise _InsufficientDataError(
                         f'Only one activity class in the test set for temporal split at {split_year}')
         training_groups = training_set['Year']
     elif split_by.lower() == 'random':
         training_groups = None
         training_set, test_set = train_test_split(data, test_size=test_set_size, random_state=random_state)
     elif split_by.lower() == 'cluster':
-        assert cluster_method is not None
+        if cluster_method is None:
+            raise RuntimeError('cluster_method missing despite qsar()/pcm() validating it upfront')
         groups = cluster_method.fit_predict(data.drop(columns=features_to_ignore))
         training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
                                                                                          test_set_size,
@@ -421,12 +423,12 @@ def _fit_and_evaluate(data: pd.DataFrame,
     if model_type == 'classifier':
         train_data_classes = Counter(training_set[endpoint])
         if not np.all(np.array(list(train_data_classes.values())) > folds):
-            raise _InsufficientData(
+            raise _InsufficientDataError(
                 f'Not enough data in minority class of the training set for all {folds} folds')
         if strict_split_checks:
             test_data_classes = Counter(test_set[endpoint])
             if not np.all(np.array(list(test_data_classes.values())) > folds):
-                raise _InsufficientData(
+                raise _InsufficientDataError(
                     f'Not enough data in minority class of the test set for all {folds} folds')
     # Define folding scheme for cross validation
     if stratify and model_type == 'classifier':
@@ -467,7 +469,7 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
          descriptor_path: str | None = None,
          descriptor_chunksize: int | None = 50000,
          activity_threshold: float = 6.5,
-         model: RegressorMixin | ClassifierMixin = xgboost.XGBRegressor(verbosity=0),
+         model: RegressorMixin | ClassifierMixin | None = None,
          folds: int = 5,
          stratify: bool = False,
          split_by: str = 'Year',
@@ -476,15 +478,18 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
          cluster_method: ClusterMixin | None = None,
          custom_groups: pd.DataFrame | None = None,
          scale: bool = False,
-         scale_method: TransformerMixin = StandardScaler(),
+         scale_method: TransformerMixin | None = None,
          yscramble: bool = False,
          random_state: int = 1234,
          verbose: bool = True,
          ) -> tuple[pd.DataFrame, dict[str,
                                        None | (TransformerMixin | LabelEncoder |
                                                       BaseCrossValidator | dict[str, ClassifierMixin])]]:
-    """Create QSAR models for as many targets with selected data source(s),
-    data quality, minimum number of datapoints and minimum activity amplitude.
+    """Create QSAR models for as many targets as meet the given thresholds.
+
+    Targets are modelled only if they meet the selected data source(s),
+    data quality, minimum number of datapoints and minimum activity
+    amplitude requirements.
 
     :param data: Papyrus activity data; a ``pl.DataFrame``/``pl.LazyFrame``
         is materialised into a pandas DataFrame immediately (not lazily)
@@ -528,6 +533,10 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     the data splitter for cross-validation, and for each accession in the data:
     the fitted models on each cross-validation fold and the model fitted on the complete training set.
     """
+    if model is None:
+        model = xgboost.XGBRegressor(verbosity=0)
+    if scale_method is None:
+        scale_method = StandardScaler()
     if isinstance(data, pl.LazyFrame):
         data = data.collect()
     if isinstance(data, pl.DataFrame):
@@ -656,7 +665,7 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
                 yscramble, stratify, folds, random_state, verbose,
                 strict_split_checks=True,
             )
-        except _InsufficientData as exc:
+        except _InsufficientDataError as exc:
             if model_type == 'regressor':
                 fold_results.append(pd.DataFrame([[targets[i_target], tmp_data.shape[0], str(exc)]],
                                             columns=['target', 'number', 'error']))
@@ -705,7 +714,7 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         prot_descriptor_path: str | None = None,
         prot_descriptor_chunksize: int | None = 50000,
         activity_threshold: float = 6.5,
-        model: RegressorMixin | ClassifierMixin = xgboost.XGBRegressor(verbosity=0),
+        model: RegressorMixin | ClassifierMixin | None = None,
         folds: int = 5,
         stratify: bool = False,
         split_by: str = 'Year',
@@ -714,15 +723,18 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         cluster_method: ClusterMixin | None = None,
         custom_groups: pd.DataFrame | None = None,
         scale: bool = False,
-        scale_method: TransformerMixin = StandardScaler(),
+        scale_method: TransformerMixin | None = None,
         yscramble: bool = False,
         random_state: int = 1234,
         verbose: bool = True,
         ) -> tuple[pd.DataFrame, dict[str,
                                       (TransformerMixin | LabelEncoder |
                                             BaseCrossValidator | RegressorMixin | ClassifierMixin)]]:
-    """Create PCM models for as many targets with selected data source(s),
-    data quality, minimum number of datapoints and minimum activity amplitude.
+    """Create a single PCM model covering all targets that meet the given thresholds.
+
+    Data is filtered to the selected data source(s), data quality, minimum
+    number of datapoints and minimum activity amplitude requirements before
+    fitting.
 
     :param data: Papyrus activity data; a ``pl.DataFrame``/``pl.LazyFrame``
         is materialised into a pandas DataFrame immediately (not lazily)
@@ -772,6 +784,10 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     the data splitter for cross-validation, fitted models on each cross-validation fold,
     the model fitted on the complete training set.
     """
+    if model is None:
+        model = xgboost.XGBRegressor(verbosity=0)
+    if scale_method is None:
+        scale_method = StandardScaler()
     if isinstance(data, pl.LazyFrame):
         data = data.collect()
     if isinstance(data, pl.DataFrame):
@@ -849,7 +865,7 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
             yscramble, stratify, folds, random_state, verbose,
             strict_split_checks=False,
         )
-    except _InsufficientData as exc:
+    except _InsufficientDataError as exc:
         raise ValueError(str(exc)) from None
     full_model = cv_models['Full model']
     # Set warnings back to default
