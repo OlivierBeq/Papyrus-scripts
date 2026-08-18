@@ -305,19 +305,50 @@ def is_multiple_types(row: dict, activity_types: list[str]) -> bool:
 # Multi-source / multi-type splitting helper
 # ---------------------------------------------------------------------------
 
+def _validate_split_lengths(split: DataInput, split_cols: list[str], row_max_len: pl.Expr) -> None:
+    """Raise ``ValueError`` if repeat-last padding would misattribute a value.
+
+    Safe only when each *split_cols* column's per-row list length is 1
+    (shared value) or ``row_max_len`` (full multiplicity); anything in
+    between means the columns don't correspond element-for-element. Runs one
+    bounded (``limit(1)``) probe, so this stays cheap even on a
+    :class:`~polars.LazyFrame`.
+    """
+    bad_len = pl.any_horizontal([
+        (pl.col(c).list.len() != 1) & (pl.col(c).list.len() != row_max_len)
+        for c in split_cols
+    ])
+    probe = (
+        split.filter(bad_len)
+        .select('Activity_ID', *[pl.col(c).list.len().alias(f'{c}_len') for c in split_cols])
+        .limit(1)
+    )
+    probe_df = probe.collect() if isinstance(probe, pl.LazyFrame) else probe
+    if probe_df.height:
+        bad = probe_df.row(0, named=True)
+        raise ValueError(
+            '_unnest_and_filter: found a row whose semicolon-separated columns disagree on '
+            'length in a way repeat-last padding cannot safely resolve (each column must be '
+            f'either a single shared value or already match the row\'s max multiplicity): {bad}. '
+            'Pass validate=False to skip this check if you are certain the input is safe.',
+        )
+
+
 def _unnest_and_filter(
         df: DataInput,
         keep_mask: Callable[[], pl.Expr],
         ordered_columns: list[str],
         aggregate: bool = True,
         additional_columns: list[str] | None = None,
+        validate: bool = True,
 ) -> DataOutput:
     """Split semicolon-joined columns, filter rows, and optionally re-aggregate.
 
     Stays lazy end-to-end when *df* is a :class:`~polars.LazyFrame`: no row
     count or emptiness is inspected, so the whole pipeline (explode, filter,
     optional aggregation, join) is only ever evaluated once the caller
-    collects the final result.
+    collects the final result, except for the bounded validation probe (see
+    *validate*).
 
     :param df: records with semicolon-separated multi-values to process
     :param keep_mask: zero-argument callable returning the filter expression
@@ -325,6 +356,8 @@ def _unnest_and_filter(
     :param ordered_columns: original column order to restore after merging
     :param aggregate: re-aggregate on ``Activity_ID`` after filtering
     :param additional_columns: forwarded to :func:`process_groups`
+    :param validate: run :func:`_validate_split_lengths` first; disable to
+        skip that extra probe query if you're certain the input is safe
     """
     schema     = df.collect_schema()
     split_cols = [c for c in _COLS_TO_SPLIT if c in schema]
@@ -333,17 +366,13 @@ def _unnest_and_filter(
 
     excluded = df.select(['Activity_ID'] + [c for c in excl_cols if c != 'Activity_ID'])
 
-    # Split each semicolon-delimited column into a list. Real rows aren't
-    # guaranteed to have the same number of ';'-separated values across all
-    # split_cols (e.g. one source with two replicate pchembl_value
-    # measurements) - Polars requires matching per-row list lengths to
-    # explode multiple columns together, so pad every column's list to that
-    # row's own max length by repeating its last value before exploding.
-    # A genuinely null cell (e.g. type_other absent for this row) splits to
-    # null, not a length-1 list - fill_null([None]) gives it a well-defined
-    # length so it participates correctly in the per-row padding below,
-    # instead of leaving a bare null that later breaks explode's requirement
-    # that all exploded columns agree on length.
+    # Split each semicolon-delimited column into a list, then pad every
+    # column to the row's own max length by repeating its last value
+    # (checked safe by _validate_split_lengths() below) - explode() requires
+    # matching per-row list lengths across the columns it explodes together.
+    # A null cell (e.g. type_other absent) splits to null, not a length-1
+    # list - fill_null([None]) gives it a length so it pads/explodes
+    # correctly instead of breaking explode's length-agreement requirement.
     split = (
         df.select(['Activity_ID'] + split_cols)
         .with_columns([
@@ -352,6 +381,8 @@ def _unnest_and_filter(
         ])
     )
     row_max_len = pl.max_horizontal([pl.col(c).list.len() for c in split_cols])
+    if validate:
+        _validate_split_lengths(split, split_cols, row_max_len)
     included = (
         split.with_columns([
             pl.col(c).list.concat(pl.col(c).list.last().repeat_by(row_max_len)).list.head(row_max_len)
@@ -408,17 +439,20 @@ def keep_quality(
 def keep_source(
         data: DataInput,
         source: list[str] | str = 'all',
+        validate: bool = True,
 ) -> DataOutput:
     """Keep only rows from the specified data source(s).
 
     Aggregated statistics (mean, median, SEM …) are recomputed to reflect
     only the retained sources. Fully lazy: nothing is collected, so *data*
     can be a :class:`~polars.LazyFrame` and this stays chainable with other
-    filters, evaluating only when the caller finally collects.
+    filters, evaluating only when the caller finally collects - except for a
+    bounded validation probe, see *validate*.
 
     :param data: bioactivity DataFrame or LazyFrame
     :param source: source label(s) to retain; ``'all'`` or ``'any'`` keeps
         every source
+    :param validate: see :func:`_unnest_and_filter`'s *validate* parameter
     """
     _validate_data_type(data)
     if isinstance(source, str):
@@ -453,6 +487,7 @@ def keep_source(
         keep_mask=lambda: pl.col('source').str.to_lowercase().str.contains(source_pattern),
         ordered_columns=[c for c in ordered_columns if c not in added],
         aggregate=False,
+        validate=validate,
     )
 
     preserved = cont.filter(~is_multi & matches)
@@ -463,6 +498,7 @@ def keep_source(
         keep_mask=lambda: pl.col('source').str.to_lowercase().str.contains(source_pattern),
         ordered_columns=[c for c in ordered_columns if c not in added],
         aggregate=True,
+        validate=validate,
     )
 
     # All four parts are derived from the same data, so they are
@@ -493,6 +529,7 @@ def _multiple_types_expr(type_cols: list[str], schema) -> pl.Expr:
 def keep_type(
         data: DataInput,
         activity_types: list[str] | str = 'ic50',
+        validate: bool = True,
 ) -> DataOutput:
     """Keep only rows matching the desired activity type(s).
 
@@ -502,6 +539,7 @@ def keep_type(
     :param data: bioactivity DataFrame or LazyFrame
     :param activity_types: type(s) to retain: ``'IC50'``, ``'EC50'``,
         ``'KD'``, ``'Ki'``, ``'other'``, ``'all'``, or ``'any'``
+    :param validate: see :func:`_unnest_and_filter`'s *validate* parameter
     :raises ValueError: if any supplied type is not recognised
     """
     _validate_data_type(data)
@@ -539,6 +577,7 @@ def keep_type(
         keep_mask=lambda: _activity_type_expr(type_cols, schema),
         ordered_columns=[c for c in ordered_columns if c not in added],
         aggregate=False,
+        validate=validate,
     )
 
     preserved  = cont.filter(is_type)
@@ -549,6 +588,7 @@ def keep_type(
         keep_mask=lambda: _activity_type_expr(type_cols, schema),
         ordered_columns=[c for c in ordered_columns if c not in added],
         aggregate=True,
+        validate=validate,
     )
 
     # All four parts are derived from the same data, so they are

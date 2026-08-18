@@ -40,6 +40,46 @@ def make_bioactivity_df():
     })
 
 
+def make_mismatched_bioactivity_df():
+    """A row with mismatched split-column lengths: CID has 3 values, pchembl_value has 2."""
+    return pl.DataFrame({
+        'Activity_ID': ['A1'],
+        'Quality': ['High'],
+        'source': ['chembl;chembl;chembl'],
+        'CID': ['2;3;4'],
+        'AID': ['20;30;40'],
+        'type_IC50': ['1;1;1'],
+        'type_EC50': ['0;0;0'],
+        'type_KD': ['0;0;0'],
+        'type_Ki': ['0;0;0'],
+        'type_other': ['0;0;0'],
+        'relation': ['=;=;='],
+        'pchembl_value': ['6.5;7.0'],
+        'Activity_class': [None],
+        'target_id': ['P1'],
+    })
+
+
+def make_collapsed_column_bioactivity_df():
+    """A row where 'relation' has one shared value while other split columns hold 2 replicates."""
+    return pl.DataFrame({
+        'Activity_ID': ['A1'],
+        'Quality': ['High'],
+        'source': ['chembl;chembl'],
+        'CID': ['2;3'],
+        'AID': ['20;30'],
+        'type_IC50': ['1;1'],
+        'type_EC50': ['0;0'],
+        'type_KD': ['0;0'],
+        'type_Ki': ['0;0'],
+        'type_other': ['0;0'],
+        'relation': ['='],
+        'pchembl_value': ['6.5;7.0'],
+        'Activity_class': [None],
+        'target_id': ['P1'],
+    })
+
+
 class TestKeepQuality(unittest.TestCase):
 
     def setUp(self):
@@ -111,6 +151,30 @@ class TestKeepSource(unittest.TestCase):
         with self.assertRaises(TypeError):
             pp.keep_source([1, 2, 3], 'chembl')
 
+    def test_mismatched_split_lengths_raise_by_default(self):
+        df = make_mismatched_bioactivity_df()
+        with self.assertRaisesRegex(ValueError, 'disagree on length'):
+            pp.keep_source(df, 'chembl')
+
+    def test_mismatched_split_lengths_raise_for_lazyframe(self):
+        df = make_mismatched_bioactivity_df().lazy()
+        with self.assertRaisesRegex(ValueError, 'disagree on length'):
+            pp.keep_source(df, 'chembl')
+
+    def test_validate_false_skips_the_length_check(self):
+        # Does not raise - padding silently proceeds instead.
+        df = make_mismatched_bioactivity_df()
+        result = pp.keep_source(df, 'chembl', validate=False)
+        self.assertIsInstance(result, pl.DataFrame)
+
+    def test_column_collapsed_to_shared_value_pads_safely(self):
+        df = make_collapsed_column_bioactivity_df()
+        result = pp.keep_source(df, 'chembl')
+        self.assertEqual(result.height, 1)
+        row = result.to_dicts()[0]
+        self.assertEqual(row['relation'], '=')
+        self.assertEqual(sorted(row['CID'].split(';')), ['2', '3'])
+
 
 class TestKeepType(unittest.TestCase):
 
@@ -152,6 +216,29 @@ class TestKeepType(unittest.TestCase):
         df = pl.DataFrame({'Activity_ID': ['A1'], 'source': ['chembl'], 'target_id': ['P1']})
         result = pp.keep_type(df, 'ic50')
         self.assertEqual(len(result), 0)
+
+    def test_mismatched_split_lengths_raise_by_default(self):
+        df = make_mismatched_bioactivity_df()
+        with self.assertRaisesRegex(ValueError, 'disagree on length'):
+            pp.keep_type(df, 'ic50')
+
+    def test_mismatched_split_lengths_raise_for_lazyframe(self):
+        df = make_mismatched_bioactivity_df().lazy()
+        with self.assertRaisesRegex(ValueError, 'disagree on length'):
+            pp.keep_type(df, 'ic50')
+
+    def test_validate_false_skips_the_length_check(self):
+        df = make_mismatched_bioactivity_df()
+        result = pp.keep_type(df, 'ic50', validate=False)
+        self.assertIsInstance(result, pl.DataFrame)
+
+    def test_column_collapsed_to_shared_value_pads_safely(self):
+        df = make_collapsed_column_bioactivity_df()
+        result = pp.keep_type(df, 'ic50')
+        self.assertEqual(result.height, 1)
+        row = result.to_dicts()[0]
+        self.assertEqual(row['relation'], '=')
+        self.assertEqual(sorted(row['CID'].split(';')), ['2', '3'])
 
 
 class TestKeepAccession(unittest.TestCase):
