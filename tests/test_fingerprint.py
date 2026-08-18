@@ -145,8 +145,34 @@ class TestFingerprintGetWithFPSim2(unittest.TestCase):
         mol = Chem.MolFromSmiles('CCO')
         f = fp.MorganFingerprint(radius=2, nBits=64)
         result = f.get(mol)
-        # bits + a trailing popcount value.
-        self.assertEqual(len(result), 3)  # 64 bits packed into 2x32-bit ints + popcount
+        # bits, word width from FPSim2's own BitStrToIntList, + popcount.
+        expected_words = len(fp.BitStrToIntList('0' * f.length))
+        self.assertEqual(len(result), expected_words + 1)
+
+
+@unittest.skipUnless(FPSIM2_AVAILABLE and PYBEL_AVAILABLE, 'requires FPSim2 and openbabel')
+class TestFingerprintGetWithOpenBabel(unittest.TestCase):
+    """OBFingerprint.get() (FP2/FP3/FP4) - a real computation, not just length/name lookups."""
+
+    def _check(self, cls, expected_length):
+        mol = Chem.MolFromSmiles('c1ccccc1O')  # phenol
+        f = cls()
+        self.assertEqual(f.length, expected_length)
+        result = f.get(mol)
+        expected_words = len(fp.BitStrToIntList('0' * f.length))
+        self.assertEqual(len(result), expected_words + 1)
+        popcount = result[-1]
+        self.assertGreater(popcount, 0)
+        self.assertLessEqual(popcount, f.length)
+
+    def test_fp2_get_returns_bits_and_popcount(self):
+        self._check(fp.FP2Fingerprint, 1024)
+
+    def test_fp3_get_returns_bits_and_popcount(self):
+        self._check(fp.FP3Fingerprint, 55)
+
+    def test_fp4_get_returns_bits_and_popcount(self):
+        self._check(fp.FP4Fingerprint, 307)
 
 
 @unittest.skipIf(FPSIM2_AVAILABLE, 'documents behaviour when FPSim2 is missing')
