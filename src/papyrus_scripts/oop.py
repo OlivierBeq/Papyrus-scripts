@@ -109,8 +109,7 @@ def _resolve(value: Any) -> Any:
 
 
 class _LazyBioactivity:
-    """An unresolved bioactivity stream: a loader plus a queue of pending
-    transformations (filter methods) to apply once it's actually loaded.
+    """An unresolved bioactivity stream, plus pending filter methods to apply once loaded.
 
     Immutable - :meth:`then` returns a new instance, so branching a filter
     chain (applying two different filters to the same starting point) never
@@ -154,10 +153,10 @@ def _apply_lazy(data: Any, fn: Callable[..., Any], **kwargs: Any) -> Any:
 
 
 class _PapyrusSource:
-    """Downloads (if needed) and reads the bioactivity/protein files for one
-    ``(version, is3d, plusplus)`` selection - at most once, however many
-    :class:`PapyrusDataset`/:class:`_LazyBioactivity` instances in a filter
-    chain end up needing them.
+    """Downloads (if needed) and reads the bioactivity/protein files for one ``(version, is3d, plusplus)`` selection.
+
+    Loaded at most once, however many :class:`PapyrusDataset`/
+    :class:`_LazyBioactivity` instances in a filter chain need them.
 
     Also the single place that collects, across an entire filter chain, which
     descriptor sets and/or molecular structures will be needed downstream
@@ -202,9 +201,7 @@ class _PapyrusSource:
         self._need_structures: bool = False
 
     def request_descriptors(self, desc_type: str) -> None:
-        """Register *desc_type* as needed by this chain, so the next
-        download (if any) fetches it together with everything else instead
-        of triggering a separate download cycle once it's actually read.
+        """Register *desc_type* as needed by this chain's next combined download.
 
         Safe to call more than once (e.g. two branches of the same chain
         requesting different descriptor sets) - every distinct type
@@ -217,9 +214,7 @@ class _PapyrusSource:
         self._descriptor_types.add(desc_type)
 
     def request_structures(self) -> None:
-        """Register molecular structures as needed by this chain - see
-        :meth:`request_descriptors`.
-        """
+        """Register molecular structures as needed by this chain - see :meth:`request_descriptors`."""
         self._need_structures = True
 
     def _load(self) -> tuple[int, pl.DataFrame | pl.LazyFrame, pl.DataFrame]:
@@ -897,6 +892,7 @@ class PapyrusDataset:
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
+        """Show the class name and its non-internal papyrus_params."""
         params = ', '.join(
             f'{k}={v}' for k, v in self.papyrus_params.items() if not k.startswith('_')
         )
@@ -1060,6 +1056,7 @@ class PapyrusDataFilter:
             njobs: int = 1,
             progress: bool = False,
     ) -> None:
+        """Wrap bioactivity/protein data and params for the generated filter methods to use."""
         self.papyrus_bioactivity_data = papyrus_bioactivity_data
         self.papyrus_protein_data = papyrus_protein_data
         self.papyrus_params = papyrus_params
@@ -1130,8 +1127,7 @@ _FPSUBSIM2_SPECS = [
 
 @_generate_filters(_FPSUBSIM2_SPECS)
 class FPSubSim2Engine:
-    """Manages creation, loading, and querying of an FPSubSim2 similarity /
-    substructure search database for a specific :class:`PapyrusDataset`.
+    """Manages an FPSubSim2 similarity/substructure search database for a :class:`PapyrusDataset`.
 
     Filter methods (``keep_similar_molecules``, ``keep_dissimilar_molecules``,
     ``keep_substructure_molecules``, ``keep_not_substructure_molecules``) are
@@ -1140,6 +1136,7 @@ class FPSubSim2Engine:
     """
 
     def __init__(self, papyrus_params: dict) -> None:
+        """Store *papyrus_params*; the FPSubSim2 database itself is loaded lazily."""
         self.papyrus_params = papyrus_params
         self.path: str | Path | None = None
         self.progress: bool = False
@@ -1258,6 +1255,7 @@ class PapyrusMoleculeSet:
             chunksize: int | None = 1_000_000,
             progress: bool = False,
     ) -> None:
+        """Record *dataset* and *chunksize*; nothing is loaded until :meth:`aggregate`."""
         self._dataset = dataset
         self._default_progress = progress
         self.papyrus_params: dict = {**dataset.papyrus_params, 'chunksize': chunksize}
@@ -1364,6 +1362,7 @@ class PapyrusMoleculeSet:
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
+        """Show materialisation state, and the molecule count once materialised."""
         if self.data is None:
             return f'{type(self).__name__}<not yet materialised>'
         if not isinstance(self.data, pl.DataFrame):
@@ -1392,6 +1391,7 @@ class PapyrusDescriptorSet:
             desc_type: str,
             progress: bool = False,
     ) -> None:
+        """Record *dataset* and *desc_type*; nothing is loaded until :meth:`aggregate`."""
         self._dataset = dataset
         self._desc_type = desc_type
         self._default_progress = progress
@@ -1463,6 +1463,7 @@ class PapyrusDescriptorSet:
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
+        """Show the descriptor type and materialisation state."""
         if self.data is None:
             return f'{type(self).__name__}<{self._desc_type}, not yet materialised>'
         return f'{type(self).__name__}<{self._desc_type}>'
@@ -1551,6 +1552,7 @@ class PapyrusProteinSet(ProteinSet):
             papyrus_params: dict,
             num_proteins: int,
     ) -> None:
+        """Wrap already-loaded protein data (or a chunk iterator) plus its row count."""
         self.data = df
         self.papyrus_params = papyrus_params
         self.num_rows = num_proteins
@@ -1586,6 +1588,7 @@ class PapyrusProteinSet(ProteinSet):
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
+        """Show the protein count, or that materialisation is still pending."""
         if not isinstance(self.data, pl.DataFrame):
             return f'{type(self).__name__}<iterator of proteins>'
         return f'{type(self).__name__}<{len(self.data)} proteins>'
@@ -1603,6 +1606,7 @@ class PapyrusPDBProteinSet(ProteinSet):
             df: pd.DataFrame | Iterator,
             papyrus_params: dict,
     ) -> None:
+        """Wrap already-loaded PDB structure data (or a chunk iterator)."""
         self.data = df
         self.papyrus_params = papyrus_params
         self.num_rows: int | None = len(df) if isinstance(df, pd.DataFrame) else None
@@ -1638,6 +1642,7 @@ class PapyrusPDBProteinSet(ProteinSet):
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
+        """Show the structure count, or that materialisation is still pending."""
         if not isinstance(self.data, pd.DataFrame):
             return f'{type(self).__name__}<iterator of protein structures>'
         return f'{type(self).__name__}<{len(self.data)} protein structures>'

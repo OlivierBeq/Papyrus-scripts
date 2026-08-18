@@ -522,8 +522,8 @@ class TestProteinDescriptorsCustomPath(unittest.TestCase):
             'src.papyrus_scripts.oop.reader.read_protein_descriptors',
             return_value=pl.DataFrame(),
         ) as mock_read:
-            protein_set.protein_descriptors('custom', custom_descriptor_path='/tmp/custom.tsv')
-        self.assertEqual(mock_read.call_args.kwargs['source_path'], '/tmp/custom.tsv')
+            protein_set.protein_descriptors('custom', custom_descriptor_path='custom.tsv')
+        self.assertEqual(mock_read.call_args.kwargs['source_path'], 'custom.tsv')
         self.assertEqual(mock_read.call_args.kwargs['desc_type'], 'custom')
 
     def test_missing_custom_path_raises_without_downloading(self):

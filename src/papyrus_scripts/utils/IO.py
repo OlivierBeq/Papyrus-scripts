@@ -154,8 +154,8 @@ class TypeDecoder(json.JSONDecoder):
     """Custom JSON decoder that deserialises Python type objects from values."""
 
     def __init__(self, *args, **kwargs):
-        """Simple JSON decoder handling types as values."""
-        super().__init__(object_hook=self.object_hook, *args, **kwargs)
+        """Set object_hook to :meth:`object_hook` so types are deserialised on load."""
+        super().__init__(*args, object_hook=self.object_hook, **kwargs)
 
     def object_hook(self, obj):
         """Handle types."""
@@ -215,9 +215,7 @@ _TYPE_NAME_TO_POLARS: dict = {
 
 
 def to_polars_dtype(t: Any) -> type[pl.DataType]:
-    """Convert a Python builtin/NumPy type, or its lowercase name as a
-    string, to the nearest Polars dtype.
-    """
+    """Convert a Python builtin/NumPy type, or its lowercase name as a string, to the nearest Polars dtype."""
     if isinstance(t, str):
         return _TYPE_NAME_TO_POLARS.get(t, pl.Utf8)
     if t in _BUILTIN_TO_POLARS:
@@ -427,7 +425,7 @@ class PapyrusVersion:
                 # old-format string, e.g. '05.7', and for every alias so far)
                 # isn't "latest revision selected", it's the only one there is.
                 if matches['revision'].nunique() > 1:
-                    warnings.warn('Revision number not provided; latest revision selected.')
+                    warnings.warn('Revision number not provided; latest revision selected.', stacklevel=2)
                 latest_rev = max(matches['revision'], key=int)
                 query = (
                     f'(version == "{version}" or alias == "{version}") '
@@ -586,9 +584,11 @@ class PapyrusVersion:
         return [int(u) for u in self.version.split('.')]
 
     def __lt__(self, other: PapyrusVersion) -> bool:
+        """Compare numerically component-by-component (not lexicographically)."""
         return self._sort_key() < other._sort_key()
 
     def __eq__(self, other: object) -> bool:
+        """Compare by version+revision; a plain string is parsed first."""
         if isinstance(other, PapyrusVersion):
             return self.version == other.version and self.revision == other.revision
         if isinstance(other, str):
@@ -596,12 +596,15 @@ class PapyrusVersion:
         return NotImplemented
 
     def __hash__(self) -> int:
+        """Hash by version only (coarser than __eq__, which also checks revision)."""
         return hash(self.version)
 
     def __str__(self) -> str:
+        """Return the version string."""
         return self.version
 
     def __repr__(self) -> str:
+        """Return an unambiguous, eval-able-looking representation."""
         return f'<PapyrusVersion version={self.version}>'
 
 
@@ -683,8 +686,7 @@ def process_data_version(
         version: str | PapyrusVersion,
         root_folder: str | Path | None = None,
 ) -> PapyrusVersion:
-    """Validate *version* against locally available data and return a
-    :class:`PapyrusVersion`.
+    """Validate *version* against locally available data and return a :class:`PapyrusVersion`.
 
     The special string ``'latest'`` resolves to the newest downloaded version.
     This function is the canonical way to turn any user-supplied version
@@ -875,7 +877,8 @@ def get_num_rows_in_file(
     if filetype == 'structures':
         return sizes['structures_3D'] if is3D else sizes['structures_2D']
     # filetype == 'descriptors' - descriptor_name was validated above.
-    assert descriptor_name is not None
+    if descriptor_name is None:
+        raise RuntimeError("descriptor_name unexpectedly None despite filetype == 'descriptors' validation")
     return {
         'cddd': sizes['cddd'],
         'mold2': sizes['mold2'],
@@ -978,7 +981,7 @@ def _coerce_object_columns_to_string(chunk: pd.DataFrame) -> None:
     ``'string'`` stringifies every value the same way and maps NaN-likes to
     ``pd.NA`` rather than the literal text ``"nan"``.
     """
-    for col in chunk.columns[chunk.dtypes == object]:
+    for col in chunk.columns[chunk.dtypes == object]:  # noqa: E721 - vectorized pandas dtype comparison, not a type identity check
         chunk[col] = chunk[col].astype('string')
 
 
@@ -1036,7 +1039,7 @@ def convert_xz_to_parquet(
         on_progress: Callable[[int], None] | None = None,
         on_reset: Callable[[], None] | None = None,
 ) -> None:
-    """Losslessly convert an LZMA-compressed CSV/TSV file to Parquet.
+    r"""Losslessly convert an LZMA-compressed CSV/TSV file to Parquet.
 
     Reads *input_file* in row-bounded chunks via ``pandas.read_csv``
     (which decompresses ``.xz`` on the fly - no intermediate decompressed
@@ -1127,7 +1130,7 @@ def convert_xz_to_parquet(
         cursor-movement math assumes it is the only writer, so once one
         process's bar has scrolled the terminal in a way the other doesn't
         know about, stray blank lines accumulate. Used together with
-        *progress*\\ =False so no bar is created here at all.
+        *progress*\ =False so no bar is created here at all.
     :param on_reset: called (with no arguments) whenever a conversion
         attempt restarts from row 0 because of dtype drift - the
         conversion-progress counterpart of *on_progress*, so the receiving
