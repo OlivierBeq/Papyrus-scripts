@@ -761,7 +761,7 @@ class PapyrusDataset:
         """
         ids = self.aggregate(progress=progress)['target_id'].unique()
         protein_data = _resolve(self.papyrus_protein_data)
-        proteins = protein_data.filter(pl.col('target_id').is_in(ids))
+        proteins = protein_data.filter(pl.col('target_id').is_in(ids.implode()))
         return PapyrusProteinSet(proteins, self.papyrus_params, num_proteins=len(proteins))
 
     def match_rcsb_pdb(self, update: bool = True, progress: bool = False) -> PapyrusPDBProteinSet:
