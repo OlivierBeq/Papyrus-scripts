@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-"""Command line interface of the Papyrus-scripts"""
+"""Command line interface of the Papyrus-scripts."""
 
 import ast
 import inspect
@@ -30,7 +30,7 @@ CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
 
 @click.group(context_settings=CONTEXT_SETTINGS)
 def main() -> None:
-    """Group allowing subcommands to be defined"""
+    """Group allowing subcommands to be defined."""
     pass
 
 
@@ -228,15 +228,18 @@ def pdbmatch(indir: str | None, output: str, version: str, more: bool, is3D: boo
 
 
 class Mutex(click.Option):
+    """A click.Option that becomes required only if none of `not_required_if` are set."""
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Custom class allowing click.Options to be required if other
-        click.Options are not set.
+        """Configure a click.Option required unless one of `not_required_if` is set.
 
         Derived from: https://stackoverflow.com/a/61684480
         """
         self.not_required_if: list = kwargs.pop("not_required_if")
-        assert self.not_required_if, "'not_required_if' parameter required"
-        assert isinstance(self.not_required_if, list), "'not_required_if' must be a list"
+        if not self.not_required_if:
+            raise ValueError("'not_required_if' parameter required")
+        if not isinstance(self.not_required_if, list):
+            raise TypeError("'not_required_if' must be a list")
         kwargs["help"] = (
                 kwargs.get("help", "")
                 + ' NOTE: This argument is mutually exclusive with '
@@ -250,6 +253,7 @@ class Mutex(click.Option):
             opts: Mapping[str, Any],
             args: list[str],
     ) -> tuple[Any, list[str]]:
+        """Enforce mutual exclusivity with `not_required_if` before delegating to click."""
         current_opt: bool = self.consume_value(ctx, opts)[0]
         for other_param in ctx.command.get_params(ctx):
             if other_param is self:
@@ -358,7 +362,8 @@ def fpsubsim2(indir: str | None, output: str | None, version: tuple[str, ...], i
 
     # `output` is only allowed to be None via the Mutex/fhelp path above,
     # already handled (and exited) by this point.
-    assert output is not None
+    if output is None:
+        raise RuntimeError('output is None despite the fhelp/Mutex path exiting earlier')
     if output.lower() == 'none':
         output = None
 
@@ -515,10 +520,10 @@ def test_real_data(version: str, indir: str | None, download: bool, sample_size:
     """CLI to run extensive reader.py tests against real, locally downloaded Papyrus data."""
     try:
         import pytest
-    except ImportError:
+    except ImportError as err:
         raise click.UsageError(
             "pytest is required for this command: pip install 'papyrus-scripts[testing]'",
-        )
+        ) from err
 
     test_file = Path(__file__).resolve().parents[2] / 'tests' / 'test_reader_real_data.py'
     if not test_file.is_file():
@@ -543,4 +548,4 @@ def test_real_data(version: str, indir: str | None, download: bool, sample_size:
     os.environ['PAPYRUS_REAL_DATA_SAMPLE_SIZE'] = str(sample_size)
 
     args = [str(test_file), '-v'] if verbose else [str(test_file)]
-    sys.exit(pytest.main(args))
+    sys.exit(pytest.main(args))

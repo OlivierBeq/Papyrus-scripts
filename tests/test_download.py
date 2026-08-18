@@ -174,7 +174,7 @@ class TestRemovePapyrusFileTypeRemoval(unittest.TestCase):
         self.assertEqual(self.mocks['get_version_files'].call_count, 2)
 
 
-class _StopEarly(Exception):
+class _StopEarlyError(Exception):
     """Raised to abort download_papyrus right after the stale-format notice."""
 
 
@@ -196,7 +196,7 @@ class TestDownloadPapyrusStaleFormatNotice(unittest.TestCase):
                 'src.papyrus_scripts.download.pystow.join', return_value=versions_json,
             ),
             'get_papyrus_links': patch(
-                'src.papyrus_scripts.download.get_papyrus_links', side_effect=_StopEarly,
+                'src.papyrus_scripts.download.get_papyrus_links', side_effect=_StopEarlyError,
             ),
         }
         self.mocks = {name: p.start() for name, p in patches.items()}
@@ -205,7 +205,7 @@ class TestDownloadPapyrusStaleFormatNotice(unittest.TestCase):
 
     def test_notice_lists_only_the_versions_actually_found(self):
         buf = io.StringIO()
-        with self.assertRaises(_StopEarly), redirect_stdout(buf):
+        with self.assertRaises(_StopEarlyError), redirect_stdout(buf):
             download.download_papyrus(version='latest')
         notice = buf.getvalue()
         self.assertIn('--version 05.6', notice)
@@ -1057,8 +1057,10 @@ class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.T
         # own (separate) call list.
         calls = self.manager.mock_calls
         names = [f'bar{i + 1}' for i in range(len(self.pbar_mocks))]
-        pbar_name = next(name for name, m in zip(names, self.pbar_mocks) if m is pbar)
-        converting_name = next(name for name, m in zip(names, self.pbar_mocks) if m is converting_pbar)
+        pbar_name = next(name for name, m in zip(names, self.pbar_mocks, strict=True) if m is pbar)
+        converting_name = next(
+            name for name, m in zip(names, self.pbar_mocks, strict=True) if m is converting_pbar
+        )
 
         close_index = next(i for i, c in enumerate(calls) if c[0] == f'{pbar_name}.close')
         live_updates_before_close = [
@@ -1142,8 +1144,10 @@ class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.T
 
         calls = self.manager.mock_calls
         names = [f'bar{i + 1}' for i in range(len(self.pbar_mocks))]
-        pbar_name = next(name for name, m in zip(names, self.pbar_mocks) if m is pbar)
-        converting_name = next(name for name, m in zip(names, self.pbar_mocks) if m is converting_pbar)
+        pbar_name = next(name for name, m in zip(names, self.pbar_mocks, strict=True) if m is pbar)
+        converting_name = next(
+            name for name, m in zip(names, self.pbar_mocks, strict=True) if m is converting_pbar
+        )
 
         pbar_close_index = next(i for i, c in enumerate(calls) if c[0] == f'{pbar_name}.close')
         converting_close_index = next(i for i, c in enumerate(calls) if c[0] == f'{converting_name}.close')

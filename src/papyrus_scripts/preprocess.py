@@ -57,12 +57,13 @@ _PCHEMBL_STAT_DTYPES = {
 
 
 def _with_papyruspp_columns(data: DataInput) -> tuple[DataInput, list[str]]:
-    """Add ``Activity_class`` and ``type_other`` null columns when absent,
-    and normalise any pre-existing ``pchembl_value_*`` statistic columns to
-    the dtypes :func:`process_groups` computes.
+    """Add missing Papyrus++ columns and normalise existing pchembl_value_* dtypes.
 
-    Returns the (possibly augmented) DataFrame/LazyFrame and the list of
-    column names that were added, so callers can drop them afterwards.
+    Adds ``Activity_class`` and ``type_other`` null columns when absent, and
+    normalises any pre-existing ``pchembl_value_*`` statistic columns to the
+    dtypes :func:`process_groups` computes. Returns the (possibly augmented)
+    DataFrame/LazyFrame and the list of column names that were added, so
+    callers can drop them afterwards.
     """
     schema = data.collect_schema()
     added: list[str] = []
@@ -866,7 +867,7 @@ def keep_similar(
         data: DataInput,
         molecule_smiles: str | list[str],
         fpsubsim2_file: str | Path,
-        fingerprint: Fingerprint = MorganFingerprint(),
+        fingerprint: Fingerprint | None = None,
         threshold: float = 0.7,
         cuda: bool = False,
 ) -> DataOutput:
@@ -875,10 +876,12 @@ def keep_similar(
     :param data: bioactivity DataFrame or LazyFrame
     :param molecule_smiles: query SMILES string(s)
     :param fpsubsim2_file: path to the FPSubSim2 ``.h5`` database
-    :param fingerprint: fingerprint to use for similarity search
+    :param fingerprint: fingerprint to use for similarity search; defaults to ``MorganFingerprint()``
     :param threshold: Tanimoto similarity threshold
     :param cuda: use GPU-accelerated search
     """
+    if fingerprint is None:
+        fingerprint = MorganFingerprint()
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
     fpss2        = _load_fpsubsim2(fpsubsim2_file, fingerprint)
@@ -901,7 +904,7 @@ def keep_dissimilar(
         data: DataInput,
         molecule_smiles: str | list[str],
         fpsubsim2_file: str | Path,
-        fingerprint: Fingerprint = MorganFingerprint(),
+        fingerprint: Fingerprint | None = None,
         threshold: float = 0.7,
         cuda: bool = False,
 ) -> DataOutput:
@@ -910,10 +913,12 @@ def keep_dissimilar(
     :param data: bioactivity DataFrame or LazyFrame
     :param molecule_smiles: query SMILES string(s)
     :param fpsubsim2_file: path to the FPSubSim2 ``.h5`` database
-    :param fingerprint: fingerprint to use for similarity search
+    :param fingerprint: fingerprint to use for similarity search; defaults to ``MorganFingerprint()``
     :param threshold: Tanimoto similarity threshold
     :param cuda: use GPU-accelerated search
     """
+    if fingerprint is None:
+        fingerprint = MorganFingerprint()
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
     fpss2        = _load_fpsubsim2(fpsubsim2_file, fingerprint)

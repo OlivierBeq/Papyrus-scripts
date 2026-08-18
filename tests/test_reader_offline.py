@@ -225,7 +225,7 @@ def build_fixture(root: Path) -> None:
     # Molecular structures - 2D and 3D SD files
     # ------------------------------------------------------------------
     mols_2d = []
-    for smi, conn in zip(['CCO', 'c1ccccc1', 'CCN'], _CONNECTIVITY_IDS):
+    for smi, conn in zip(['CCO', 'c1ccccc1', 'CCN'], _CONNECTIVITY_IDS, strict=True):
         mol = Chem.MolFromSmiles(smi)
         mol.SetProp('connectivity', conn)
         mols_2d.append(mol)
@@ -234,7 +234,7 @@ def build_fixture(root: Path) -> None:
     )
 
     mols_3d = []
-    for smi, inchikey in zip(['CCO', 'c1ccccc1'], _INCHIKEY_IDS):
+    for smi, inchikey in zip(['CCO', 'c1ccccc1'], _INCHIKEY_IDS, strict=True):
         mol = Chem.MolFromSmiles(smi)
         mol.SetProp('InChIKey', inchikey)
         mols_3d.append(mol)
@@ -357,11 +357,15 @@ class _ReaderOfflineTests:
         self.assertEqual(sorted(df['InChIKey']), _INCHIKEY_IDS)
 
     def test_molecular_descriptors_fingerprint_2d_ecfp6(self):
-        df = reader.read_molecular_descriptors(desc_type='fingerprint', is3d=False, version=VERSION, source_path=self.ROOT)
+        df = reader.read_molecular_descriptors(
+            desc_type='fingerprint', is3d=False, version=VERSION, source_path=self.ROOT,
+        )
         self.assertEqual(df.schema['ECFP6_1'], pl.Int64)
 
     def test_molecular_descriptors_fingerprint_3d_e3fp(self):
-        df = reader.read_molecular_descriptors(desc_type='fingerprint', is3d=True, version=VERSION, source_path=self.ROOT)
+        df = reader.read_molecular_descriptors(
+            desc_type='fingerprint', is3d=True, version=VERSION, source_path=self.ROOT,
+        )
         self.assertEqual(df.schema['E3FP_1'], pl.Int64)
 
     def test_molecular_descriptors_moe_2d(self):
