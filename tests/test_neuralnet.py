@@ -34,6 +34,27 @@ def _rng():
     return np.random.default_rng(0)
 
 
+_mps_patcher = None
+
+
+def setUpModule():
+    # Force CPU everywhere fit/predict actually run a model: the MPS backend
+    # is prone to segfaulting on headless CI runners (no crash on the
+    # training/backward pass, only on eval-mode forward passes), which isn't
+    # something these wiring tests need to exercise. TestDefaultDevice below
+    # patches is_available() itself to test the pure selection logic, so it
+    # is unaffected by this module-wide override.
+    global _mps_patcher
+    if TORCH_AVAILABLE:
+        _mps_patcher = patch.object(nn_mod.torch.backends.mps, 'is_available', return_value=False)
+        _mps_patcher.start()
+
+
+def tearDownModule():
+    if _mps_patcher is not None:
+        _mps_patcher.stop()
+
+
 class TestPrepX(unittest.TestCase):
     """BaseNN._prep_X needs no torch/skorch - pure numpy/pandas/polars logic."""
 
