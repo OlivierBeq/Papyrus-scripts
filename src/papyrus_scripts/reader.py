@@ -397,9 +397,10 @@ def molecular_descriptors_available(
     version: VersionArg = 'latest',
     source_path: str | Path | None = None,
 ) -> bool:
-    """Return whether every file :func:`read_molecular_descriptors` would
-    need for *desc_type* is already present on disk, without reading any of
-    them.
+    """Return whether every needed descriptor file already exists locally.
+
+    Checks presence only, without reading any of the files that
+    :func:`read_molecular_descriptors` would need for *desc_type*.
 
     :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
         ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
@@ -436,8 +437,10 @@ def molecular_structures_available(
     version: VersionArg = 'latest',
     source_path: str | Path | None = None,
 ) -> bool:
-    """Return whether the file :func:`read_molecular_structures` would need
-    is already present on disk, without reading it.
+    """Return whether the needed structures file already exists locally.
+
+    Checks presence only, without reading the file that
+    :func:`read_molecular_structures` would need.
 
     :param is3d: check for the stereochemistry-aware (3D) SD file
     :param version: dataset version to check

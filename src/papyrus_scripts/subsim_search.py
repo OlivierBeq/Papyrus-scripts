@@ -51,10 +51,17 @@ except ImportError:
     # Stub classes so class definitions below do not fail at import time.
     # Using dedicated stubs (not `object`) avoids MRO conflicts when these are
     # mixed with other bases that already implicitly inherit from `object`.
-    class BaseStorageBackend: pass  # type: ignore[no-redef]
-    class BaseEngine: pass  # type: ignore[no-redef]
-    class FPSim2Engine: pass  # type: ignore[no-redef]
-    class FPSim2CudaEngine: pass  # type: ignore[no-redef]
+    class BaseStorageBackend:  # type: ignore[no-redef]
+        """Stub for FPSim2.io.backends.base.BaseStorageBackend when FPSim2 is absent."""
+
+    class BaseEngine:  # type: ignore[no-redef]
+        """Stub for FPSim2.base.BaseEngine when FPSim2 is absent."""
+
+    class FPSim2Engine:  # type: ignore[no-redef]
+        """Stub for FPSim2.FPSim2.FPSim2Engine when FPSim2 is absent."""
+
+    class FPSim2CudaEngine:  # type: ignore[no-redef]
+        """Stub for FPSim2.FPSim2Cuda.FPSim2CudaEngine when FPSim2 is absent."""
     BATCH_WRITE_SIZE = 32_000  # FPSim2's own default; only used for queue sizing here
 
 from .fingerprint import Fingerprint, MorganFingerprint, get_fp_from_name
@@ -151,7 +158,7 @@ def _build_result_df(
     :returns: a DataFrame with Papyrus identifiers and the score column, or
         an empty DataFrame with those column names when no results are found
     """
-    pairs = list(zip(*raw_results)) if raw_results else []
+    pairs = list(zip(*raw_results, strict=True)) if raw_results else []
     if not pairs:
         return pl.DataFrame(schema={
             'idnumber': pl.Int64, 'connectivity': pl.Utf8,
@@ -250,10 +257,9 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 class FPSubSim2:
-    """Create, load, and extend a multi-fingerprint similarity + substructure
-    search database backed by HDF5 (via PyTables).
+    """Create, load, and extend a multi-fingerprint similarity/substructure database.
 
-    The database stores:
+    Backed by HDF5 (via PyTables). The database stores:
 
     * one or more fingerprint tables (for Tanimoto / Tversky similarity)
     * a serialised RDKit ``SubstructLibrary`` (for exact subgraph isomorphism)
@@ -261,6 +267,7 @@ class FPSubSim2:
     """
 
     def __init__(self) -> None:
+        """Create an unconfigured instance; call create_from_papyrus/create/load next."""
         _check_optional_deps()
         self.version: PapyrusVersion | None = None
         self.is3d: bool | None = None
@@ -436,6 +443,7 @@ class FPSubSim2:
                 f'RDKit version mismatch: library was built with {rdkit_version}, '
                 f'current version is {rdkit.__version__}. '
                 'Consider regenerating the FPSubSim2 library to avoid unexpected behaviour.',
+                stacklevel=2,
             )
 
         self.is3d = (dim_tag == '3D')
@@ -456,7 +464,8 @@ class FPSubSim2:
             total: int | None,
     ) -> None:
         """Populate similarity and substructure tables from a single process."""
-        assert self.h5_filename is not None
+        if self.h5_filename is None:
+            raise RuntimeError('h5_filename not set before _single_process_create()')
         with tb.open_file(self.h5_filename, mode='r+') as h5file:
             lib = SubstructLibrary(CachedMolHolder(), PatternHolder())
             subst_table = h5file.root.substructure_info.substruct_lib
@@ -517,7 +526,8 @@ class FPSubSim2:
             total: int | None,
     ) -> None:
         """Populate similarity and substructure tables using multiple processes."""
-        assert self.h5_filename is not None
+        if self.h5_filename is None:
+            raise RuntimeError('h5_filename not set before _parallel_create()')
         # Pass only (type, params) pairs to worker processes — instances are
         # not safe to share across process boundaries.
         fp_specs = [(type(fp), fp.params) for fp in fingerprint]
@@ -583,8 +593,7 @@ class FPSubSim2:
 
     @property
     def available_fingerprints(self) -> dict:
-        """Dict mapping fingerprint signature → :class:`~fingerprint.Fingerprint`
-        instance for every fingerprint stored in the database.
+        """Map each stored fingerprint's signature to its :class:`~fingerprint.Fingerprint` instance.
 
         The result is cached after the first read. The cache is invalidated
         automatically after :meth:`load` or :meth:`add_fingerprint`.
@@ -664,7 +673,8 @@ class FPSubSim2:
         :param progress: display a progress bar
         :param total: molecule count for the progress bar
         """
-        assert self.h5_filename is not None
+        if self.h5_filename is None:
+            raise RuntimeError('call create_from_papyrus()/create()/load() before add_fingerprint()')
         signature = repr(fingerprint)
         available_fps = list(self.available_fingerprints.keys())
         if signature in available_fps:
@@ -692,8 +702,9 @@ class FPSubSim2:
         :param progress: display a progress bar
         :param total: molecule count for the progress bar
         """
-        assert self.h5_filename is not None
-        for signature, fingerprint in self.available_fingerprints.items():
+        if self.h5_filename is None:
+            raise RuntimeError('call create_from_papyrus()/create()/load() before add_molecules()')
+        for signature, _fingerprint in self.available_fingerprints.items():
             backend = PyTablesMultiFpStorageBackend(self.h5_filename, signature)
             backend.append_fps(
                 MolSupplier(source=papyrus_sd_file),
@@ -864,6 +875,7 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
             in_memory_fps: bool = True,
             fps_sort: bool = False,
     ) -> None:
+        """Open *fp_filename* and select the *fp_signature* fingerprint table to read/append to."""
         _check_optional_deps()
         super().__init__(fp_filename)
         self.name = 'pytables'
@@ -909,10 +921,12 @@ class PyTablesMultiFpStorageBackend(BaseStorageBackend):
         return fp_type, fp_params, rdkit_ver
 
     def get_fps_chunk(self, chunk_range: tuple[int, int]) -> np.ndarray:
+        """Read fingerprints in row range *chunk_range* (start, stop) from the current table."""
         with tb.open_file(self.fp_filename, mode='r') as fp_file:
             return fp_file.get_node(self._current_fp_path)[slice(*chunk_range)]
 
     def load_popcnt_bins(self, fps_sort: bool) -> None:
+        """Load popcount bins, computing them from the fingerprints if *fps_sort*."""
         if fps_sort:
             self.popcnt_bins = self.calc_popcnt_bins(self.fps)
         else:
@@ -1035,9 +1049,9 @@ class _MappingMixin:
                 try:
                     rows.append(next(ptr).fetch_all_fields())
                 except StopIteration:
-                    raise ValueError(f'Index {i} not found in the database.')
+                    raise ValueError(f'Index {i} not found in the database.') from None
 
-        rows_as_dicts = [dict(zip(colnames, r)) for r in rows]
+        rows_as_dicts = [dict(zip(colnames, r, strict=True)) for r in rows]
         return _decode_bytes_df(pl.DataFrame(rows_as_dicts))
 
 
@@ -1056,6 +1070,7 @@ class BaseMultiFpEngine(_MappingMixin, BaseEngine, ABC):
             in_memory_fps: bool,
             fps_sort: bool,
     ) -> None:
+        """Open the fingerprint database and configure the storage backend."""
         _check_optional_deps()
         self.fp_filename = fp_filename
         self.in_memory_fps = in_memory_fps
@@ -1090,6 +1105,7 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
             fps_sort: bool = False,
             storage_backend: str = 'pytables',
     ) -> None:
+        """Open an FPSubSim2 database for CPU-based similarity search."""
         super().__init__(
             fp_filename=fp_filename,
             fp_signature=fp_signature,
@@ -1134,12 +1150,14 @@ class FPSubSim2Engine(BaseMultiFpEngine, FPSim2Engine):
         return _build_result_df(raw, self._get_mapping, self._score_col('Tversky', threshold))
 
     def substructure(self, query_string: str, n_workers: int = 1):
+        """Not supported here; use the FPSubSim2 substructure library instead."""
         raise NotImplementedError(
             'Use the FPSubSim2 substructure library (get_substructure_lib) '
             'for exact subgraph isomorphism.',
         )
 
     def on_disk_substructure(self, query_string: str, n_workers: int = 1, chunk_size: int | None = None):
+        """Not supported here; use the FPSubSim2 substructure library instead."""
         raise NotImplementedError(
             'Use the FPSubSim2 substructure library (get_substructure_lib) '
             'for exact subgraph isomorphism.',
@@ -1156,6 +1174,7 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
             storage_backend: str = 'pytables',
             kernel: str = 'raw',
     ) -> None:
+        """Open an FPSubSim2 database for GPU-accelerated similarity search."""
         if not HAS_CUPY:
             raise ImportError('cupy is required for GPU-accelerated search.')
         if kernel not in ('raw', 'element_wise'):
@@ -1223,6 +1242,7 @@ class PapyrusSubstructureLibrary(_MappingMixin, SubstructLibrary):
     """
 
     def __init__(self, fp_filename: str | Path) -> None:
+        """Bind this substructure library to the FPSubSim2 database at *fp_filename*."""
         _check_optional_deps()
         # Initialise SubstructLibrary with the standard molecule holders.
         super().__init__(CachedMolHolder(), PatternHolder())

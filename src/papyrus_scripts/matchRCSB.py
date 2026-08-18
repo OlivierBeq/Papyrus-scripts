@@ -127,7 +127,8 @@ def update_rcsb_data(root_folder: str | Path | None = None,
                 json={"query": query, "variables": {"pdbIds": chunk}},
             )
             if response.status_code != 200:
-                message = f"WARNING:\tFailed to fetch batch {current_chunk}/{total_chunks}. Status Code: {response.status_code}"
+                message = (f"WARNING:\tFailed to fetch batch {current_chunk}/{total_chunks}. "
+                          f"Status Code: {response.status_code}")
                 if verbose:
                     pbar.write(message)
                 else:
@@ -207,7 +208,7 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
                 verbose: bool = True,
                 total: int | None = None,
                 update: bool = True) -> pd.DataFrame | Generator:
-    """
+    """Match Papyrus bioactivity data to RCSB PDB identifiers.
 
     :param data: Papyrus data to be mapped with PDB identifiers; matching
         runs natively in polars internally, but a pandas DataFrame is
