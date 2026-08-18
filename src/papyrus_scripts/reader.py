@@ -359,11 +359,12 @@ def read_molecular_structures(
     pattern    = rf'\d+\.\d+_combined_{dim_tag}D_set_with{stereo_tag}_stereochemistry\.sd.*'
 
     sd_files = locate_file(source_mod.join('structures'), pattern)
+    sd_file  = _prefer_parquet(sd_files)
     id_col   = 'InChIKey' if is3d else 'connectivity'
 
     if chunksize is None:
-        return _read_structures_full(sd_files[0], ids, id_col, verbose)
-    return _read_structures_chunked(sd_files[0], chunksize, ids, id_col, verbose)
+        return _read_structures_full(sd_file, ids, id_col, verbose)
+    return _read_structures_chunked(sd_file, chunksize, ids, id_col, verbose)
 
 
 # ---------------------------------------------------------------------------

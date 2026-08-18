@@ -65,7 +65,7 @@ except ImportError:
     BATCH_WRITE_SIZE = 32_000  # FPSim2's own default; only used for queue sizing here
 
 from .fingerprint import Fingerprint, MorganFingerprint, get_fp_from_name
-from .utils.IO import PapyrusVersion, _set_root_folder, get_num_rows_in_file, locate_file
+from .utils.IO import PapyrusVersion, _prefer_parquet, _set_root_folder, get_num_rows_in_file, locate_file
 from .utils.mol_reader import MolSupplier
 
 # ---------------------------------------------------------------------------
@@ -318,7 +318,7 @@ class FPSubSim2:
             rf'\d+\.\d+_combined_{3 if is3d else 2}D_set_'
             rf'with{"out" if not is3d else ""}_stereochemistry\.sd.*',
         )
-        self.sd_file = filenames[0]
+        self.sd_file = _prefer_parquet(filenames)
         total = get_num_rows_in_file(
             filetype='structures',
             is3D=is3d,

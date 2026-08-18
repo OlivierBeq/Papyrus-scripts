@@ -1178,6 +1178,42 @@ class TestConvertWorker(unittest.TestCase):
             'desc': f'Converting {name}',
         }
 
+    def _structure_task(self, name: str) -> dict:
+        fpath = Path(self._tmpdir.name) / f'{name}.sd.xz'
+        fpath.touch()
+        return {
+            'fpath': fpath,
+            'parquet_path': Path(self._tmpdir.name) / f'{name}.sd.parquet',
+            'schema_overrides': None,
+            'null_values': None,
+            'total_rows': None,
+            'desc': f'Converting {name}',
+        }
+
+    def test_dispatches_sd_xz_tasks_to_convert_sd_to_parquet(self):
+        task = self._structure_task('a')
+        task_queue = _FakeQueue()
+        task_queue.put(task)
+        task_queue.put(download._CONVERSION_DONE)
+        error_queue = _FakeQueue()
+        progress_queue = _FakeQueue()
+
+        def fake_convert_sd(input_file, output_file, **kwargs):
+            Path(output_file).touch()
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError('convert_xz_to_parquet must not be called for .sd.xz files')
+
+        with (
+            patch('src.papyrus_scripts.download.convert_sd_to_parquet', side_effect=fake_convert_sd),
+            patch('src.papyrus_scripts.download.convert_xz_to_parquet', side_effect=fail_if_called),
+        ):
+            download._convert_worker(task_queue, error_queue, progress_queue, progress=False)
+
+        self.assertFalse(task['fpath'].exists())  # .xz original deleted
+        self.assertTrue(task['parquet_path'].exists())
+        self.assertEqual(error_queue.items, [None])
+
     def test_processes_every_task_then_exits_on_sentinel(self):
         tasks = [self._task('a'), self._task('b')]
         task_queue = _FakeQueue()
@@ -1458,6 +1494,27 @@ class TestFilePath(unittest.TestCase):
     def test_other_ftype_joins_under_descriptors_subfolder(self):
         download._file_path(self.root, '2D_mold2', 'mold2.tsv.xz')
         self.root.join.assert_called_once_with('descriptors', name='mold2.tsv.xz')
+
+
+class TestParquetSibling(unittest.TestCase):
+    """_parquet_sibling: .tsv.xz and .sd.xz convert, everything else doesn't."""
+
+    def test_tabular_file_converts(self):
+        self.assertEqual(
+            download._parquet_sibling(Path('bioactivities.tsv.xz')),
+            Path('bioactivities.tsv.parquet'),
+        )
+
+    def test_structure_file_converts(self):
+        self.assertEqual(
+            download._parquet_sibling(Path('05.7_combined_2D_set_without_stereochemistry.sd.xz')),
+            Path('05.7_combined_2D_set_without_stereochemistry.sd.parquet'),
+        )
+
+    def test_non_data_files_are_never_converted(self):
+        self.assertIsNone(download._parquet_sibling(Path('README.txt')))
+        self.assertIsNone(download._parquet_sibling(Path('requirements.zip')))
+        self.assertIsNone(download._parquet_sibling(Path('data_types.json')))
 
 
 class TestUpdateVersionsJson(unittest.TestCase):

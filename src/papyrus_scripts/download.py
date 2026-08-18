@@ -19,6 +19,7 @@ from .utils.IO import (
     PapyrusVersion,
     _set_root_folder,
     assert_sha256sum,
+    convert_sd_to_parquet,
     convert_xz_to_parquet,
     enough_disk_space,
     get_disk_space,
@@ -75,6 +76,8 @@ _SIZE_KEY_BY_FTYPE = {
     '3D_fingerprint':  'E3FP',
     'proteins_unirep': 'unirep',
     'proteins_prodec': 'prodec',
+    '2D_structures':   'structures_2D',
+    '3D_structures':   'structures_3D',
 }
 
 #: Fixed progress-bar width (characters) for the download and conversion
@@ -132,12 +135,13 @@ def _print_banner(emoji: str, title: str, *lines: str) -> None:
 
 
 def _parquet_sibling(fpath: Path) -> Path | None:
-    """Return the ``.parquet`` sibling of a downloaded ``.tsv.xz`` file.
+    """Return the ``.parquet`` sibling of a downloaded ``.tsv.xz``/``.sd.xz`` file.
 
-    None if *fpath* is not a convertible tabular file - structure files
-    (``.sd.xz``) and non-data files (zips, JSON, text) are never converted.
+    None if *fpath* is not a convertible file - non-data files (zips, JSON,
+    text) are never converted.
     """
-    if fpath.name.lower().endswith('.tsv.xz'):
+    name = fpath.name.lower()
+    if name.endswith('.tsv.xz') or name.endswith('.sd.xz'):
         return fpath.with_suffix('.parquet')
     return None
 
@@ -445,7 +449,9 @@ def _convert_worker(
     have this failure mode at all.
 
     Each task is a ``dict`` of keyword arguments for
-    :func:`~papyrus_scripts.utils.IO.convert_xz_to_parquet`, plus the
+    :func:`~papyrus_scripts.utils.IO.convert_xz_to_parquet` (``.tsv.xz``) or
+    :func:`~papyrus_scripts.utils.IO.convert_sd_to_parquet` (``.sd.xz``,
+    dispatched on ``fpath``'s suffix), plus the
     ``.xz`` original's path (``'fpath'``) - deleted once its conversion
     succeeds, matching the previous single-process behaviour. Any exception
     aborts the current file - including ``KeyboardInterrupt``: hitting
@@ -480,20 +486,24 @@ def _convert_worker(
             if progress:
                 progress_queue.put((_PROGRESS_START, task['desc'], task['total_rows']))
             try:
-                convert_xz_to_parquet(
-                    fpath, parquet_path,
-                    separator='\t',
-                    schema_overrides=task['schema_overrides'],
-                    null_values=task['null_values'],
-                    on_progress=(
-                        (lambda n: progress_queue.put((_PROGRESS_CHUNK, n)))
-                        if progress else None
-                    ),
-                    on_reset=(
-                        (lambda: progress_queue.put((_PROGRESS_RESET,)))
-                        if progress else None
-                    ),
+                on_progress = (
+                    (lambda n: progress_queue.put((_PROGRESS_CHUNK, n)))
+                    if progress else None
                 )
+                if fpath.name.lower().endswith('.sd.xz'):
+                    convert_sd_to_parquet(fpath, parquet_path, on_progress=on_progress)
+                else:
+                    convert_xz_to_parquet(
+                        fpath, parquet_path,
+                        separator='\t',
+                        schema_overrides=task['schema_overrides'],
+                        null_values=task['null_values'],
+                        on_progress=on_progress,
+                        on_reset=(
+                            (lambda: progress_queue.put((_PROGRESS_RESET,)))
+                            if progress else None
+                        ),
+                    )
                 fpath.unlink()
             except BaseException as exc:
                 error_queue.put(f'{type(exc).__name__}: {exc}')

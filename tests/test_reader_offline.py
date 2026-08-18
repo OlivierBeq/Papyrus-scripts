@@ -9,12 +9,10 @@ every molecular descriptor type (mold2, CDDD, mordred 2D/3D, ECFP6/E3FP,
 MOE, 'all'), protein descriptors (unirep, custom), and molecular structures
 (SD files, 2D/3D, chunked reading).
 
-The fixture is built twice per scenario: once left as the raw ``.tsv.xz``
-layout download_papyrus writes before conversion (exercising reader.py's
-`_open_source`/`.xz` fallback path), and once with every tabular file
-converted to ``.parquet`` and the ``.xz`` deleted, mirroring
-download_papyrus's default behavior (exercising the Parquet-preferred
-path). Both must produce identical results.
+The fixture is built twice per scenario: once left as the raw
+``.tsv.xz``/``.sd.xz`` layout download_papyrus writes before conversion,
+and once with every file converted to ``.parquet`` and the ``.xz`` deleted
+(download_papyrus's default). Both must produce identical results.
 
 ``data_types.json`` is built using the *real* plain lowercase type-name
 string format Papyrus actually ships (e.g. ``"float"``, ``"int"``), not the
@@ -37,7 +35,7 @@ from prodec import Descriptor, Transform
 from rdkit import Chem
 
 from src.papyrus_scripts import reader
-from src.papyrus_scripts.utils.IO import convert_xz_to_parquet
+from src.papyrus_scripts.utils.IO import convert_sd_to_parquet, convert_xz_to_parquet
 
 #: A real alias+revision from the bundled aliases.json (offline-resolvable),
 #: reused only as a folder key inside an isolated tmp pystow home - never
@@ -275,14 +273,15 @@ def build_fixture(root: Path) -> None:
 
 
 def convert_all_tabular_to_parquet(root: Path) -> None:
-    """Convert every ``.tsv.xz`` under *root* to ``.parquet`` and delete the
-    original, mirroring download_papyrus's default (``keep_xz=False``)
-    behavior. Structure files (``.sd.xz``) are left untouched.
-    """
+    """Convert every ``.tsv.xz``/``.sd.xz`` under *root* to ``.parquet``, deleting the original."""
     version_dir = root / 'papyrus' / VERSION
     for xz_path in list(version_dir.rglob('*.tsv.xz')):
         parquet_path = xz_path.with_suffix('.parquet')
         convert_xz_to_parquet(xz_path, parquet_path, separator='\t')
+        xz_path.unlink()
+    for xz_path in list(version_dir.rglob('*.sd.xz')):
+        parquet_path = xz_path.with_suffix('.parquet')
+        convert_sd_to_parquet(xz_path, parquet_path)
         xz_path.unlink()
 
 
@@ -603,11 +602,8 @@ class TestReaderAgainstRawXzFiles(_ReaderOfflineTests, unittest.TestCase):
 
 
 class TestReaderAgainstParquetFiles(_ReaderOfflineTests, unittest.TestCase):
-    """Every test in _ReaderOfflineTests against the layout after every
-    tabular file has been converted to .parquet and the .xz deleted (the
-    default download_papyrus behavior) - exercises the Parquet-preferred
-    `_scan_tabular`/`_prefer_parquet` path. Structure files stay .sd.xz
-    (Parquet conversion never applies to them).
+    """Every test in _ReaderOfflineTests against the layout after every file
+    has been converted to .parquet and the .xz deleted.
     """
 
     @classmethod
