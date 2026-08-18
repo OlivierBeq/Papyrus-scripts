@@ -160,9 +160,9 @@ def update_rcsb_data(root_folder: str | Path | None = None,
                             mol_2D = Chem.Mol(mol)
                             Chem.RemoveStereochemistry(mol_2D)
                             results.append({
-                                "InChI_3D": Chem.MolFromInchi(mol),
+                                "InChI_3D": Chem.MolToInchi(mol),
                                 # 2D InChI for 2D data
-                                "InChI_2D": Chem.MolFromInchi(mol_2D),
+                                "InChI_2D": Chem.MolToInchi(mol_2D),
                                 "PDBID_ligand": ligand_id,
                                 "PDBID_protein": protein_id,
                                 "SMILES": smiles_stereo
@@ -171,9 +171,13 @@ def update_rcsb_data(root_folder: str | Path | None = None,
                 # 4. Respect API rate limits (Wait 0.5 seconds between requests)
                 if len(pdb_ids) > chunk_size:
                     time.sleep(0.5)
-        pbar.close()
-        # To DataFrame
-        results_df = pd.DataFrame.from_records(results)
+        if verbose:
+            pbar.close()
+        # To DataFrame - explicit columns so an empty *results* (e.g. every
+        # batch failed) still has PDBID_protein etc. to merge/rename below.
+        results_df = pd.DataFrame.from_records(
+            results, columns=['InChI_3D', 'InChI_2D', 'PDBID_ligand', 'PDBID_protein', 'SMILES'],
+        )
     # Map PDBID prot to UniProt acessions
     if verbose:
         print(f'Obtaining mappings from protein PDB ID to UniProt accessions')
