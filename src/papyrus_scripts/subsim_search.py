@@ -564,11 +564,8 @@ class FPSubSim2:
             for w in workers:
                 w.start()
 
-            active = [reader] + workers
-            while active:
-                active[0].join(10)
-                if not active[0].is_alive():
-                    del active[0]
+            for p in [reader] + workers:
+                p.join()
 
             output_queue.put('STOP')
             writer.join()
