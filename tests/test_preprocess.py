@@ -146,6 +146,13 @@ class TestKeepType(unittest.TestCase):
         as_list = pp.keep_type(self.df, ['ic50'])
         self.assertEqual(sorted(single['Activity_ID']), sorted(as_list['Activity_ID']))
 
+    def test_missing_type_column_returns_empty(self):
+        # No type_* column for the requested type is present in the schema,
+        # so the internal match expressions fall back to pl.lit(False).
+        df = pl.DataFrame({'Activity_ID': ['A1'], 'source': ['chembl'], 'target_id': ['P1']})
+        result = pp.keep_type(df, 'ic50')
+        self.assertEqual(len(result), 0)
+
 
 class TestKeepAccession(unittest.TestCase):
 
@@ -218,6 +225,14 @@ class TestKeepContainsAndNotContains(unittest.TestCase):
         result = pp.keep_contains(self.df, 'InChIKey', '-O$', regex=True)
         self.assertEqual(result['InChIKey'].to_list(), ['GHIJKL-UHFFFAOYSA-O'])
 
+    def test_keep_contains_case_insensitive(self):
+        result = pp.keep_contains(self.df, 'InChIKey', 'uhffFAOYSA', case=False)
+        self.assertEqual(len(result), 2)
+
+    def test_keep_not_contains_case_insensitive(self):
+        result = pp.keep_not_contains(self.df, 'InChIKey', 'uhffFAOYSA', case=False)
+        self.assertEqual(result['InChIKey'].to_list(), ['MNOPQR-XXXXX-N'])
+
     def test_keep_contains_invalid_data_type_raises(self):
         with self.assertRaises(AttributeError):
             pp.keep_contains([1, 2, 3], 'InChIKey', 'UHFFFAOYSA')
@@ -289,6 +304,19 @@ class TestKeepProteinClass(unittest.TestCase):
     def test_level_independent_pattern(self):
         result = pp.keep_protein_class(self.data, self.protein_data, classes={'l?': 'kinase'})
         self.assertEqual(result['target_id'].to_list(), ['P1'])
+
+    def test_level_independent_generic_regex(self):
+        result = pp.keep_protein_class(
+            self.data, self.protein_data, classes={'l?': '^kina'}, generic_regex=True,
+        )
+        self.assertEqual(result['target_id'].to_list(), ['P1'])
+
+    def test_empty_protein_data_returns_empty(self):
+        empty_protein_data = pl.DataFrame({'target_id': [], 'Classification': []}, schema={
+            'target_id': pl.Utf8, 'Classification': pl.Utf8,
+        })
+        result = pp.keep_protein_class(self.data, empty_protein_data, classes={'l2': 'Kinase'})
+        self.assertEqual(len(result), 0)
 
     def test_none_classes_returns_all(self):
         result = pp.keep_protein_class(self.data, self.protein_data, classes=None)
@@ -403,6 +431,11 @@ class TestConsumeChunks(unittest.TestCase):
         result = pp.consume_chunks(df, progress=False)
         self.assertTrue(result.equals(df))
 
+    def test_consume_chunks_with_lazyframe_item(self):
+        chunks = iter([pl.DataFrame({'a': [1]}).lazy(), pl.DataFrame({'a': [2]})])
+        result = pp.consume_chunks(chunks, progress=False)
+        self.assertEqual(sorted(result['a'].to_list()), [1, 2])
+
 
 class TestYScrambling(unittest.TestCase):
 
@@ -430,6 +463,12 @@ class TestYScrambling(unittest.TestCase):
         data = pl.DataFrame({'y': [1, 2, 3]})
         with self.assertRaises(ValueError):
             pp.yscrambling(data, y_var=123)
+
+    def test_lazyframe_input_is_collected(self):
+        data = pl.DataFrame({'y': list(range(10))}).lazy()
+        result = pp.yscrambling(data, y_var='y', random_state=42)
+        self.assertIsInstance(result, pl.DataFrame)
+        self.assertEqual(sorted(result['y'].to_list()), list(range(10)))
 
 
 class TestEqualizeCellSize(unittest.TestCase):
@@ -460,6 +499,18 @@ class TestEqualizeCellSize(unittest.TestCase):
     def test_equalize_row_invalid_fill_mode_raises(self):
         with self.assertRaises(ValueError):
             pp.equalize_cell_size_in_row([[1, 2], [3]], fill_mode='bogus')
+
+    def test_equalize_row_already_equal_length_returns_unchanged(self):
+        row = [1, 2, 3]
+        result = pp.equalize_cell_size_in_row(row, fill_mode='internal')
+        self.assertEqual(result, row)
+
+    def test_equalize_row_restricted_to_cols(self):
+        # cols=[0, 2]: column 1 is excluded from equalisation and instead
+        # collapses to max_len copies of its first value.
+        row = [[1, 2], [3], 'x']
+        result = pp.equalize_cell_size_in_row(row, cols=[0, 2], fill_mode='internal')
+        self.assertEqual(result, [[1, 2], [3, 3], ['x', 'x']])
 
     def test_equalize_column_internal(self):
         col = pl.Series([[1, 2], [3]])
@@ -493,6 +544,12 @@ class TestEqualizeCellSize(unittest.TestCase):
         col = pl.Series([1, 2, 3])
         result = pp.equalize_cell_size_in_column(col, fill_mode='internal')
         self.assertEqual(result.to_list(), [1, 2, 3])
+
+    def test_equalize_column_mixed_scalar_and_list_already_equal_length(self):
+        # Mixed scalar/list cells whose effective lengths (1 for a scalar,
+        # len() for a list) already all agree - the Object-dtype fast path.
+        result = pp.equalize_cell_size_in_column([1, [2], 3], fill_mode='internal')
+        self.assertEqual(result, [1, [2], 3])
 
     def test_equalize_column_mixed_scalar_and_list_python_input(self):
         # A plain Python list mixing scalar and list cells - the one case
@@ -621,6 +678,61 @@ class TestKeepSimilarDissimilarSubstructure(unittest.TestCase):
         data = pl.DataFrame({'InChIKey': ['KEY1', 'KEY2', 'KEY3']})
         result = pp.keep_not_substructure(data, 'CCO', 'fake.h5')
         self.assertEqual(sorted(result['InChIKey']), ['KEY1', 'KEY3'])
+
+
+class TestWithPapyrusppColumns(unittest.TestCase):
+
+    def test_adds_missing_activity_class_and_type_other(self):
+        df = pl.DataFrame({'Activity_ID': ['A1'], 'source': ['chembl']})
+        result, added = pp._with_papyruspp_columns(df)
+        self.assertEqual(sorted(added), ['Activity_class', 'type_other'])
+        self.assertIn('Activity_class', result.columns)
+        self.assertIn('type_other', result.columns)
+
+    def test_casts_existing_pchembl_stat_columns(self):
+        df = pl.DataFrame({
+            'Activity_ID': ['A1'],
+            'Activity_class': [None],
+            'type_other': ['0'],
+            'pchembl_value_Mean': ['6.5'],
+            'pchembl_value_N': ['3'],
+        })
+        result, added = pp._with_papyruspp_columns(df)
+        self.assertEqual(added, [])
+        schema = result.collect_schema()
+        self.assertEqual(schema['pchembl_value_Mean'], pl.Float64)
+        self.assertEqual(schema['pchembl_value_N'], pl.Int64)
+
+
+class TestRowTypeHelpers(unittest.TestCase):
+    """process_group/is_activity_type/is_multiple_types: kept for backward
+    compatibility, not called internally elsewhere.
+    """
+
+    def test_process_group_matches_process_groups(self):
+        group = pl.DataFrame({
+            'Activity_ID': ['A1', 'A1'],
+            'source': ['chembl', 'other'],
+        })
+        result = pp.process_group(group)
+        self.assertEqual(result['Activity_ID'].to_list(), ['A1'])
+        self.assertEqual(result['source'].to_list()[0], 'chembl;other')
+
+    def test_is_activity_type_true_for_single_unambiguous_match(self):
+        row = {'type_IC50': '1', 'type_EC50': '0'}
+        self.assertTrue(pp.is_activity_type(row, ['type_IC50', 'type_EC50']))
+
+    def test_is_activity_type_false_for_multi_valued_column(self):
+        row = {'type_IC50': '1;0', 'type_EC50': '0'}
+        self.assertFalse(pp.is_activity_type(row, ['type_IC50', 'type_EC50']))
+
+    def test_is_multiple_types_true_for_semicolon_joined_value(self):
+        row = {'type_IC50': '1;0', 'type_EC50': '0'}
+        self.assertTrue(pp.is_multiple_types(row, ['type_IC50', 'type_EC50']))
+
+    def test_is_multiple_types_false_when_no_column_is_multi_valued(self):
+        row = {'type_IC50': '1', 'type_EC50': '0'}
+        self.assertFalse(pp.is_multiple_types(row, ['type_IC50', 'type_EC50']))
 
 
 if __name__ == '__main__':
