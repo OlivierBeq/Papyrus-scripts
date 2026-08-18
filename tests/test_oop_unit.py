@@ -1003,6 +1003,18 @@ class TestPapyrusSourceInternals(unittest.TestCase):
             self.assertIs(source.get_proteins(), proteins)
             self.assertEqual(source.get_num_rows(), 5)
 
+    def test_getters_raise_if_never_populated_despite_loaded_flag(self):
+        # Should-never-happen invariant: _loaded=True is only ever set right
+        # after _load() populates all three fields together.
+        source = self._make_source()
+        source._loaded = True
+        with self.assertRaises(RuntimeError):
+            source.get_bioactivity()
+        with self.assertRaises(RuntimeError):
+            source.get_proteins()
+        with self.assertRaises(RuntimeError):
+            source.get_num_rows()
+
 
 class TestPapyrusDatasetNumRowsResetRemoveRepr(unittest.TestCase):
 
@@ -1201,6 +1213,15 @@ class TestPapyrusMoleculeSetExtras(unittest.TestCase):
         mol_set.data = iter([pl.DataFrame({'connectivity': ['C1']})])
         self.assertIn('iterator of molecules', repr(mol_set))
 
+    def test_aggregate_raises_if_never_populated_despite_ensure_loaded(self):
+        # Should-never-happen invariant: _ensure_loaded() always sets .data
+        # unless it raises first.
+        dataset = make_dataset()
+        mol_set = dataset.molecules()
+        with patch.object(mol_set, '_ensure_loaded', return_value=None):
+            with self.assertRaises(RuntimeError):
+                mol_set.aggregate()
+
     def test_molecular_descriptors_registers_with_source(self):
         with (
             patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=1),
@@ -1238,6 +1259,12 @@ class TestPapyrusDescriptorSetExtras(unittest.TestCase):
     def test_repr_not_yet_materialised(self):
         desc_set = self._desc_set()
         self.assertIn('not yet materialised', repr(desc_set))
+
+    def test_aggregate_raises_if_never_populated_despite_ensure_loaded(self):
+        desc_set = self._desc_set()
+        with patch.object(desc_set, '_ensure_loaded', return_value=None):
+            with self.assertRaises(RuntimeError):
+                desc_set.aggregate()
 
     def test_repr_materialised(self):
         desc_set = self._desc_set()

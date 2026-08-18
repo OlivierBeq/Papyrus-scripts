@@ -293,17 +293,20 @@ class _PapyrusSource:
 
     def get_bioactivity(self) -> pl.DataFrame | pl.LazyFrame:
         self._ensure_loaded()
-        assert self._bioactivity is not None
+        if self._bioactivity is None:
+            raise RuntimeError('bioactivity not loaded despite _ensure_loaded()')
         return self._bioactivity
 
     def get_proteins(self) -> pl.DataFrame:
         self._ensure_loaded()
-        assert self._proteins is not None
+        if self._proteins is None:
+            raise RuntimeError('proteins not loaded despite _ensure_loaded()')
         return self._proteins
 
     def get_num_rows(self) -> int:
         self._ensure_loaded()
-        assert self._num_rows is not None
+        if self._num_rows is None:
+            raise RuntimeError('num_rows not set despite _ensure_loaded()')
         return self._num_rows
 
 
@@ -1315,7 +1318,8 @@ class PapyrusMoleculeSet:
         self._ensure_loaded(progress)
         if isinstance(self.data, pl.DataFrame):
             return self.data
-        assert self.data is not None
+        if self.data is None:
+            raise RuntimeError('structures not loaded despite _ensure_loaded()')
         total = _num_chunks(self.num_rows, self.papyrus_params['chunksize'])
         return preprocess.consume_chunks(generator=self.data, progress=progress, total=total)
 
@@ -1438,7 +1442,8 @@ class PapyrusDescriptorSet:
         """
         progress = self._default_progress if progress is None else progress
         self._ensure_loaded(progress)
-        assert self.data is not None
+        if self.data is None:
+            raise RuntimeError('descriptors not loaded despite _ensure_loaded()')
         return preprocess.consume_chunks(generator=self.data, progress=progress, total=None)
 
     def agg(self, progress: bool | None = None) -> pl.DataFrame:
