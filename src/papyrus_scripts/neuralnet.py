@@ -151,7 +151,7 @@ class BaseNN:
             batch_size=batch_size,
             callbacks=callbacks,
             callbacks__valid_acc=None,  # replaced by our own early-stopping/checkpoint logic
-            predict_nonlinearity=None,  # the module's own final_activation already applies one
+            predict_nonlinearity=None,  # real value set per-subclass, see set_architecture()/__init__
             device=_default_device(),
             train_split=None,  # require an explicit validation set, see set_validation()
             **kwargs,
@@ -240,14 +240,13 @@ class SingleTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH els
         self._n_classes_ = n_class
         self._n_features_in_ = n_dim
         self._dims = [n_dim, *self.hidden_layers, n_class]
-        # Binary: sigmoid + BCE on independent probabilities.
-        # Multi-class: raw logits + cross-entropy (softmax applied internally by
-        # the loss, and by skorch's predict_proba via predict_nonlinearity='auto').
-        self.criterion = nn.BCELoss if n_class == 1 else nn.CrossEntropyLoss
-        self.predict_nonlinearity = None if n_class == 1 else 'auto'
-
-    def _build_final_activation(self) -> nn.Module | None:
-        return nn.Sigmoid() if self._n_classes_ == 1 else None
+        # Binary: raw logits + BCEWithLogitsLoss (more numerically stable than
+        # Sigmoid + BCELoss). Multi-class: raw logits + cross-entropy.
+        # Probabilities come post-hoc from predict_nonlinearity.
+        self.criterion = nn.BCEWithLogitsLoss if n_class == 1 else nn.CrossEntropyLoss
+        # torch.sigmoid, not nn.Sigmoid(): skorch forbids assigning an
+        # nn.Module to a net attribute outside an initialize_*() call.
+        self.predict_nonlinearity = torch.sigmoid if n_class == 1 else 'auto'
 
     def _prep_y(self, y: pd.Series | pd.DataFrame | np.ndarray) -> np.ndarray:
         if not hasattr(self, '_n_classes_'):
@@ -297,7 +296,10 @@ class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else
 
     def __init__(self, *args, **kwargs) -> None:
         """Neural Network classifier to predict multiple endpoints."""
-        super().__init__(*args, criterion=nn.BCELoss, **kwargs)
+        # Raw logits + BCEWithLogitsLoss (see SingleTaskNNClassifier for why);
+        # probabilities are produced post-hoc via predict_nonlinearity.
+        super().__init__(*args, criterion=nn.BCEWithLogitsLoss, **kwargs)
+        self.predict_nonlinearity = torch.sigmoid
 
     def set_architecture(self, n_dim: int, n_task: int) -> None:
         """Set dimension of input and number of tasks to be predicted.
@@ -308,9 +310,6 @@ class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else
         if n_task < 2:
             raise ValueError('use SingleTaskNNClassifier for a single task')
         self._dims = [n_dim, *self.hidden_layers, n_task]
-
-    def _build_final_activation(self) -> nn.Module:
-        return nn.Sigmoid()
 
     def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         """Predict per-task probabilities for the incoming data.

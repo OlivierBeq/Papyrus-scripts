@@ -199,6 +199,14 @@ class TestSingleTaskNNClassifierBinary(unittest.TestCase):
         clf.set_architecture(4, 1)
         self.assertEqual(clf._dims, [4, 8000, 4000, 2000, 1])
 
+    def test_uses_bce_with_logits_and_raw_logits_module(self):
+        clf = SingleTaskNNClassifier(self._tmpdir.name, epochs=2, hidden_layers=[8, 4])
+        clf.set_architecture(4, 1)
+        self.assertIs(clf.criterion, nn_mod.nn.BCEWithLogitsLoss)
+        self.assertIs(clf.predict_nonlinearity, nn_mod.torch.sigmoid)
+        clf.initialize()
+        self.assertIsNone(clf.module_.final_activation)
+
 
 @unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
 class TestSingleTaskNNClassifierMultiClass(unittest.TestCase):
@@ -262,6 +270,15 @@ class TestMultiTaskNN(unittest.TestCase):
             clf = MultiTaskNNClassifier(d, epochs=2)
             with self.assertRaises(ValueError):
                 clf.set_architecture(4, 1)
+
+    def test_uses_bce_with_logits_and_raw_logits_module(self):
+        with tempfile.TemporaryDirectory() as d:
+            clf = MultiTaskNNClassifier(d, epochs=2, hidden_layers=[8, 4])
+            clf.set_architecture(4, 3)
+            self.assertIs(clf.criterion, nn_mod.nn.BCEWithLogitsLoss)
+            self.assertIs(clf.predict_nonlinearity, nn_mod.torch.sigmoid)
+            clf.initialize()
+            self.assertIsNone(clf.module_.final_activation)
 
     def test_regressor_predicts_multiple_tasks(self):
         rng = _rng()
