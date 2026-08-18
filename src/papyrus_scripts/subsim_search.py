@@ -22,24 +22,28 @@ from tqdm.auto import tqdm
 
 try:
     import cupy
-    HAS_CUPY = True
+    HAS_CUPY = True  # pragma: no cover - exercised only with cupy/CUDA installed
 except ImportError:
     HAS_CUPY = False
 
 try:
     import tables as tb
-    HAS_TABLES = True
+    HAS_TABLES = True  # pragma: no cover - exercised only with pytables installed
 except ImportError:
     HAS_TABLES = False
 
 try:
+    # This whole block only runs with FPSim2 installed; every line below the
+    # first import is unreachable otherwise (the first import raises first).
     from FPSim2.FPSim2 import FPSim2Engine
-    from FPSim2.FPSim2Cuda import FPSim2CudaEngine
-    from FPSim2.base import BaseEngine
-    from FPSim2.io.backends.base import BaseStorageBackend
-    from FPSim2.io.backends.pytables import BATCH_WRITE_SIZE, calc_popcnt_bins_pytables, create_schema
-    from FPSim2.io.chem import load_molecule
-    HAS_FPSIM2 = True
+    from FPSim2.FPSim2Cuda import FPSim2CudaEngine  # pragma: no cover
+    from FPSim2.base import BaseEngine  # pragma: no cover
+    from FPSim2.io.backends.base import BaseStorageBackend  # pragma: no cover
+    from FPSim2.io.backends.pytables import (  # pragma: no cover
+        BATCH_WRITE_SIZE, calc_popcnt_bins_pytables, create_schema,
+    )
+    from FPSim2.io.chem import load_molecule  # pragma: no cover
+    HAS_FPSIM2 = True  # pragma: no cover
 except ImportError:
     HAS_FPSIM2 = False
     # Stub classes so class definitions below do not fail at import time.
@@ -1163,7 +1167,9 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
             fps_sort=False,
         )
         self.kernel = kernel
-        if kernel == 'raw':
+        # self.fps is set by FPSim2CudaEngine's own real __init__ (needs
+        # cupy+FPSim2 installed to exist at all) - unreachable otherwise.
+        if kernel == 'raw':  # pragma: no cover
             self.cuda_db = cupy.asarray(self.fps[:, 1:-1])
             self.cuda_ids = cupy.asarray(self.fps[:, 0])
             self.cuda_popcnts = cupy.asarray(self.fps[:, -1])
@@ -1172,7 +1178,7 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
                 name='taniRAW',
                 options=('-std=c++14',),
             )
-        else:
+        else:  # pragma: no cover
             self.cuda_db = cupy.asarray(self.fps)
             self.cupy_kernel = cupy.ElementwiseKernel(
                 in_params='raw T db, raw U query, uint64 in_width, float32 threshold',
@@ -1183,7 +1189,7 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
                 reduce_dims=False,
             )
 
-    def similarity(self, query_string: str, threshold: float) -> pl.DataFrame:
+    def similarity(self, query_string: str, threshold: float) -> pl.DataFrame:  # pragma: no cover
         """GPU Tanimoto similarity search."""
         raw = FPSim2CudaEngine.similarity(self, query_string, threshold)
         return _build_result_df(
@@ -1191,7 +1197,7 @@ class FPSubSim2CudaEngine(BaseMultiFpEngine, FPSim2CudaEngine):
             f'Tanimoto > {threshold} ({self.storage._current_fp})',
         )
 
-    def tversky(self, query_string: str, threshold: float, a: float, b: float) -> pl.DataFrame:
+    def tversky(self, query_string: str, threshold: float, a: float, b: float) -> pl.DataFrame:  # pragma: no cover
         """GPU Tversky similarity search."""
         raw = FPSim2CudaEngine.tversky(self, query_string, threshold, a, b)
         return _build_result_df(
