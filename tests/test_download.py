@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
 import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -1324,6 +1325,882 @@ class TestDownloadPapyrusConvertWorkerIntegration(unittest.TestCase):
         self.assertIn((download._PROGRESS_START, 'Converting real.tsv.xz', 2), messages)
         self.assertIn((download._PROGRESS_DONE,), messages)
         self.assertEqual(sum(m[1] for m in messages if m[0] == download._PROGRESS_CHUNK), 2)
+
+
+class TestResolveVersions(unittest.TestCase):
+    """Direct tests for _resolve_versions - real PapyrusVersion objects
+    (aliases table is loaded offline from a local cache, no network needed).
+    """
+
+    def setUp(self):
+        self.files = {
+            '2022.04.1': {}, '2022.04.2': {},
+            '2022.08.3': {},
+            '2022.11.4': {},
+            '2024.09.2': {},
+        }
+
+    def test_latest_resolves_to_the_highest_alias_and_revision(self):
+        resolved = download._resolve_versions('latest', self.files)
+        self.assertEqual([pv.version for pv in resolved], ['2024.09.2'])
+
+    def test_all_without_all_revisions_keeps_only_latest_revision_per_alias(self):
+        resolved = download._resolve_versions('all', self.files, all_revisions=False)
+        self.assertEqual(
+            sorted(pv.version for pv in resolved),
+            ['2022.04.2', '2022.08.3', '2022.11.4', '2024.09.2'],
+        )
+
+    def test_all_with_all_revisions_expands_every_canonical_key(self):
+        resolved = download._resolve_versions('all', self.files, all_revisions=True)
+        self.assertEqual(
+            sorted(pv.version for pv in resolved),
+            ['2022.04.1', '2022.04.2', '2022.08.3', '2022.11.4', '2024.09.2'],
+        )
+
+    def test_all_with_all_revisions_warns_and_skips_unaliased_canonical_key(self):
+        files = dict(self.files)
+        files['2099.01.1'] = {}  # no entry in aliases.json
+        with self.assertWarns(UserWarning):
+            resolved = download._resolve_versions('all', files, all_revisions=True)
+        self.assertNotIn('2099.01.1', [pv.version for pv in resolved])
+
+    def test_two_part_alias_with_all_revisions_expands_its_revisions(self):
+        resolved = download._resolve_versions('2022.04', self.files, all_revisions=True)
+        self.assertEqual(sorted(pv.version for pv in resolved), ['2022.04.1', '2022.04.2'])
+
+    def test_two_part_alias_with_all_revisions_and_no_matching_keys_raises(self):
+        files = {'2022.04.2': {}}  # no 2022.11.* keys present
+        with self.assertRaises(ValueError):
+            download._resolve_versions('2022.11', files, all_revisions=True)
+
+    def test_unrecognised_single_version_string_raises(self):
+        with self.assertRaises(ValueError):
+            download._resolve_versions('not_a_real_version', self.files)
+
+    def test_valid_version_absent_from_files_raises(self):
+        with self.assertRaises(ValueError):
+            download._resolve_versions('2022.08.3', {'2022.04.2': {}})
+
+    def test_deduplicates_while_preserving_oldest_first_order(self):
+        resolved = download._resolve_versions(['2024.09.2', '2022.04.2', '2024.09.2'], self.files)
+        self.assertEqual([pv.version for pv in resolved], ['2022.04.2', '2024.09.2'])
+
+
+class TestGetVersionFiles(unittest.TestCase):
+    """Direct tests for _get_version_files: canonical key, legacy-key
+    fallback (with DeprecationWarning), missing-key error, and the
+    per-entry '__deprecated__' warning.
+    """
+
+    def test_canonical_key_returns_entry_without_warning(self):
+        pv = download.PapyrusVersion(version='2022.04.2')
+        files = {pv.version: {'readme': {}}}
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            entry = download._get_version_files(files, pv)
+        self.assertEqual(entry, {'readme': {}})
+
+    def test_legacy_key_fallback_warns_and_returns_entry(self):
+        pv = download.PapyrusVersion(version='2022.04.2')
+        files = {pv.version_old_fmt: {'readme': {}}}
+        with self.assertWarns(DeprecationWarning):
+            entry = download._get_version_files(files, pv)
+        self.assertEqual(entry, {'readme': {}})
+
+    def test_neither_key_present_raises_keyerror(self):
+        pv = download.PapyrusVersion(version='2022.04.2')
+        with self.assertRaises(KeyError):
+            download._get_version_files({}, pv)
+
+    def test_deprecated_entry_field_emits_its_own_warning(self):
+        pv = download.PapyrusVersion(version='2022.04.2')
+        files = {pv.version: {'__deprecated__': 'use version X instead'}}
+        with self.assertWarns(DeprecationWarning) as ctx:
+            download._get_version_files(files, pv)
+        self.assertIn('use version X instead', str(ctx.warning))
+
+
+class TestIterEntries(unittest.TestCase):
+
+    def test_dict_value_wrapped_in_a_single_element_list(self):
+        entry = {'name': 'a'}
+        self.assertEqual(download._iter_entries(entry), [entry])
+
+    def test_list_value_returned_as_is(self):
+        entries = [{'name': 'a'}, {'name': 'b'}]
+        self.assertEqual(download._iter_entries(entries), entries)
+
+    def test_other_type_raises_valueerror(self):
+        with self.assertRaises(ValueError):
+            download._iter_entries('not-a-dict-or-list')
+
+
+class TestFilePath(unittest.TestCase):
+
+    def setUp(self):
+        self.root = MagicMock()
+        self.root.join.return_value = Path('/fake/path')
+
+    def test_root_ftype_joins_directly_under_version_root(self):
+        download._file_path(self.root, 'proteins', 'proteins.tsv.xz')
+        self.root.join.assert_called_once_with(name='proteins.tsv.xz')
+
+    def test_structure_ftype_joins_under_structures_subfolder(self):
+        download._file_path(self.root, '2D_structures', 'structures.sd.xz')
+        self.root.join.assert_called_once_with('structures', name='structures.sd.xz')
+
+    def test_other_ftype_joins_under_descriptors_subfolder(self):
+        download._file_path(self.root, '2D_mold2', 'mold2.tsv.xz')
+        self.root.join.assert_called_once_with('descriptors', name='mold2.tsv.xz')
+
+
+class TestUpdateVersionsJson(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.root = MagicMock()
+        self.json_file = Path(self._tmpdir.name) / 'versions.json'
+        self.root.join.return_value = self.json_file
+        self.pv = make_version('2022.04.2')
+
+    def test_add_creates_file_with_sorted_unique_entries(self):
+        download._update_versions_json(self.root, self.pv, add=True)
+        self.assertEqual(download.read_jsonfile(self.json_file), ['2022.04.2'])
+
+    def test_remove_drops_the_matching_entry_only(self):
+        download.write_jsonfile(['2022.04.2', 'other'], self.json_file)
+        download._update_versions_json(self.root, self.pv, add=False)
+        self.assertEqual(download.read_jsonfile(self.json_file), ['other'])
+
+
+class TestConvertWorkerCrashBeforeTaskLoop(unittest.TestCase):
+
+    def test_queue_get_failure_still_reports_to_error_queue_and_reraises(self):
+        # Regression test: a crash/interrupt before the per-task try/except
+        # is even reached (e.g. task_queue.get() itself interrupted) must
+        # still report something on error_queue, instead of leaving the
+        # parent blocked forever on error_queue.get().
+        class _RaisingQueue(_FakeQueue):
+            def get(self):
+                raise RuntimeError('boom')
+
+        task_queue = _RaisingQueue()
+        error_queue = _FakeQueue()
+        progress_queue = _FakeQueue()
+        with self.assertRaises(RuntimeError):
+            download._convert_worker(task_queue, error_queue, progress_queue, progress=False)
+        self.assertEqual(error_queue.items, ['worker exited unexpectedly'])
+
+
+class TestRemovePapyrusRootWipe(unittest.TestCase):
+    """The nuclear option: remove_papyrus(papyrus_root=True)."""
+
+    def setUp(self):
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value={},
+            ),
+            'resolve_versions': patch(
+                'src.papyrus_scripts.download._resolve_versions', return_value=[],
+            ),
+            'pystow_module': patch('src.papyrus_scripts.download.pystow.module'),
+            'rmtree': patch('src.papyrus_scripts.download.shutil.rmtree'),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def test_declined_confirmation_aborts_without_removing(self):
+        with (
+            patch('builtins.input', return_value='N'),
+            redirect_stdout(io.StringIO()) as buf,
+        ):
+            result = download.remove_papyrus(papyrus_root=True, progress=False)
+        self.assertIsNone(result)
+        self.assertIn('was aborted', buf.getvalue())
+        self.mocks['rmtree'].assert_not_called()
+
+    def test_accepted_confirmation_wipes_everything(self):
+        with (
+            patch('builtins.input', return_value='Y'),
+            redirect_stdout(io.StringIO()) as buf,
+        ):
+            result = download.remove_papyrus(papyrus_root=True, progress=True)
+        self.assertIsNone(result)
+        self.mocks['rmtree'].assert_called_once()
+        self.assertIn('successfully removed', buf.getvalue())
+
+    def test_force_skips_the_confirmation_prompt(self):
+        with (
+            patch('builtins.input', side_effect=AssertionError('input() must not be called')),
+        ):
+            download.remove_papyrus(papyrus_root=True, force=True, progress=False)
+        self.mocks['rmtree'].assert_called_once()
+
+
+class TestRemovePapyrusVersionRootWipe(unittest.TestCase):
+    """Per-version nuclear option: remove_papyrus(version_root=True)."""
+
+    def setUp(self):
+        self.v1 = make_version('v1')
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value={},
+            ),
+            'resolve_versions': patch(
+                'src.papyrus_scripts.download._resolve_versions', return_value=[self.v1],
+            ),
+            'get_version_files': patch(
+                'src.papyrus_scripts.download._get_version_files', return_value={},
+            ),
+            'pystow_module': patch('src.papyrus_scripts.download.pystow.module'),
+            'rmtree': patch('src.papyrus_scripts.download.shutil.rmtree'),
+            'update_versions_json': patch('src.papyrus_scripts.download._update_versions_json'),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def test_declined_confirmation_skips_this_version_only(self):
+        with (
+            patch('builtins.input', return_value='N'),
+            redirect_stdout(io.StringIO()) as buf,
+        ):
+            download.remove_papyrus(version='v1', version_root=True, progress=False)
+        self.assertIn('was aborted', buf.getvalue())
+        self.mocks['rmtree'].assert_not_called()
+        self.mocks['update_versions_json'].assert_not_called()
+
+    def test_accepted_confirmation_wipes_the_version_folder(self):
+        with (
+            patch('builtins.input', return_value='Y'),
+            redirect_stdout(io.StringIO()) as buf,
+        ):
+            download.remove_papyrus(version='v1', version_root=True, progress=True)
+        self.mocks['rmtree'].assert_called_once()
+        self.mocks['update_versions_json'].assert_called_once_with(
+            self.mocks['pystow_module'].return_value, self.v1, add=False,
+        )
+        self.assertIn('successfully removed', buf.getvalue())
+
+
+class TestRemovePapyrusFileRemovalBody(unittest.TestCase):
+    """The regular (non-nuclear) per-file-type removal path: which files
+    are 'present', size accounting, actual unlink() calls, and the final
+    versions.json deregistration once the version folder is empty.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.root_dir = Path(self._tmpdir.name)
+        (self.root_dir / 'papyruspp.tsv.xz').write_bytes(b'x' * 10)
+        # 'proteins.tsv.xz' deliberately absent -> not "present".
+
+        self.v1 = make_version('v1')
+        version_files = {
+            'papyrus++': {'name': 'papyruspp.tsv.xz', 'url': 'x', 'size': 10, 'sha256': 'x'},
+            'proteins': {'name': 'proteins.tsv.xz', 'url': 'x', 'size': 5, 'sha256': 'x'},
+        }
+
+        root_module = MagicMock()
+        root_module.base = self.root_dir
+        root_module.join.side_effect = (
+            lambda name=None, *a: self.root_dir / name if name else self.root_dir
+        )
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value={},
+            ),
+            'resolve_versions': patch(
+                'src.papyrus_scripts.download._resolve_versions', return_value=[self.v1],
+            ),
+            'get_version_files': patch(
+                'src.papyrus_scripts.download._get_version_files', return_value=version_files,
+            ),
+            'pystow_module': patch(
+                'src.papyrus_scripts.download.pystow.module', return_value=root_module,
+            ),
+            'update_versions_json': patch('src.papyrus_scripts.download._update_versions_json'),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def test_only_fully_present_filetypes_are_removed(self):
+        download.remove_papyrus(version='v1', papyruspp=True, proteins=True, progress=False)
+        self.assertFalse((self.root_dir / 'papyruspp.tsv.xz').exists())
+        # 'proteins' was never on disk, so nothing to unlink and no crash.
+        self.mocks['update_versions_json'].assert_called_once_with(
+            self.mocks['pystow_module'].return_value, self.v1, add=False,
+        )
+
+    def test_progress_true_prints_summary_and_closes_a_bar(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            download.remove_papyrus(version='v1', papyruspp=True, progress=True)
+        self.assertIn('Number of files to be removed: 1', buf.getvalue())
+
+    def test_nothing_present_leaves_directory_untouched_and_no_deregistration(self):
+        download.remove_papyrus(version='v1', proteins=True, progress=False)
+        self.mocks['update_versions_json'].assert_not_called()
+
+
+class TestDownloadPapyrusFileSelectionByFlags(unittest.TestCase):
+    """Which logical file types get downloaded, driven by nostereo/stereo/
+    only_pp/structures/descriptors. keep_xz=True bypasses the whole
+    queue/converter machinery entirely, so these tests only need a fake
+    HTTP session.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+
+        def entry(url, name):
+            return {'name': name, 'url': url, 'size': 1, 'sha256': 'x'}
+
+        self.files = {
+            '05.4': {
+                'readme': entry('u:readme', 'README.txt'),
+                'requirements': entry('u:requirements', 'req.zip'),
+                'proteins': entry('u:proteins', 'proteins.tsv.xz'),
+                'papyrus++': entry('u:papyruspp', 'papyruspp.tsv.xz'),
+                '2D_papyrus': entry('u:2dpap', '2dpap.tsv.xz'),
+                '2D_structures': entry('u:2dstruct', '2dstruct.sd.xz'),
+                '3D_papyrus': entry('u:3dpap', '3dpap.tsv.xz'),
+                '3D_structures': entry('u:3dstruct', '3dstruct.sd.xz'),
+                '3D_mordred': entry('u:3dmordred', '3dmordred.tsv.xz'),
+                '3D_fingerprint': entry('u:3dfp', '3dfp.tsv.xz'),
+                'proteins_prodec': entry('u:prodec', 'prodec.tsv.xz'),
+            },
+        }
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+        zip_bytes = zip_buf.getvalue()
+
+        self.requested_urls: list[str] = []
+
+        def fake_get(url, **kwargs):
+            self.requested_urls.append(url)
+            content = zip_bytes if url == 'u:requirements' else b'x'
+            return _FakeResponse(content)
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=self.files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def _run(self, **kwargs):
+        with self.assertWarns(DeprecationWarning):  # links.json legacy-key warning
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=False, keep_xz=True, **kwargs,
+            )
+
+    def test_only_pp_false_downloads_full_2d_bioactivity_set(self):
+        self._run(nostereo=True, only_pp=False, stereo=False, descriptors=None)
+        self.assertIn('u:2dpap', self.requested_urls)
+
+    def test_structures_true_downloads_2d_structures(self):
+        self._run(nostereo=True, structures=True, stereo=False, descriptors=None)
+        self.assertIn('u:2dstruct', self.requested_urls)
+
+    def test_stereo_true_downloads_3d_bioactivity_and_structures(self):
+        self._run(nostereo=False, stereo=True, structures=True, descriptors=None)
+        self.assertIn('u:3dpap', self.requested_urls)
+        self.assertIn('u:3dstruct', self.requested_urls)
+
+    def test_stereo_mordred_and_fingerprint_descriptors_are_downloaded(self):
+        self._run(nostereo=False, stereo=True, descriptors=['mordred', 'fingerprint'])
+        self.assertIn('u:3dmordred', self.requested_urls)
+        self.assertIn('u:3dfp', self.requested_urls)
+
+    def test_prodec_present_in_links_is_downloaded(self):
+        self._run(nostereo=True, stereo=False, descriptors=['prodec'])
+        self.assertIn('u:prodec', self.requested_urls)
+
+    def test_prodec_absent_from_links_warns_and_is_skipped(self):
+        files = {'05.4': {k: v for k, v in self.files['05.4'].items() if k != 'proteins_prodec'}}
+        self.mocks['get_papyrus_links'].return_value = files
+        with self.assertWarns(UserWarning):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=False, keep_xz=True,
+                nostereo=True, stereo=False, descriptors=['prodec'],
+            )
+        self.assertNotIn('u:prodec', self.requested_urls)
+
+    def test_descriptors_none_downloads_no_descriptor_files(self):
+        self._run(nostereo=True, only_pp=True, stereo=False, descriptors=None)
+        self.assertNotIn('u:2dmold2', self.requested_urls)
+
+
+class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
+    """Files already on disk (converted, or intact with a matching hash)
+    are skipped instead of re-downloaded; a hash mismatch retries then
+    raises once _RETRIES is exhausted.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.files = {
+            '05.4': {
+                'readme': {'name': 'README.txt', 'url': 'u:readme', 'size': 1, 'sha256': 'x'},
+                'requirements': {'name': 'req.zip', 'url': 'u:requirements', 'size': 1, 'sha256': 'x'},
+                'proteins': {'name': 'proteins.tsv.xz', 'url': 'u:proteins', 'size': 1, 'sha256': 'x'},
+            },
+        }
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+        self.zip_bytes = zip_buf.getvalue()
+
+        self.requested_urls: list[str] = []
+
+        def fake_get(url, **kwargs):
+            self.requested_urls.append(url)
+            content = self.zip_bytes if url == 'u:requirements' else b'x'
+            return _FakeResponse(content)
+
+        self.fake_session = MagicMock()
+        self.fake_session.get.side_effect = fake_get
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=self.files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=self.fake_session,
+            ),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def test_already_converted_parquet_skips_download_entirely(self):
+        # 'proteins' is a _ROOT_FTYPES entry - its parquet sibling lives
+        # directly under the version root, not under descriptors/.
+        # progress=True also exercises the pbar.update() on this skip path.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        version_root.mkdir(parents=True)
+        (version_root / 'proteins.tsv.parquet').touch()
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
+            self.assertWarns(DeprecationWarning),
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=True, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertNotIn('u:proteins', self.requested_urls)
+
+    def test_intact_file_on_disk_with_matching_hash_is_not_redownloaded(self):
+        # progress=True also exercises the pbar.update() on this skip path.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        version_root.mkdir(parents=True)
+        (version_root / 'proteins.tsv.xz').write_bytes(b'already-here')
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
+            self.assertWarns(DeprecationWarning),
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=True, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertNotIn('u:proteins', self.requested_urls)
+
+    def test_hash_mismatch_retries_then_succeeds(self):
+        # Every file goes through the same hash check - only 'proteins'
+        # should ever mismatch, so readme/requirements must always pass.
+        # progress=True also exercises the "Retrying (n left)" pbar message.
+        proteins_results = iter([False, True])
+
+        def fake_sha(fpath, sha):
+            return next(proteins_results) if fpath.name == 'proteins.tsv.xz' else True
+
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', side_effect=fake_sha),
+            self.assertWarns(DeprecationWarning),
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=True, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertEqual(self.requested_urls.count('u:proteins'), 2)
+
+    def test_hash_mismatch_exhausts_retries_and_raises(self):
+        def fake_sha(fpath, sha):
+            return fpath.name != 'proteins.tsv.xz'
+
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', side_effect=fake_sha),
+            self.assertRaises(OSError),
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=False, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertEqual(self.requested_urls.count('u:proteins'), download._RETRIES)
+
+
+class TestDownloadPapyrusFailureDuringDownloadCleansUpConverter(unittest.TestCase):
+    """A download failure partway through must still let the converter
+    process drain and exit cleanly (and close the download bar) before the
+    original exception propagates.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+        files = {
+            '05.4': {
+                'readme': {'name': 'README.txt', 'url': 'u:readme', 'size': 1, 'sha256': 'x'},
+                'requirements': {'name': 'req.zip', 'url': 'u:requirements', 'size': 1, 'sha256': 'x'},
+                'proteins': {'name': 'proteins.tsv.xz', 'url': 'u:proteins', 'size': 1, 'sha256': 'x'},
+            },
+        }
+
+        def fake_get(url, **kwargs):
+            if url == 'u:proteins':
+                raise ConnectionError('network died')
+            content = zip_buf.getvalue() if url == 'u:requirements' else b'x'
+            return _FakeResponse(content)
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        self._queues_created: list[_FakeQueue] = []
+
+        def make_fake_queue(*args, **kwargs):
+            q = _FakeQueue()
+            self._queues_created.append(q)
+            return q
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_queue': patch(
+                'src.papyrus_scripts.download.mp.Queue', side_effect=make_fake_queue,
+            ),
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process', side_effect=_FakeProcess,
+            ),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def test_exception_propagates_after_signalling_the_converter_to_stop(self):
+        with (
+            self.assertWarns(DeprecationWarning),
+            self.assertRaises(ConnectionError),
+        ):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        task_queue = self._queues_created[0]
+        self.assertIs(task_queue.items[-1], download._CONVERSION_DONE)
+
+    def test_progress_true_still_closes_the_download_bar_on_failure(self):
+        with (
+            patch('src.papyrus_scripts.download.tqdm') as fake_tqdm_cls,
+            self.assertRaises(ConnectionError),
+        ):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        pbar_mock = fake_tqdm_cls.return_value
+        pbar_mock.close.assert_called()
+
+
+class TestDownloadPapyrusConversionFailureRaises(unittest.TestCase):
+    """Once every file has downloaded, a non-None error from the converter
+    process (reported via error_queue) must raise RuntimeError - and close
+    the download bar first, if progress bars are on.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        files = {
+            '05.4': {
+                'readme': {'name': 'README.txt', 'url': 'u:readme', 'size': 1, 'sha256': 'x'},
+                'requirements': {'name': 'req.zip', 'url': 'u:requirements', 'size': 1, 'sha256': 'x'},
+            },
+        }
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+
+        def fake_get(url, **kwargs):
+            content = zip_buf.getvalue() if url == 'u:requirements' else b'x'
+            return _FakeResponse(content)
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        class _ErroringQueue(_FakeQueue):
+            def get(self):
+                return 'boom: conversion exploded'
+
+        def make_fake_queue(*args, **kwargs):
+            return _ErroringQueue()
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_queue': patch(
+                'src.papyrus_scripts.download.mp.Queue', side_effect=make_fake_queue,
+            ),
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process', side_effect=_FakeProcess,
+            ),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def test_conversion_error_raises_runtimeerror_with_the_message(self):
+        with (
+            self.assertWarns(DeprecationWarning),
+            self.assertRaisesRegex(RuntimeError, 'conversion exploded'),
+        ):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+
+    def test_progress_true_closes_the_bar_before_raising(self):
+        with (
+            patch('src.papyrus_scripts.download.tqdm') as fake_tqdm_cls,
+            self.assertRaises(RuntimeError),
+        ):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        # First tqdm() call is the download bar; it must be closed.
+        fake_tqdm_cls.return_value.close.assert_called()
+
+
+class TestResolveVersionsFallbackToRawAlias(unittest.TestCase):
+
+    def test_unresolvable_short_string_falls_back_to_itself_then_raises(self):
+        with self.assertRaises(ValueError):
+            download._resolve_versions('bogus', {'2022.04.2': {}}, all_revisions=True)
+
+
+class TestRemovePapyrusDescriptorAndStereoFlags(unittest.TestCase):
+    """Every individual removal-set flag (bioactivities/stereo/structures/
+    descriptor types), and the 'file listed but not on disk' skip branch.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.root_dir = Path(self._tmpdir.name)
+        self.v1 = make_version('v1')
+
+        def entry(name, size=1):
+            return {'name': name, 'url': 'x', 'size': size, 'sha256': 'x'}
+
+        self.version_files = {
+            '2D_papyrus': entry('2dpap.tsv.xz'),
+            '3D_papyrus': entry('3dpap.tsv.xz'),
+            '2D_structures': entry('2dstruct.sd.xz'),
+            '3D_structures': entry('3dstruct.sd.xz'),
+            '3D_mordred': entry('3dmordred.tsv.xz'),
+            '2D_fingerprint': entry('2dfp.tsv.xz'),
+            '3D_fingerprint': entry('3dfp.tsv.xz'),
+        }
+        # Nothing actually written to disk: every ftype is "listed but
+        # absent" - exercises the not-fpath.is_file() skip branch below.
+
+        root_module = MagicMock()
+        root_module.base = self.root_dir
+        root_module.join.side_effect = (
+            lambda *parts, name=None: self.root_dir.joinpath(*parts, name) if name else self.root_dir
+        )
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value={},
+            ),
+            'resolve_versions': patch(
+                'src.papyrus_scripts.download._resolve_versions', return_value=[self.v1],
+            ),
+            'get_version_files': patch(
+                'src.papyrus_scripts.download._get_version_files', return_value=self.version_files,
+            ),
+            'pystow_module': patch(
+                'src.papyrus_scripts.download.pystow.module', return_value=root_module,
+            ),
+            'update_versions_json': patch('src.papyrus_scripts.download._update_versions_json'),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def test_bioactivities_structures_and_other_files_select_2d_and_metadata(self):
+        download.remove_papyrus(
+            version='v1', bioactivities=True, structures=True, other_files=True,
+            nostereo=True, stereo=False, progress=False,
+        )
+        self.assertEqual(self.mocks['get_version_files'].call_count, 1)
+
+    def test_bioactivities_and_stereo_flags_select_3d_papyrus(self):
+        download.remove_papyrus(
+            version='v1', bioactivities=True, nostereo=False, stereo=True, progress=False,
+        )
+        self.assertEqual(self.mocks['get_version_files'].call_count, 1)
+
+    def test_structures_and_stereo_flags_select_3d_structures(self):
+        download.remove_papyrus(
+            version='v1', structures=True, nostereo=False, stereo=True, progress=False,
+        )
+        self.assertEqual(self.mocks['get_version_files'].call_count, 1)
+
+    def test_stereo_mordred_and_fingerprint_descriptors_selected(self):
+        download.remove_papyrus(
+            version='v1', nostereo=False, stereo=True,
+            descriptors=['mordred', 'fingerprint'], progress=False,
+        )
+        self.assertEqual(self.mocks['get_version_files'].call_count, 1)
+
+    def test_present_file_is_actually_removed(self):
+        # '2D_fingerprint' is not a _ROOT_FTYPES entry - its file lives
+        # under descriptors/.
+        (self.root_dir / 'descriptors').mkdir()
+        (self.root_dir / 'descriptors' / '2dfp.tsv.xz').touch()
+        download.remove_papyrus(
+            version='v1', nostereo=True, stereo=False,
+            descriptors=['fingerprint'], progress=False,
+        )
+        self.assertFalse((self.root_dir / 'descriptors' / '2dfp.tsv.xz').exists())
+
+
+class _ResetThenRestartConsumerProcess:
+    """Stand-in for multiprocessing.Process: emits START, a CHUNK, a RESET
+    (dtype-drift healing restarted the file from row 0), another CHUNK, then
+    DONE - so the progress-queue's RESET branch is genuinely exercised. Runs
+    on a background thread (like _SlowConsumerProcess) so start() itself
+    never blocks the caller on a queue that nothing has been put on yet.
+    """
+
+    def __init__(self, target=None, args=(), daemon=None):
+        self._task_queue, self._error_queue, self._progress_queue, self._progress = args
+        self._thread: threading.Thread | None = None
+
+    def start(self):
+        def run():
+            task = self._task_queue.get()
+            self._progress_queue.put((download._PROGRESS_START, task['desc'], 10))
+            self._progress_queue.put((download._PROGRESS_CHUNK, 6))
+            self._progress_queue.put((download._PROGRESS_RESET,))
+            self._progress_queue.put((download._PROGRESS_CHUNK, 3))
+            self._progress_queue.put((download._PROGRESS_DONE,))
+            self._task_queue.get()  # the sentinel
+            self._error_queue.put(None)
+
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+
+    def join(self, timeout=None):
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def is_alive(self):
+        return self._thread is not None and self._thread.is_alive()
+
+
+class TestDownloadPapyrusProgressResetMessage(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+        files = {
+            '05.4': {
+                'readme': {'name': 'README.txt', 'url': 'u:readme', 'size': 1, 'sha256': 'x'},
+                'requirements': {'name': 'req.zip', 'url': 'u:requirements', 'size': 1, 'sha256': 'x'},
+                'proteins': {'name': 'proteins.tsv.xz', 'url': 'u:proteins', 'size': 1, 'sha256': 'x'},
+            },
+        }
+
+        def fake_get(url, **kwargs):
+            content = zip_buf.getvalue() if url == 'u:requirements' else b'x'
+            return _FakeResponse(content)
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        self.pbar_mocks: list[MagicMock] = []
+
+        def fake_tqdm(*args, **kwargs):
+            m = MagicMock()
+            m._kwargs = kwargs
+            self.pbar_mocks.append(m)
+            return m
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process', side_effect=_ResetThenRestartConsumerProcess,
+            ),
+            'tqdm': patch('src.papyrus_scripts.download.tqdm', side_effect=fake_tqdm),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def test_reset_message_zeroes_the_row_count_shown(self):
+        with self.assertWarns(DeprecationWarning):
+            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+
+        converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
+        self.assertEqual(len(converting_bars), 1)
+        descriptions = [
+            call.args[0] for call in converting_bars[0].set_description.call_args_list if call.args
+        ]
+        # After the RESET message, the next description must show 0 rows
+        # again (then climbs back up from the post-reset CHUNK), not a
+        # count that kept accumulating from before the restart.
+        self.assertTrue(any('(0/10 rows)' in d for d in descriptions), descriptions)
 
 
 if __name__ == '__main__':

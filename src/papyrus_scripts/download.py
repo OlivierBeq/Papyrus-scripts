@@ -753,7 +753,10 @@ def download_papyrus(outdir: str | Path | None = None,
                     current_rows += message[1]
                 elif kind == _PROGRESS_DONE:
                     files_converted += 1
-                if converting_pbar is None:
+                # Defensive only: progress_queue only ever receives messages
+                # when progress is True, which is also when converting_pbar
+                # is created - the two are never out of sync in practice.
+                if converting_pbar is None:  # pragma: no cover
                     continue
                 if kind == _PROGRESS_DONE:
                     # Set the description first (no refresh), then let the
@@ -1138,7 +1141,10 @@ def remove_papyrus(
         for ftype in present:
             for entry in _iter_entries(version_files[ftype]):
                 fpath = _file_path(papyrus_version_root, ftype, entry['name'])
-                if not fpath.is_file():
+                # Defensive only: every entry here was already confirmed
+                # present just above: a file vanishing between that check
+                # and here is an external race, not reachable in normal use.
+                if not fpath.is_file():  # pragma: no cover
                     if progress:
                         pbar.update(entry['size'])
                     continue
