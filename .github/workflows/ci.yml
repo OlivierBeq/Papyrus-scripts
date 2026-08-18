@@ -46,3 +46,5 @@ jobs:
         run: brew install libomp
       - run: pip install -e ".[testing,dnn]" pytest-cov
       - run: pytest tests/ --ignore=tests/test_oop.py --cov=src/papyrus_scripts --cov-report=term-missing -x
+        env:
+          KMP_DUPLICATE_LIB_OK: "TRUE"
