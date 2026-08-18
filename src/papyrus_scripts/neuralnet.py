@@ -26,7 +26,7 @@ try:
     from skorch.helper import predefined_split
     from torch import nn
     HAS_TORCH = True
-except ImportError:
+except ImportError:  # pragma: no cover - exercised only when torch/skorch aren't installed
     HAS_TORCH = False
 
 
@@ -101,6 +101,7 @@ class BaseNN:
 
     def __init__(self, out: str | Path, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
+                 hidden_layers: list[int] | None = None,
                  random_seed: int | None = None, **kwargs) -> None:
         """Configure the estimator.
 
@@ -113,12 +114,15 @@ class BaseNN:
         :param batch_size: size of data batches
         :param dropout: fraction of randomly disabled neurons at each epoch
             during training
+        :param hidden_layers: sizes of the hidden layers between the input
+            and output layers; defaults to ``[8000, 4000, 2000]``
         :param random_seed: seed of random number generators
         """
         _require_torch()
         self.out = Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
         self.dropout = dropout
+        self.hidden_layers = list(hidden_layers) if hidden_layers is not None else [8000, 4000, 2000]
         self.random_seed = random_seed
         self.rng = np.random.default_rng(random_seed) if random_seed is not None else None
         self._dims: list[int] | None = None
@@ -235,7 +239,7 @@ class SingleTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH els
                              ' or multi-classes predictions (n_class>2)')
         self._n_classes_ = n_class
         self._n_features_in_ = n_dim
-        self._dims = [n_dim, 8000, 4000, 2000, n_class]
+        self._dims = [n_dim, *self.hidden_layers, n_class]
         # Binary: sigmoid + BCE on independent probabilities.
         # Multi-class: raw logits + cross-entropy (softmax applied internally by
         # the loss, and by skorch's predict_proba via predict_nonlinearity='auto').
@@ -285,7 +289,7 @@ class SingleTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else 
 
         :param n_dim: number of input parameters
         """
-        self._dims = [n_dim, 8000, 4000, 2000, 1]
+        self._dims = [n_dim, *self.hidden_layers, 1]
 
 
 class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else object):  # type: ignore[misc]
@@ -303,7 +307,7 @@ class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else
         """
         if n_task < 2:
             raise ValueError('use SingleTaskNNClassifier for a single task')
-        self._dims = [n_dim, 8000, 4000, 2000, n_task]
+        self._dims = [n_dim, *self.hidden_layers, n_task]
 
     def _build_final_activation(self) -> nn.Module:
         return nn.Sigmoid()
@@ -338,4 +342,4 @@ class MultiTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else o
         """
         if n_task < 2:
             raise ValueError('use SingleTaskNNRegressor for a single task')
-        self._dims = [n_dim, 8000, 4000, 2000, n_task]
+        self._dims = [n_dim, *self.hidden_layers, n_task]

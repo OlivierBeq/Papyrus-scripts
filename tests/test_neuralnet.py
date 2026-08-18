@@ -10,6 +10,7 @@ torch/skorch dependencies are not installed.
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -45,6 +46,52 @@ class TestPrepX(unittest.TestCase):
 
 
 @unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestRequireTorch(unittest.TestCase):
+
+    def test_raises_when_torch_unavailable(self):
+        with patch.object(nn_mod, 'HAS_TORCH', False):
+            with self.assertRaises(ImportError):
+                nn_mod._require_torch()
+
+    def test_does_not_raise_when_torch_available(self):
+        nn_mod._require_torch()
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestDefaultDevice(unittest.TestCase):
+
+    def test_prefers_cuda(self):
+        with patch.object(nn_mod.torch.cuda, 'is_available', return_value=True):
+            self.assertEqual(nn_mod._default_device(), 'cuda')
+
+    def test_falls_back_to_mps(self):
+        with (
+            patch.object(nn_mod.torch.cuda, 'is_available', return_value=False),
+            patch.object(nn_mod.torch.backends.mps, 'is_available', return_value=True),
+        ):
+            self.assertEqual(nn_mod._default_device(), 'mps')
+
+    def test_falls_back_to_cpu(self):
+        with (
+            patch.object(nn_mod.torch.cuda, 'is_available', return_value=False),
+            patch.object(nn_mod.torch.backends.mps, 'is_available', return_value=False),
+        ):
+            self.assertEqual(nn_mod._default_device(), 'cpu')
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestSetSeed(unittest.TestCase):
+
+    def test_none_seed_is_a_no_op(self):
+        nn_mod._set_seed(None)
+
+    def test_seed_sets_deterministic_cudnn_flags(self):
+        nn_mod._set_seed(42)
+        self.assertTrue(nn_mod.torch.backends.cudnn.deterministic)
+        self.assertFalse(nn_mod.torch.backends.cudnn.benchmark)
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
 class TestSingleTaskNNClassifierBinary(unittest.TestCase):
 
     def setUp(self):
@@ -59,7 +106,8 @@ class TestSingleTaskNNClassifierBinary(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def _fitted(self, **kwargs):
-        clf = SingleTaskNNClassifier(self._tmpdir.name, epochs=2, early_stop=2, lr=0.01, **kwargs)
+        clf = SingleTaskNNClassifier(self._tmpdir.name, epochs=2, early_stop=2, lr=0.01,
+                                     hidden_layers=[8, 4], **kwargs)
         clf.set_architecture(4, 1)
         clf.set_validation(self.X_valid, self.y_valid)
         clf.fit(self.X, self.y)
@@ -110,6 +158,26 @@ class TestSingleTaskNNClassifierBinary(unittest.TestCase):
         with self.assertRaises(ValueError):
             clf.fit(self.X, self.y)
 
+    def test_initialize_module_without_set_architecture_raises(self):
+        clf = SingleTaskNNClassifier(self._tmpdir.name, epochs=2)
+        with self.assertRaises(ValueError):
+            clf.initialize_module()
+
+    def test_set_architecture_rejects_non_positive_n_class(self):
+        clf = SingleTaskNNClassifier(self._tmpdir.name, epochs=2)
+        with self.assertRaises(ValueError):
+            clf.set_architecture(4, 0)
+
+    def test_custom_hidden_layers_are_used(self):
+        clf = SingleTaskNNClassifier(self._tmpdir.name, epochs=2, hidden_layers=[16, 8])
+        clf.set_architecture(4, 1)
+        self.assertEqual(clf._dims, [4, 16, 8, 1])
+
+    def test_default_hidden_layers_unchanged(self):
+        clf = SingleTaskNNClassifier(self._tmpdir.name, epochs=2)
+        clf.set_architecture(4, 1)
+        self.assertEqual(clf._dims, [4, 8000, 4000, 2000, 1])
+
 
 @unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
 class TestSingleTaskNNClassifierMultiClass(unittest.TestCase):
@@ -121,7 +189,7 @@ class TestSingleTaskNNClassifierMultiClass(unittest.TestCase):
         X_valid = pd.DataFrame(rng.random((10, 4)))
         y_valid = pd.Series(rng.integers(0, 3, 10))
         with tempfile.TemporaryDirectory() as d:
-            clf = SingleTaskNNClassifier(d, epochs=2, early_stop=2, lr=0.01)
+            clf = SingleTaskNNClassifier(d, epochs=2, early_stop=2, lr=0.01, hidden_layers=[8, 4])
             clf.set_architecture(4, 3)
             clf.set_validation(X_valid, y_valid)
             clf.fit(X, y)
@@ -142,7 +210,7 @@ class TestSingleTaskNNRegressor(unittest.TestCase):
         X_valid = pd.DataFrame(rng.random((10, 4)))
         y_valid = pd.Series(rng.random(10))
         with tempfile.TemporaryDirectory() as d:
-            reg = SingleTaskNNRegressor(d, epochs=2, early_stop=2, lr=0.01)
+            reg = SingleTaskNNRegressor(d, epochs=2, early_stop=2, lr=0.01, hidden_layers=[8, 4])
             reg.set_architecture(4)
             reg.set_validation(X_valid, y_valid)
             reg.fit(X, y)
@@ -160,7 +228,7 @@ class TestMultiTaskNN(unittest.TestCase):
         X_valid = pd.DataFrame(rng.random((10, 4)))
         y_valid = pd.DataFrame(rng.integers(0, 2, (10, 3)))
         with tempfile.TemporaryDirectory() as d:
-            clf = MultiTaskNNClassifier(d, epochs=2, early_stop=2, lr=0.01)
+            clf = MultiTaskNNClassifier(d, epochs=2, early_stop=2, lr=0.01, hidden_layers=[8, 4])
             clf.set_architecture(4, 3)
             clf.set_validation(X_valid, y_valid)
             clf.fit(X, y)
@@ -181,7 +249,7 @@ class TestMultiTaskNN(unittest.TestCase):
         X_valid = pd.DataFrame(rng.random((10, 4)))
         y_valid = pd.DataFrame(rng.random((10, 3)))
         with tempfile.TemporaryDirectory() as d:
-            reg = MultiTaskNNRegressor(d, epochs=2, early_stop=2, lr=0.01)
+            reg = MultiTaskNNRegressor(d, epochs=2, early_stop=2, lr=0.01, hidden_layers=[8, 4])
             reg.set_architecture(4, 3)
             reg.set_validation(X_valid, y_valid)
             reg.fit(X, y)
