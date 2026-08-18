@@ -95,7 +95,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
@@ -144,3 +144,20 @@ known-first-party = ["papyrus_scripts", "tests"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"
+
+[tool.mypy]
+python_version = "3.11"
+exclude = ["tests/fixtures", "build", "dist"]
+
+[[tool.mypy.overrides]]
+module = ["rdkit", "rdkit.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pandas.*", "requests.*", "tqdm.*", "sklearn.*", "prodec.*", "skorch.*",
+    "defusedxml.*", "scipy.*", "mordred.*", "xgboost.*", "pystow.*",
+    "fake_useragent.*", "FPSim2.*", "cupy.*", "tables.*", "openbabel.*",
+]
+ignore_missing_imports = true

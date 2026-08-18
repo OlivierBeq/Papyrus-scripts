@@ -990,7 +990,7 @@ def _build_filter_method(spec: _FilterSpec) -> Callable:
         return self._wrap(_apply_lazy(self.papyrus_bioactivity_data, target, **call_kwargs))
 
     method.__name__ = method.__qualname__ = spec.name or spec.target_name
-    method.__signature__ = new_sig
+    method.__signature__ = new_sig  # type: ignore[attr-defined]
     summary = (inspect.getdoc(target) or '').split('\n', 1)[0]
     method.__doc__ = f'{summary}\n\nSee :func:`~preprocess.{spec.target_name}` for full parameter documentation.'
     method.__module__ = __name__
@@ -1574,7 +1574,7 @@ class ProteinSet(ABC):
             file; required (and only used) when *desc_type* is ``'custom'``
         """
         self.data = self.aggregate(progress)
-        ids = self.data['target_id'].unique()
+        ids = self.data['target_id'].unique().to_list()
         if desc_type == 'custom':
             return reader.read_protein_descriptors(
                 desc_type=desc_type,

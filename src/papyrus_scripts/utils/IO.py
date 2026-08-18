@@ -48,7 +48,7 @@ _FALLBACK_USER_AGENT = (
 
 #: Lazily instantiated so import never blocks on fake_useragent's own init,
 #: and its cost is only paid if the randomised fallback actually triggers.
-_user_agent_factory: object | None = None
+_user_agent_factory: Any | None = None
 
 #: Status codes suggesting the request was rejected/throttled based on how
 #: it looks, not a transient server error - worth retrying with a new UA.

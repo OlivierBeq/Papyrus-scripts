@@ -5,7 +5,7 @@
 import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import polars as pl
 from sklearn.utils import shuffle as sk_shuffle
@@ -22,6 +22,13 @@ from .subsim_search import FPSubSim2
 DataInput = pl.DataFrame | pl.LazyFrame
 #: The corresponding output form.
 DataOutput = pl.DataFrame | pl.LazyFrame
+#: Mirrors polars' own (non-public) join/concat Literal types.
+_JoinHow = Literal['inner', 'left', 'right', 'full', 'semi', 'anti', 'cross', 'outer']
+_ConcatHow = Literal[
+    'vertical', 'vertical_relaxed', 'diagonal', 'diagonal_relaxed',
+    'horizontal', 'horizontal_extend', 'align', 'align_full', 'align_inner',
+    'align_left', 'align_right',
+]
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +57,7 @@ def _safe_join(
         right: DataInput,
         *,
         on: str | list[str],
-        how: str = 'inner',
+        how: _JoinHow = 'inner',
 ) -> DataOutput:
     """Join *left* and *right*, which must both be a DataFrame or both a LazyFrame."""
     if isinstance(left, pl.LazyFrame) and isinstance(right, pl.LazyFrame):
@@ -63,7 +70,7 @@ def _safe_join(
     )
 
 
-def _safe_concat(parts: list[DataInput], *, how: str = 'diagonal') -> DataOutput:
+def _safe_concat(parts: list[DataInput], *, how: _ConcatHow = 'diagonal') -> DataOutput:
     """Concatenate *parts*, which must be all DataFrames or all LazyFrames."""
     # mypy can't narrow a list's element type via a per-element isinstance
     # check (unlike _safe_join's per-variable narrowing) - cast() is still needed.
