@@ -202,6 +202,7 @@ def crossvalidate_model(data: pd.DataFrame,
                         model: RegressorMixin | ClassifierMixin,
                         folds: BaseCrossValidator,
                         groups: list[int] | pd.Series | None = None,
+                        scale_method: TransformerMixin | None = None,
                         verbose: bool = False
                         ) -> tuple[pd.DataFrame, dict[str, RegressorMixin | ClassifierMixin]]:
     """Create a machine learning model predicting values in the first column
@@ -210,6 +211,11 @@ def crossvalidate_model(data: pd.DataFrame,
    :param model: estimator (either classifier or regressor) to use for model building
    :param folds: cross-validator
    :param groups: groups to split the labels according to
+   :param scale_method: if given, fit anew on each fold's training split
+       only (never on its held-out split) to avoid leaking test-fold
+       statistics into the scaling; also fit once on the entire dataset for
+       the final "Full model" - left fitted on that full-dataset call when
+       this function returns, so a caller can reuse it as-is
    :param verbose: whether to show fold progression
    :return: cross-validated performance and model trained on the entire dataset
     """
@@ -222,9 +228,15 @@ def crossvalidate_model(data: pd.DataFrame,
     for i, (train, test) in enumerate(folds.split(X, y, groups)):
         if verbose:
             pbar.set_description(f'Fitting model on fold {i + 1}', refresh=True)
-        model.fit(X.iloc[train, :], y[train])
+        X_train, X_test = X.iloc[train, :], X.iloc[test, :]
+        if scale_method is not None:
+            X_train = pd.DataFrame(scale_method.fit_transform(X_train),
+                                   index=X_train.index, columns=X_train.columns)
+            X_test = pd.DataFrame(scale_method.transform(X_test),
+                                  index=X_test.index, columns=X_test.columns)
+        model.fit(X_train, y[train])
         models[f'Fold {i + 1}'] = deepcopy(model)
-        fold_metrics.append(model_metrics(model, y[test], X.iloc[test, :]))
+        fold_metrics.append(model_metrics(model, y[test], X_test))
         if verbose:
             pbar.update()
     # Organize result in a dataframe
@@ -236,6 +248,8 @@ def crossvalidate_model(data: pd.DataFrame,
     # Fit model on the entire dataset
     if verbose:
         pbar.set_description('Fitting model on entire training set', refresh=True)
+    if scale_method is not None:
+        X = pd.DataFrame(scale_method.fit_transform(X), index=X.index, columns=X.columns)
     model.fit(X, y)
     models['Full model'] = deepcopy(model)
     if verbose:
@@ -362,10 +376,8 @@ def _fit_and_evaluate(data: pd.DataFrame,
     test_set = test_set.drop(columns=drop_columns)
     X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
     X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
-    # Scale data
-    if scale:
-        X_train.loc[X_train.index, X_train.columns] = scale_method.fit_transform(X_train)
-        X_test.loc[X_test.index, X_test.columns] = scale_method.transform(X_test)
+    # Scaling itself happens inside crossvalidate_model, fold-by-fold, to
+    # avoid leaking a fold's held-out rows into its own scaling statistics.
     # Encode labels
     lblenc = None
     if model_type == 'classifier':
@@ -382,10 +394,16 @@ def _fit_and_evaluate(data: pd.DataFrame,
     training_set = pd.concat([y_train, X_train], axis=1)
     test_set = pd.concat([y_test, X_test], axis=1)
     del X_train, y_train, X_test, y_test
-    # Y-scrambling
+    # Y-scrambling - yscrambling() is polars-only, so round-trip through it
+    # and restore the pandas index it doesn't carry.
     if yscramble:
-        training_set = yscrambling(data=training_set, y_var=endpoint, random_state=random_state)
-        test_set = yscrambling(data=test_set, y_var=endpoint, random_state=random_state)
+        training_index, test_index = training_set.index, test_set.index
+        training_set = yscrambling(pl.from_pandas(training_set), y_var=endpoint,
+                                   random_state=random_state).to_pandas()
+        training_set.index = training_index
+        test_set = yscrambling(pl.from_pandas(test_set), y_var=endpoint,
+                               random_state=random_state).to_pandas()
+        test_set.index = test_index
     # Make sure enough data
     if model_type == 'classifier':
         train_data_classes = Counter(training_set[endpoint])
@@ -402,9 +420,17 @@ def _fit_and_evaluate(data: pd.DataFrame,
         kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
     else:
         kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
-    performance, cv_models = crossvalidate_model(training_set, model, kfold, training_groups, verbose=verbose)
+    performance, cv_models = crossvalidate_model(
+        training_set, model, kfold, training_groups,
+        scale_method=scale_method if scale else None, verbose=verbose,
+    )
     full_model = cv_models['Full model']
     X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
+    if scale:
+        # scale_method was last fit inside crossvalidate_model on the whole
+        # training set (for the "Full model") - reuse that fit here so
+        # X_test is scaled consistently with full_model.
+        X_test = pd.DataFrame(scale_method.transform(X_test), index=X_test.index, columns=X_test.columns)
     performance.loc['Test set'] = model_metrics(full_model, y_test, X_test)
     # Formatting return values
     return_val: dict[str, Any] = {}
@@ -640,9 +666,15 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
     return_val = {**final_return_val, **models}
-    if len(fold_results) is False:
+    if not fold_results:
         return pd.DataFrame(), return_val
-    results = pd.concat(fold_results, axis=0).set_index(['target', 'index'])
+    results = pd.concat(fold_results, axis=0)
+    if 'index' not in results.columns:
+        # No target reached a real fit (every one was skipped/errored) - the
+        # 'index' column normally comes from performance.reset_index() on a
+        # successful fit, so it doesn't exist at all in that case.
+        results['index'] = 0
+    results = results.set_index(['target', 'index'])
     results.index.names = ['target', None]
     return results, return_val
 
