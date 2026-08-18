@@ -7,6 +7,7 @@ directory is redirected to a temporary folder, and offline fixture files
 (the ones shipped with the package) are used for version/alias resolution.
 """
 
+import gzip
 import json
 import lzma
 import os
@@ -383,6 +384,32 @@ class TestConvertXzToParquet(unittest.TestCase):
         self.assertFalse(stale.exists())
         self.assertTrue(out_path.is_file())
 
+    def test_on_progress_and_on_reset_callbacks_invoked(self):
+        xz_path = self._write_source('callback.tsv.xz')
+        out_path = Path(self._tmpdir.name) / 'callback.parquet'
+        progress_calls = []
+        reset_calls = []
+
+        IO.convert_xz_to_parquet(
+            xz_path, out_path, separator='\t',
+            on_progress=progress_calls.append, on_reset=lambda: reset_calls.append(True),
+        )
+
+        self.assertTrue(progress_calls)
+        self.assertEqual(reset_calls, [True])
+
+    def test_header_only_input_produces_empty_parquet(self):
+        df_empty = pl.DataFrame({'connectivity': [], 'value': []})
+        xz_path = Path(self._tmpdir.name) / 'empty.tsv.xz'
+        with lzma.open(xz_path, 'wb') as fh:
+            fh.write(df_empty.write_csv(separator='\t').encode())
+        out_path = Path(self._tmpdir.name) / 'empty.parquet'
+
+        IO.convert_xz_to_parquet(xz_path, out_path, separator='\t')
+
+        result = pq.read_table(out_path)
+        self.assertEqual(result.num_rows, 0)
+
 
 class TestDataTypeNameStringSchema(unittest.TestCase):
     """Regression test: every data_types.json Papyrus actually ships uses
@@ -407,6 +434,9 @@ class TestDataTypeNameStringSchema(unittest.TestCase):
 
     def test_unrecognised_string_falls_back_to_utf8(self):
         self.assertEqual(IO.to_polars_dtype('some_unknown_type'), pl.Utf8)
+
+    def test_unrecognised_type_object_falls_back_to_utf8(self):
+        self.assertEqual(IO.to_polars_dtype(complex), pl.Utf8)
 
     def test_real_python_types_still_supported(self):
         # Must not regress the pre-existing type-object path (still used by
@@ -553,6 +583,86 @@ class TestDiskSpace(unittest.TestCase):
     def test_enough_disk_space_false_for_huge_requirement(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertFalse(IO.enough_disk_space(d, required=10 ** 18))
+
+
+class TestHttpSessionHelpers(unittest.TestCase):
+
+    def test_get_user_agent_returns_string(self):
+        self.assertIsInstance(IO.get_user_agent(), str)
+
+    def test_get_user_agent_falls_back_on_exception(self):
+        with mock.patch.object(IO, '_user_agent_factory', None), \
+             mock.patch('src.papyrus_scripts.utils.IO.UserAgent', side_effect=RuntimeError):
+            self.assertEqual(IO.get_user_agent(), IO._FALLBACK_USER_AGENT)
+
+    def test_new_session_has_user_agent_and_retry_adapters(self):
+        session = IO.new_session(retries=2)
+        self.assertIn('User-Agent', session.headers)
+        self.assertIsNotNone(session.get_adapter('https://example.org'))
+        self.assertIsNotNone(session.get_adapter('http://example.org'))
+
+
+class TestGetPapyrusLinksAndAliases(unittest.TestCase):
+    """get_papyrus_links/get_papyrus_aliases read/write the real package-shipped
+    links.json/aliases.json - back them up and restore them so a test never
+    leaves the repo's shipped data mutated.
+    """
+
+    def setUp(self):
+        self._links_path = Path(IO.__file__).parent / 'links.json'
+        self._aliases_path = Path(IO.__file__).parent / 'aliases.json'
+        self._links_bytes = self._links_path.read_bytes()
+        self._aliases_bytes = self._aliases_path.read_bytes()
+
+    def tearDown(self):
+        self._links_path.write_bytes(self._links_bytes)
+        self._aliases_path.write_bytes(self._aliases_bytes)
+
+    def test_get_papyrus_links_offline_skips_network(self):
+        with mock.patch.object(IO, 'new_session') as mock_new_session:
+            result = IO.get_papyrus_links(offline=True)
+        mock_new_session.assert_not_called()
+        self.assertIsInstance(result, dict)
+
+    def test_get_papyrus_links_online_refreshes_cache(self):
+        response = mock.MagicMock()
+        response.text = json.dumps({'fake': 'data'})
+        with mock.patch.object(IO, 'new_session') as mock_new_session:
+            mock_new_session.return_value.get.return_value = response
+            result = IO.get_papyrus_links(offline=False)
+        self.assertEqual(result, {'fake': 'data'})
+        self.assertEqual(self._links_path.read_text(), response.text)
+
+    def test_get_papyrus_links_online_falls_back_on_request_error(self):
+        import requests
+        with mock.patch.object(IO, 'new_session') as mock_new_session:
+            mock_new_session.return_value.get.side_effect = requests.exceptions.RequestException
+            result = IO.get_papyrus_links(offline=False)
+        self.assertIsInstance(result, dict)
+
+    def test_get_papyrus_aliases_offline_skips_network(self):
+        with mock.patch.object(IO, 'new_session') as mock_new_session:
+            result = IO.get_papyrus_aliases(offline=True)
+        mock_new_session.assert_not_called()
+        self.assertIsInstance(result, pd.DataFrame)
+
+    def test_get_papyrus_aliases_online_falls_back_on_request_error(self):
+        import requests
+        with mock.patch.object(IO, 'new_session') as mock_new_session:
+            mock_new_session.return_value.get.side_effect = requests.exceptions.RequestException
+            result = IO.get_papyrus_aliases(offline=False)
+        self.assertIsInstance(result, pd.DataFrame)
+
+    def test_get_papyrus_aliases_online_refreshes_cache(self):
+        # Reuse the real shipped file's own content as the mocked response
+        # body, so it stays valid orient='split' JSON matching the real schema.
+        response = mock.MagicMock()
+        response.text = self._aliases_bytes.decode()
+        with mock.patch.object(IO, 'new_session') as mock_new_session:
+            mock_new_session.return_value.get.return_value = response
+            result = IO.get_papyrus_aliases(offline=False)
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertEqual(self._aliases_path.read_text(), response.text)
 
 
 class TestPapyrusVersion(unittest.TestCase):
@@ -720,6 +830,59 @@ class TestPapyrusVersion(unittest.TestCase):
         finally:
             IO.PapyrusVersion.aliases = original
 
+    def test_revision_in_both_version_string_and_kwarg_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            IO.PapyrusVersion(version='2022.11.4', revision='4')
+        self.assertIn('too many times', str(ctx.exception))
+
+    def test_alias_with_explicit_revision_kwarg_resolves(self):
+        v = IO.PapyrusVersion(version='2022.11', revision='4')
+        self.assertEqual(v.version, '2022.11.4')
+
+    def test_three_part_version_below_known_revision_resolves_via_fallback(self):
+        # aliases.json stores only the latest revision (2022.11.4) for this
+        # alias; an older revision must still resolve, via the fallback that
+        # takes that row and overrides its revision.
+        v = IO.PapyrusVersion(version='2022.11.2')
+        self.assertEqual(v.version, '2022.11.2')
+
+    def test_unknown_three_part_version_raises_no_match(self):
+        with self.assertRaises(ValueError) as ctx:
+            IO.PapyrusVersion(version='9999.99.1')
+        self.assertIn('No Papyrus version matches', str(ctx.exception))
+
+    def test_get_versions_returns_annotated_dataframe(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'papyrus').mkdir()
+            with open(Path(d) / 'papyrus' / 'versions.json', 'w') as fh:
+                json.dump(['05.4'], fh)
+            df = IO.PapyrusVersion.get_versions(root_folder=d)
+        self.assertIn('downloaded', df.columns)
+        downloaded_row = df[df['version'] == '2022.04']
+        self.assertTrue(downloaded_row['downloaded'].iloc[0])
+        other_row = df[df['version'] == '2022.08']
+        self.assertFalse(other_row['downloaded'].iloc[0])
+
+    def test_is_downloaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'papyrus').mkdir()
+            with open(Path(d) / 'papyrus' / 'versions.json', 'w') as fh:
+                json.dump(['05.4'], fh)
+            self.assertTrue(IO.PapyrusVersion(version='05.4').is_downloaded(root_folder=d))
+            self.assertFalse(IO.PapyrusVersion(version='2022.08.3').is_downloaded(root_folder=d))
+
+    def test_eq_with_string(self):
+        v = IO.PapyrusVersion(version='05.4')
+        self.assertEqual(v, '2022.04.2')
+
+    def test_eq_with_unrelated_type_not_implemented(self):
+        v = IO.PapyrusVersion(version='05.4')
+        self.assertNotEqual(v, 42)
+
+    def test_hash_matches_version_string_hash(self):
+        v = IO.PapyrusVersion(version='05.4')
+        self.assertEqual(hash(v), hash('2022.04.2'))
+
 
 class TestProcessDataVersion(unittest.TestCase):
     """process_data_version reads pystow's home directory, so PYSTOW_HOME is
@@ -777,6 +940,43 @@ class TestProcessDataVersion(unittest.TestCase):
             warnings.simplefilter('ignore', FutureWarning)
             v = IO.process_data_version('latest', root_folder=self._tmpdir.name)
         self.assertEqual(v.version_old_fmt, '05.5')
+
+    def test_is_local_version_available_false_on_invalid_version(self):
+        # Regression-shaped test: an unresolvable version string must be
+        # reported as "not available" (False), not propagate the ValueError
+        # PapyrusVersion(...) raises while constructing it.
+        self.assertFalse(
+            IO.is_local_version_available('not_a_real_version', root_folder=self._tmpdir.name)
+        )
+
+    def test_get_latest_downloaded_version_raises_when_none_downloaded(self):
+        with self.assertRaises(IOError):
+            IO.get_latest_downloaded_version(root_folder=self._tmpdir.name)
+
+    def test_get_latest_downloaded_version_returns_newest(self):
+        self._write_downloaded_versions(['05.4', '05.5'])
+        v = IO.get_latest_downloaded_version(root_folder=self._tmpdir.name)
+        self.assertEqual(v.version_old_fmt, '05.5')
+
+    def test_set_root_folder_none_unsets_env_var(self):
+        os.environ['PYSTOW_HOME'] = self._tmpdir.name
+        IO._set_root_folder(None)
+        self.assertNotIn('PYSTOW_HOME', os.environ)
+
+
+class TestOnlineVersions(unittest.TestCase):
+
+    def test_get_online_versions_sorted_oldest_first(self):
+        fake_links = {'05.5': {}, '05.4': {}}
+        with mock.patch.object(IO, 'get_papyrus_links', return_value=fake_links):
+            versions = IO.get_online_versions()
+        self.assertEqual([v.version_old_fmt for v in versions], ['05.4', '05.5'])
+
+    def test_get_latest_online_version(self):
+        fake_links = {'05.5': {}, '05.4': {}}
+        with mock.patch.object(IO, 'get_papyrus_links', return_value=fake_links):
+            latest = IO.get_latest_online_version()
+        self.assertEqual(latest.version_old_fmt, '05.5')
 
 
 class TestGetNumRowsInFile(unittest.TestCase):
@@ -860,6 +1060,125 @@ class TestGetNumRowsInFile(unittest.TestCase):
                                      descriptor_name='mold2', root_folder=self._tmpdir.name),
             8,
         )
+
+    def test_invalid_filetype_raises(self):
+        with self.assertRaises(ValueError):
+            IO.get_num_rows_in_file('bogus', is3D=False, version='05.4', root_folder=self._tmpdir.name)
+
+    def test_invalid_descriptor_name_raises(self):
+        with self.assertRaises(ValueError):
+            IO.get_num_rows_in_file('descriptors', is3D=False, descriptor_name='bogus',
+                                     version='05.4', root_folder=self._tmpdir.name)
+
+
+class TestGetDownloadedPapyrusFiles(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._old_pystow_home = os.environ.get('PYSTOW_HOME')
+        (Path(self._tmpdir.name) / 'papyrus').mkdir(parents=True, exist_ok=True)
+        with open(Path(self._tmpdir.name) / 'papyrus' / 'versions.json', 'w') as fh:
+            json.dump(['05.4'], fh)
+
+    def tearDown(self):
+        if self._old_pystow_home is None:
+            os.environ.pop('PYSTOW_HOME', None)
+        else:
+            os.environ['PYSTOW_HOME'] = self._old_pystow_home
+        self._tmpdir.cleanup()
+
+    def test_lists_tracked_files_with_downloaded_status(self):
+        fake_links = {
+            '05.4': {
+                'papyrus++': {'name': 'papyruspp.tsv.xz'},
+                '2D_structures': {'name': 'structures2d.sd.xz'},
+                'untracked_type': {'name': 'ignored.xz'},
+            },
+        }
+        version_dir = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        version_dir.mkdir(parents=True, exist_ok=True)
+        (version_dir / 'papyruspp.tsv.xz').write_bytes(b'x')
+        # structures2d.sd.xz intentionally not created -> downloaded=False
+
+        with mock.patch.object(IO, 'get_papyrus_links', return_value=fake_links):
+            df = IO.get_downloaded_papyrus_files(root_folder=self._tmpdir.name)
+
+        self.assertEqual(set(df['short_name']), {'papyrus++', '2D_structures'})
+        got = df.set_index('short_name')['downloaded'].to_dict()
+        self.assertTrue(got['papyrus++'])
+        self.assertFalse(got['2D_structures'])
+
+
+class TestConvertXzToGz(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_roundtrips_content(self):
+        src = Path(self._tmpdir.name) / 'in.tsv.xz'
+        with lzma.open(src, 'wb') as fh:
+            fh.write(b'a\tb\n1\t2\n')
+        dst = Path(self._tmpdir.name) / 'out.tsv.gz'
+        IO.convert_xz_to_gz(src, dst)
+        with gzip.open(dst, 'rb') as fh:
+            self.assertEqual(fh.read(), b'a\tb\n1\t2\n')
+
+    def test_progress_bar_does_not_affect_output(self):
+        src = Path(self._tmpdir.name) / 'in2.tsv.xz'
+        with lzma.open(src, 'wb') as fh:
+            fh.write(b'x' * (11 * 1_048_576))  # exceed one 10 MB chunk
+        dst = Path(self._tmpdir.name) / 'out2.tsv.gz'
+        IO.convert_xz_to_gz(src, dst, progress=True)
+        with gzip.open(dst, 'rb') as fh:
+            self.assertEqual(len(fh.read()), 11 * 1_048_576)
+
+    def test_none_compression_level_defaults_to_9(self):
+        src = Path(self._tmpdir.name) / 'in3.tsv.xz'
+        with lzma.open(src, 'wb') as fh:
+            fh.write(b'hello')
+        dst = Path(self._tmpdir.name) / 'out3.tsv.gz'
+        IO.convert_xz_to_gz(src, dst, compression_level=None)
+        with gzip.open(dst, 'rb') as fh:
+            self.assertEqual(fh.read(), b'hello')
+
+
+class TestConvertGzToXz(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_roundtrips_content(self):
+        src = Path(self._tmpdir.name) / 'in.tsv.gz'
+        with gzip.open(src, 'wb') as fh:
+            fh.write(b'a\tb\n1\t2\n')
+        dst = Path(self._tmpdir.name) / 'out.tsv.xz'
+        IO.convert_gz_to_xz(src, dst)
+        with lzma.open(dst, 'rb') as fh:
+            self.assertEqual(fh.read(), b'a\tb\n1\t2\n')
+
+    def test_progress_and_extreme_flag_do_not_affect_output(self):
+        src = Path(self._tmpdir.name) / 'in2.tsv.gz'
+        with gzip.open(src, 'wb') as fh:
+            fh.write(b'y' * (11 * 1_048_576))
+        dst = Path(self._tmpdir.name) / 'out2.tsv.xz'
+        IO.convert_gz_to_xz(src, dst, progress=True, extreme=True, compression_level=1)
+        with lzma.open(dst, 'rb') as fh:
+            self.assertEqual(len(fh.read()), 11 * 1_048_576)
+
+    def test_none_compression_level_defaults_to_preset_default(self):
+        src = Path(self._tmpdir.name) / 'in3.tsv.gz'
+        with gzip.open(src, 'wb') as fh:
+            fh.write(b'hello')
+        dst = Path(self._tmpdir.name) / 'out3.tsv.xz'
+        IO.convert_gz_to_xz(src, dst, compression_level=None)
+        with lzma.open(dst, 'rb') as fh:
+            self.assertEqual(fh.read(), b'hello')
 
 
 if __name__ == '__main__':

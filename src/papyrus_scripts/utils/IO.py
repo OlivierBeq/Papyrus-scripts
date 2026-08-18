@@ -1230,9 +1230,11 @@ def convert_xz_to_parquet(
                         pbar.update(len(chunk))
                     if on_progress is not None:
                         on_progress(len(chunk))
-                if drift is None and writer is None:
-                    # Empty input (header only, zero data rows) - still produce
-                    # a valid, correctly-schema'd, zero-row Parquet file.
+                if drift is None and writer is None:  # pragma: no cover
+                    # Defensive: a header-only input still yields one empty
+                    # chunk from pd.read_csv(chunksize=...) (confirmed - so
+                    # writer is always set above), never zero chunks, but
+                    # keep this as a safety net in case that ever changes.
                     empty = pd.read_csv(
                         input_file, sep=separator, compression='xz', nrows=0, dtype=dtype,
                     )
