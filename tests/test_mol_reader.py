@@ -436,5 +436,55 @@ class TestMolSupplierIterationControl(unittest.TestCase):
         self.assertIsNotNone(rdmol)
 
 
+class TestMolSupplierParquet(SmallSDFFixture):
+    """MolSupplier dispatches a '.parquet' source to ForwardParquetSDMolSupplier."""
+
+    def setUp(self):
+        super().setUp()
+        from src.papyrus_scripts.utils.IO import convert_sd_to_parquet
+
+        xz_path = self.sd_path.with_name(self.sd_path.name + '.xz')
+        with open(self.sd_path, 'rb') as fin, lzma.open(xz_path, 'wb') as fout:
+            fout.write(fin.read())
+        self.parquet_path = Path(self._tmpdir.name) / 'mols.sd.parquet'
+        convert_sd_to_parquet(xz_path, self.parquet_path)
+
+    def test_reads_parquet_structures_file(self):
+        with MolSupplier(self.parquet_path) as ms:
+            mols = list(ms)
+        self.assertEqual(len(mols), 2)
+        smiles = sorted(Chem.MolToSmiles(m) for _, m in mols)
+        self.assertEqual(smiles, sorted(['CCO', 'c1ccccc1']))
+
+    def test_molecule_ids_start_at_zero_by_default(self):
+        with MolSupplier(self.parquet_path) as ms:
+            ids = [i for i, _ in ms]
+        self.assertEqual(ids, [0, 1])
+
+    def test_matches_reading_the_original_sdf(self):
+        with MolSupplier(self.sd_path) as ms:
+            from_sdf = [(i, Chem.MolToSmiles(m)) for i, m in ms]
+        with MolSupplier(self.parquet_path) as ms:
+            from_parquet = [(i, Chem.MolToSmiles(m)) for i, m in ms]
+        self.assertEqual(from_sdf, from_parquet)
+
+    def test_properties_round_trip(self):
+        mol = Chem.MolFromSmiles('CN1CCC[C@H]1c1cccnc1')
+        mol.SetProp('InChIKey', 'SNICXCGAKADSCV-JTQLQIEISA-N')
+        writer = Chem.SDWriter(str(self.sd_path))
+        writer.write(mol)
+        writer.close()
+        xz_path = self.sd_path.with_name('with_props.sd.xz')
+        with open(self.sd_path, 'rb') as fin, lzma.open(xz_path, 'wb') as fout:
+            fout.write(fin.read())
+        parquet_path = Path(self._tmpdir.name) / 'with_props.sd.parquet'
+        from src.papyrus_scripts.utils.IO import convert_sd_to_parquet
+        convert_sd_to_parquet(xz_path, parquet_path)
+
+        with MolSupplier(parquet_path) as ms:
+            _, rdmol = next(iter(ms))
+        self.assertEqual(rdmol.GetProp('InChIKey'), 'SNICXCGAKADSCV-JTQLQIEISA-N')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -859,6 +859,14 @@ def locate_file(dirpath: str | Path, regex_pattern: str) -> list[Path]:
     return matches
 
 
+def _prefer_parquet(files: list[Path]) -> Path:
+    """Return the ``.parquet`` file among *files* if one is present, else the first match."""
+    for f in files:
+        if f.suffix == '.parquet':
+            return f
+    return files[0]
+
+
 # ---------------------------------------------------------------------------
 # Row-count helper
 # ---------------------------------------------------------------------------
@@ -1287,6 +1295,165 @@ def convert_xz_to_parquet(
                 break
             drifted_col, kind = drift
             (forced_string_cols if kind == 'string' else forced_float_cols).add(drifted_col)
+        tmp_parquet.replace(output_file)
+    finally:
+        if pbar is not None:
+            pbar.close()
+        tmp_parquet.unlink(missing_ok=True)
+
+
+#: Matches an SD tag line, e.g. ``> <InChIKey>`` or ``>  <Name> (1)``.
+_SD_PROP_PATTERN = re.compile(r'^>.*?<([^>]+)>')
+
+#: SD-record delimiter and the two accepted spellings of the CTAB terminator.
+_SD_RECORD_END = '$$$$'
+_SD_CTAB_END_MARKERS = ('M  END', 'M END')
+
+
+def _split_ctab_and_properties(lines: list[str]) -> tuple[str, dict[str, str]]:
+    """Split one SD record's lines into its CTAB block and SD tag properties.
+
+    :param lines: lines of a single record, not including the trailing
+        ``$$$$`` delimiter
+    :returns: ``(ctab, properties)``, mapping each ``> <TAG>`` name to its
+        (stripped) value
+    """
+    end_idx = next(
+        (i for i, line in enumerate(lines) if line.startswith(_SD_CTAB_END_MARKERS)),
+        None,
+    )
+    if end_idx is None:
+        # No 'M  END': end the CTAB at the first '>' tag, or the whole block.
+        end_idx = next((i - 1 for i, line in enumerate(lines) if line.startswith('>')), len(lines) - 1)
+
+    ctab = ''.join(lines[:end_idx + 1])
+
+    properties: dict[str, str] = {}
+    current_prop: str | None = None
+    current_value: list[str] = []
+    for line in lines[end_idx + 1:]:
+        if line.startswith('>'):
+            if current_prop is not None:
+                properties[current_prop] = ''.join(current_value).strip()
+            match = _SD_PROP_PATTERN.match(line)
+            current_prop = match.group(1) if match else None
+            current_value = []
+        elif current_prop is not None:
+            current_value.append(line)
+    if current_prop is not None:
+        properties[current_prop] = ''.join(current_value).strip()
+    return ctab, properties
+
+
+def convert_sd_to_parquet(
+        input_file: str | Path,
+        output_file: str | Path,
+        chunksize: int = 20_000,
+        progress: bool = False,
+        desc: str | None = None,
+        position: int = 0,
+        total: int | None = None,
+        leave: bool = True,
+        ncols: int = 100,
+        on_progress: Callable[[int], None] | None = None,
+) -> None:
+    """Losslessly convert an LZMA-compressed SD file to a structures Parquet file.
+
+    Each row holds one molecule's SD tag properties as string columns, plus
+    a ``'ctab'`` column with the raw MDL connection-table block, stored as
+    ``large_binary`` (avoids the ~2 GB per-array overflow risk of a plain
+    32-bit-offset string/binary column at multi-million-row scale, and
+    skips UTF-8 validation - a CTAB is opaque bytes, and RDKit's
+    ``MolFromMolBlock`` accepts them directly). Parsing is a plain text
+    split on SD's own ``$$$$``/``M  END``/``> <TAG>`` structure - no RDKit
+    involved, so the CTAB is preserved exactly and no molecule is built.
+
+    Two passes: the first scans for the union of SD tag names (needed to
+    fix the Parquet schema upfront), the second streams and writes
+    *chunksize*-row batches.
+
+    :param input_file: path to the source ``.sd.xz`` file
+    :param output_file: path to write the ``.parquet`` file (written
+        atomically, like :func:`convert_xz_to_parquet`)
+    :param chunksize: molecules per write batch
+    :param progress: display a progress bar while converting
+    :param desc: progress bar label; defaults to *input_file*'s name
+    :param position: ``tqdm`` line offset, for coexisting with another bar
+    :param total: expected molecule count, shown in the bar; an
+        approximation is fine
+    :param leave: keep the finished bar visible after this function returns
+    :param ncols: fixed bar width in characters
+    :param on_progress: called with each chunk's row count (a delta) - lets
+        a caller in its own process report progress to the process
+        rendering the bar, instead of rendering one here
+    """
+    input_file = Path(input_file)
+    output_file = Path(output_file)
+    tmp_parquet = output_file.with_name(f'{output_file.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.converting')
+    for stale in output_file.parent.glob(f'{output_file.name}.*.converting'):
+        stale.unlink(missing_ok=True)
+    if desc is None:
+        desc = f'Converting {input_file.name}'
+
+    properties: list[str] = []
+    seen: set[str] = set()
+    with lzma.open(input_file, 'rt') as fh:
+        for line in fh:
+            if line.startswith('>'):
+                match = _SD_PROP_PATTERN.match(line)
+                if match:
+                    name = match.group(1)
+                    if name not in seen:
+                        seen.add(name)
+                        properties.append(name)
+
+    schema = pa.schema(
+        [pa.field(name, pa.string()) for name in properties]
+        + [pa.field('ctab', pa.large_binary())],
+    )
+
+    def _write_chunk(writer: pq.ParquetWriter, records: list[tuple[str, dict]]) -> None:
+        columns: dict[str, list] = {name: [] for name in properties}
+        ctabs: list[bytes] = []
+        for ctab, props in records:
+            for name in properties:
+                columns[name].append(props.get(name))
+            ctabs.append(ctab.encode('utf-8'))
+        arrays = [pa.array(columns[name], type=pa.string()) for name in properties]
+        arrays.append(pa.array(ctabs, type=pa.large_binary()))
+        writer.write_batch(pa.RecordBatch.from_arrays(arrays, schema=schema))
+        if pbar is not None:
+            pbar.update(len(records))
+        if on_progress is not None:
+            on_progress(len(records))
+
+    pbar = tqdm(
+        desc=desc, unit=' mols', unit_scale=True, position=position,
+        total=total, leave=leave, ncols=ncols,
+    ) if progress else None
+    try:
+        with pq.ParquetWriter(tmp_parquet, schema, compression='zstd') as writer:
+            with lzma.open(input_file, 'rt') as fh:
+                chunk: list[tuple[str, dict]] = []
+                record_lines: list[str] = []
+                for line in fh:
+                    if line.startswith(_SD_RECORD_END):
+                        ctab, props = _split_ctab_and_properties(record_lines)
+                        record_lines = []
+                        if ctab.strip():
+                            chunk.append((ctab, props))
+                        if len(chunk) == chunksize:
+                            _write_chunk(writer, chunk)
+                            chunk = []
+                    else:
+                        record_lines.append(line)
+                # A malformed file missing the final '$$$$' still yields its last record.
+                if record_lines:
+                    ctab, props = _split_ctab_and_properties(record_lines)
+                    if ctab.strip():
+                        chunk.append((ctab, props))
+                if chunk:
+                    _write_chunk(writer, chunk)
         tmp_parquet.replace(output_file)
     finally:
         if pbar is not None:

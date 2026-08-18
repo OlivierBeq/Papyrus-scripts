@@ -20,6 +20,7 @@ from unittest import mock
 import pandas as pd
 import polars as pl
 import pyarrow.parquet as pq
+from rdkit import Chem
 
 from src.papyrus_scripts.utils import IO
 
@@ -409,6 +410,107 @@ class TestConvertXzToParquet(unittest.TestCase):
 
         result = pq.read_table(out_path)
         self.assertEqual(result.num_rows, 0)
+
+
+class TestConvertSdToParquet(unittest.TestCase):
+    """convert_sd_to_parquet splits each SD record into its CTAB block and
+    ``> <TAG>`` properties by a plain text scan (no RDKit involved).
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _write_sd_xz(self, name: str, mols: list) -> Path:
+        path = Path(self._tmpdir.name) / name
+        plain_path = path.with_suffix('')
+        writer = Chem.SDWriter(str(plain_path))
+        for mol in mols:
+            writer.write(mol)
+        writer.close()
+        raw = plain_path.read_bytes()
+        plain_path.unlink()
+        with lzma.open(path, 'wb') as fh:
+            fh.write(raw)
+        return path
+
+    def test_round_trip_preserves_ctab_and_sparse_properties(self):
+        mols = []
+        for i, smi in enumerate(['CCO', 'c1ccccc1', 'CC(=O)O']):
+            mol = Chem.MolFromSmiles(smi)
+            mol.SetProp('InChIKey', f'KEY{i}')
+            if i == 1:
+                mol.SetProp('extra', 'only-on-second-molecule')
+            mols.append(mol)
+        xz_path = self._write_sd_xz('mols.sd.xz', mols)
+        out_path = Path(self._tmpdir.name) / 'mols.sd.parquet'
+
+        IO.convert_sd_to_parquet(xz_path, out_path)
+
+        table = pq.read_table(out_path)
+        self.assertEqual(table.num_rows, 3)
+        self.assertEqual(set(table.schema.names), {'InChIKey', 'extra', 'ctab'})
+        self.assertIn('large_binary', str(table.schema.field('ctab').type))
+        self.assertEqual(table.column('InChIKey').to_pylist(), ['KEY0', 'KEY1', 'KEY2'])
+        self.assertEqual(
+            table.column('extra').to_pylist(), [None, 'only-on-second-molecule', None],
+        )
+        for ctab, smi in zip(table.column('ctab').to_pylist(), ['CCO', 'c1ccccc1', 'CC(=O)O'], strict=True):
+            rebuilt = Chem.MolFromMolBlock(ctab)
+            self.assertEqual(Chem.MolToSmiles(rebuilt), Chem.CanonSmiles(smi))
+
+    def test_empty_input_produces_empty_parquet_with_ctab_only_schema(self):
+        xz_path = Path(self._tmpdir.name) / 'empty.sd.xz'
+        with lzma.open(xz_path, 'wt') as fh:
+            fh.write('')
+        out_path = Path(self._tmpdir.name) / 'empty.sd.parquet'
+
+        IO.convert_sd_to_parquet(xz_path, out_path)
+
+        table = pq.read_table(out_path)
+        self.assertEqual(table.num_rows, 0)
+        self.assertEqual(table.schema.names, ['ctab'])
+
+    def test_record_missing_trailing_delimiter_is_still_captured(self):
+        xz_path = Path(self._tmpdir.name) / 'malformed.sd.xz'
+        content = (
+            'mol1\n     RDKit          2D\n\n'
+            '  1  0  0  0  0  0  0  0  0  0999 V2000\n'
+            '    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n'
+            'M  END\n> <InChIKey>\nABCDEFGHIJKLMN-UHFFFAOYSA-N\n\n'
+        )
+        with lzma.open(xz_path, 'wt') as fh:
+            fh.write(content)
+        out_path = Path(self._tmpdir.name) / 'malformed.sd.parquet'
+
+        IO.convert_sd_to_parquet(xz_path, out_path)
+
+        table = pq.read_table(out_path)
+        self.assertEqual(table.num_rows, 1)
+        self.assertEqual(table.column('InChIKey').to_pylist(), ['ABCDEFGHIJKLMN-UHFFFAOYSA-N'])
+
+    def test_on_progress_reports_chunk_sizes(self):
+        mols = [Chem.MolFromSmiles('CCO') for _ in range(5)]
+        xz_path = self._write_sd_xz('progress.sd.xz', mols)
+        out_path = Path(self._tmpdir.name) / 'progress.sd.parquet'
+
+        progress_calls: list[int] = []
+        IO.convert_sd_to_parquet(xz_path, out_path, chunksize=2, on_progress=progress_calls.append)
+
+        self.assertEqual(progress_calls, [2, 2, 1])
+
+    def test_atomic_write_leaves_no_converting_temp_file(self):
+        mols = [Chem.MolFromSmiles('CCO')]
+        xz_path = self._write_sd_xz('atomic.sd.xz', mols)
+        out_path = Path(self._tmpdir.name) / 'atomic.sd.parquet'
+
+        IO.convert_sd_to_parquet(xz_path, out_path)
+
+        leftovers = list(Path(self._tmpdir.name).glob('*.converting'))
+        self.assertEqual(leftovers, [])
+        self.assertTrue(out_path.is_file())
 
 
 class TestDataTypeNameStringSchema(unittest.TestCase):

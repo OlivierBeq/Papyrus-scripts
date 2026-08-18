@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Self
 
+import pyarrow.parquet as pq
 from rdkit import Chem, RDLogger
 from rdkit.Chem import (
     ForwardSDMolSupplier,
@@ -361,6 +362,77 @@ class ForwardSmilesMolSupplier:
 
 
 # ---------------------------------------------------------------------------
+# ForwardParquetSDMolSupplier
+# ---------------------------------------------------------------------------
+
+class ForwardParquetSDMolSupplier:
+    """A forward (streaming) supplier over a structures Parquet file.
+
+    Reads the output of :func:`~papyrus_scripts.utils.IO.convert_sd_to_parquet`:
+    ``'ctab'`` is rebuilt into a :class:`~rdkit.Chem.rdchem.Mol` via
+    ``MolFromMolBlock``, every other column is restored via ``SetProp()``.
+    """
+
+    def __init__(
+        self,
+        source: str | Path,
+        sanitize: bool = True,
+        removeHs: bool = True,
+        **kwargs,
+    ) -> None:
+        """Initialise the supplier.
+
+        :param source: path to a structures ``.parquet`` file
+        :param sanitize: passed to ``MolFromMolBlock``
+        :param removeHs: passed to ``MolFromMolBlock``
+        :param kwargs: forwarded to ``MolFromMolBlock``
+            (e.g. ``strictParsing``)
+        """
+        self.sanitize = sanitize
+        self.removeHs = removeHs
+        self._mol_kwargs = kwargs
+        self._parquet_file: pq.ParquetFile | None = pq.ParquetFile(source)
+        self._prop_cols = [n for n in self._parquet_file.schema_arrow.names if n != 'ctab']
+        self._iterator: Iterator[Chem.Mol | None] | None = None
+
+    def _iterate(self) -> Iterator[Chem.Mol | None]:
+        if self._parquet_file is None:
+            raise RuntimeError('ForwardParquetSDMolSupplier is closed.')
+        for batch in self._parquet_file.iter_batches():
+            columns = {name: batch.column(name).to_pylist() for name in self._prop_cols}
+            ctabs = batch.column('ctab').to_pylist()
+            for i, ctab in enumerate(ctabs):
+                if ctab is None:
+                    yield None
+                    continue
+                mol = Chem.MolFromMolBlock(
+                    ctab, sanitize=self.sanitize, removeHs=self.removeHs, **self._mol_kwargs,
+                )
+                if mol is not None:
+                    for name in self._prop_cols:
+                        value = columns[name][i]
+                        if value is not None:
+                            mol.SetProp(name, str(value))
+                yield mol
+
+    def __iter__(self) -> Iterator[Chem.Mol | None]:
+        """Return an iterator over parsed molecules."""
+        if self._iterator is None:
+            self._iterator = self._iterate()
+        yield from self._iterator
+
+    def __next__(self) -> Chem.Mol | None:
+        """Return the next parsed molecule."""
+        if self._iterator is None:
+            self._iterator = self._iterate()
+        return next(self._iterator)
+
+    def close(self) -> None:
+        """Release the underlying Parquet file handle."""
+        self._parquet_file = None
+
+
+# ---------------------------------------------------------------------------
 # MolSupplier
 # ---------------------------------------------------------------------------
 
@@ -448,6 +520,14 @@ class MolSupplier:
         if isinstance(source, (str, Path)):
             filename = str(source)
             self._owns_handle = True
+
+            # Structures Parquet file: bypasses compression/format detection.
+            if filename.endswith('.parquet'):
+                self.format      = 'sd_parquet'
+                self.compression = None
+                self._handle     = None
+                self._inner_supplier = ForwardParquetSDMolSupplier(filename, **kwargs)
+                return
 
             # --- Detect / validate compression ---
             if compression is not None:

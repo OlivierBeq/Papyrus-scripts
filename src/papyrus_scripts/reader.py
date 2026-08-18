@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 
 from .utils.IO import (
     PapyrusVersion,
+    _prefer_parquet,
     _set_root_folder,
     convert_xz_to_parquet,
     load_data_type_schemas,
@@ -20,21 +21,6 @@ from .utils.IO import (
     process_data_version,
 )
 from .utils.mol_reader import MolSupplier
-
-
-def _prefer_parquet(files: list[Path]) -> Path:
-    """Return the ``.parquet`` file among *files* if one is present, else the first match.
-
-    ``download_papyrus`` converts tabular ``.tsv.xz`` files to ``.parquet``
-    by default and deletes the ``.xz`` original, but with ``keep_xz=True``
-    (or data downloaded before this conversion existed) only the compressed
-    original is present - both are matched by the same ``locate_file``
-    patterns since they share the ``.tsv`` stem, so the caller must pick.
-    """
-    for f in files:
-        if f.suffix == '.parquet':
-            return f
-    return files[0]
 
 
 def _scan_tabular(filepath: Path, **read_kw) -> pl.LazyFrame:
