@@ -53,13 +53,29 @@ from sklearn.metrics import (
 from sklearn.metrics import (
     roc_auc_score as ROCAUC,
 )
-from sklearn.model_selection import BaseCrossValidator, KFold, StratifiedKFold, train_test_split
+from sklearn.model_selection import (
+    BaseCrossValidator,
+    GroupKFold,
+    GroupShuffleSplit,
+    KFold,
+    LeaveOneGroupOut,
+    LeavePGroupsOut,
+    StratifiedGroupKFold,
+    StratifiedKFold,
+    train_test_split,
+)
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from tqdm.auto import tqdm
 
 from .neuralnet import MultiTaskNNClassifier, MultiTaskNNRegressor, SingleTaskNNClassifier, SingleTaskNNRegressor
 from .preprocess import yscrambling
 from .reader import read_molecular_descriptors, read_protein_descriptors
+
+#: Splitters whose .split() uses groups - passing it to any other splitter
+#: (e.g. KFold) just triggers sklearn's ignored-groups warning.
+_GROUP_AWARE_SPLITTERS = (
+    GroupKFold, GroupShuffleSplit, LeaveOneGroupOut, LeavePGroupsOut, StratifiedGroupKFold,
+)
 
 
 def filter_molecular_descriptors(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
@@ -236,8 +252,9 @@ def crossvalidate_model(data: pd.DataFrame,
     if verbose:
         pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1)
     models: dict[str, RegressorMixin | ClassifierMixin] = {}
+    split_groups = groups if isinstance(folds, _GROUP_AWARE_SPLITTERS) else None
     # Perform cross-validation
-    for i, (train, test) in enumerate(folds.split(X, y, groups)):
+    for i, (train, test) in enumerate(folds.split(X, y, split_groups)):
         if verbose:
             pbar.set_description(f'Fitting model on fold {i + 1}', refresh=True)
         X_train, X_test = X.iloc[train, :], X.iloc[test, :]
