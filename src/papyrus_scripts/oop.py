@@ -1251,7 +1251,7 @@ class FPSubSim2Engine:
         if Path(self.path).is_file():
             self.fpsubsim2.load(fpsubsim_path=self.path)
         else:
-            self.fpsubsim2.create_from_papyrus(
+            create_kwargs = dict(
                 is3d=self.papyrus_params['is3d'],
                 version=self.papyrus_params['version'],
                 outfile=self.path,
@@ -1259,6 +1259,22 @@ class FPSubSim2Engine:
                 root_folder=self.papyrus_params['source_path'],
                 progress=self.progress,
             )
+            try:
+                self.fpsubsim2.create_from_papyrus(**create_kwargs)
+            except _NOT_AVAILABLE_LOCALLY:
+                download.download_papyrus(
+                    outdir=self.papyrus_params['source_path'],
+                    version=self.papyrus_params['version'].pystow_path_key,  # not .version: must match the folder key
+                    nostereo=not self.papyrus_params['is3d'],
+                    stereo=self.papyrus_params['is3d'],
+                    only_pp=False,
+                    structures=True,
+                    descriptors=None,
+                    progress=self.papyrus_params['download_progress'],
+                    disk_margin=self.papyrus_params['disk_margin'],
+                    keep_xz=self.papyrus_params['keep_original_files'],
+                )
+                self.fpsubsim2.create_from_papyrus(**create_kwargs)
 
     def _set_data(
             self,
