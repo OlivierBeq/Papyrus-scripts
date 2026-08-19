@@ -1032,6 +1032,14 @@ _NULLABLE_INT_DTYPES: frozenset = frozenset({
     'Int8', 'Int16', 'Int32', 'Int64', 'UInt8', 'UInt16', 'UInt32', 'UInt64',
 })
 
+#: Target cell count (rows * columns) per pd.read_csv chunk, used to scale
+#: *chunksize* down for wide tables. chunksize alone only bounds row count:
+#: fine for narrow tables, but a wide one (e.g. ECFP6's ~2048 int columns,
+#: each read as pandas' nullable 'Float64' - 9 bytes/cell) needs several GB
+#: for one chunk at the default chunksize and can crash pandas' C parser
+#: with a real allocation failure ("... C error: out of memory").
+_CHUNK_CELL_BUDGET: int = 5_000_000
+
 
 def _schema_overrides_to_pandas_dtype(schema_overrides: dict | None) -> dict | None:
     """Convert a ``{column: polars_dtype}`` mapping to pandas dtype names."""
@@ -1170,7 +1178,8 @@ def convert_xz_to_parquet(
         of version 2024.09.1). Pass ``[]`` explicitly to keep empty strings
         and literal "NA" values as-is instead of null.
     :param progress: display a progress bar while converting
-    :param chunksize: rows read and written per chunk
+    :param chunksize: rows read and written per chunk, capped (never raised)
+        for wide tables to bound memory - see :data:`_CHUNK_CELL_BUDGET`
     :param desc: progress bar label; defaults to *input_file*'s name so
         converting many files in a row (e.g. from :func:`download_papyrus`)
         shows which one is currently in progress rather than a bare
@@ -1225,6 +1234,9 @@ def convert_xz_to_parquet(
         stale.unlink(missing_ok=True)
     na_values = null_values if null_values is not None else ['', 'NA']
     overrides = _schema_overrides_to_pandas_dtype(schema_overrides) or {}
+    # Only ever narrow chunksize (never raise it) to fit _CHUNK_CELL_BUDGET.
+    if overrides:
+        chunksize = min(chunksize, max(1000, _CHUNK_CELL_BUDGET // len(overrides)))
     forced_string_cols: set[str] = set()
     forced_float_cols: set[str] = set()
     if desc is None:
