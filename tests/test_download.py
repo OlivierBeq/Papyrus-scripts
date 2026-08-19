@@ -20,6 +20,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import requests
+
 from src.papyrus_scripts import download
 
 
@@ -1932,6 +1934,62 @@ class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
                 nostereo=False, stereo=False, only_pp=False, descriptors=None,
             )
         self.assertEqual(self.requested_urls.count('u:proteins'), download._RETRIES)
+
+    def test_chunk_error_retries_then_succeeds_and_leaves_no_truncated_file(self):
+        # A dropped connection mid-stream must retry like a hash mismatch.
+        attempts = {'n': 0}
+
+        class _ChunkErrorThenOkResponse:
+            def iter_content(self, chunk_size):
+                attempts['n'] += 1
+                if attempts['n'] < 2:
+                    yield b'x'
+                    raise requests.exceptions.ChunkedEncodingError('chunk corrupted')
+                yield b'x'
+
+        def fake_get(url, **kwargs):
+            self.requested_urls.append(url)
+            if url == 'u:proteins':
+                return _ChunkErrorThenOkResponse()
+            content = self.zip_bytes if url == 'u:requirements' else b'x'
+            return _FakeResponse(content)
+
+        self.fake_session.get.side_effect = fake_get
+
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
+            self.assertWarns(DeprecationWarning),
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=True, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertEqual(self.requested_urls.count('u:proteins'), 2)
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        self.assertTrue((version_root / 'proteins.tsv.xz').is_file())
+
+    def test_chunk_error_exhausts_retries_raises_and_cleans_up_truncated_file(self):
+        def fake_get(url, **kwargs):
+            self.requested_urls.append(url)
+            if url == 'u:proteins':
+                raise requests.exceptions.ChunkedEncodingError('chunk corrupted')
+            content = self.zip_bytes if url == 'u:requirements' else b'x'
+            return _FakeResponse(content)
+
+        self.fake_session.get.side_effect = fake_get
+
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
+            self.assertRaises(OSError),
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=False, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertEqual(self.requested_urls.count('u:proteins'), download._RETRIES)
+        # No truncated file left behind to be mistaken for complete later.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        self.assertFalse((version_root / 'proteins.tsv.xz').exists())
 
 
 class TestDownloadPapyrusFailureDuringDownloadCleansUpConverter(unittest.TestCase):
