@@ -1813,6 +1813,17 @@ class TestDownloadPapyrusFileSelectionByFlags(unittest.TestCase):
         self._run(nostereo=True, only_pp=True, stereo=False, descriptors=None)
         self.assertNotIn('u:2dmold2', self.requested_urls)
 
+    def test_keep_xz_leaves_originals_on_disk_without_converting(self):
+        # keep_xz=True must skip conversion (and the .xz deletion that follows it).
+        self._run(nostereo=True, structures=True, stereo=False, descriptors=None)
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        self.assertTrue((version_root / 'papyruspp.tsv.xz').is_file())
+        self.assertTrue((version_root / 'proteins.tsv.xz').is_file())
+        self.assertTrue((version_root / 'structures' / '2dstruct.sd.xz').is_file())
+        self.assertFalse((version_root / 'papyruspp.tsv.parquet').exists())
+        self.assertFalse((version_root / 'proteins.tsv.parquet').exists())
+        self.assertFalse((version_root / 'structures' / '2dstruct.sd.parquet').exists())
+
 
 class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
     """Files already on disk (converted, or intact with a matching hash)
