@@ -242,7 +242,7 @@ class TestSortDbFile(unittest.TestCase):
                 MagicMock(__enter__=MagicMock(return_value=src), __exit__=MagicMock(return_value=False)),
                 MagicMock(__enter__=MagicMock(return_value=dst), __exit__=MagicMock(return_value=False)),
             ]
-            with patch('src.papyrus_scripts.subsim_search.Path.rename'), \
+            with patch('src.papyrus_scripts.subsim_search.Path.replace'), \
                  patch('src.papyrus_scripts.subsim_search.Path.unlink'), \
                  patch('src.papyrus_scripts.subsim_search.Path.is_file', return_value=False):
                 ss.sort_db_file('fake.h5', verbose=progress)
@@ -259,13 +259,13 @@ class TestSortDbFile(unittest.TestCase):
     def test_sorts_without_progress(self):
         self._run(progress=False)
 
-    def test_removes_stale_tmp_file_before_rename(self):
+    def test_removes_stale_tmp_file_before_sorting(self):
         with (
             patch.object(ss, 'tb', create=True) as mock_tb,
             patch.object(ss, 'calc_popcnt_bins_pytables', create=True, return_value=[]),
             patch('src.papyrus_scripts.subsim_search.Path.is_file', return_value=True) as mock_is_file,
             patch('src.papyrus_scripts.subsim_search.Path.unlink') as mock_unlink,
-            patch('src.papyrus_scripts.subsim_search.Path.rename'),
+            patch('src.papyrus_scripts.subsim_search.Path.replace'),
         ):
             src = MagicMock()
             src.walk_groups.return_value = []
@@ -278,6 +278,19 @@ class TestSortDbFile(unittest.TestCase):
             ss.sort_db_file('fake.h5')
         self.assertTrue(mock_is_file.called)
         self.assertTrue(mock_unlink.called)
+
+    def test_failure_removes_temp_and_leaves_original_untouched(self):
+        with (
+            patch.object(ss, 'tb', create=True) as mock_tb,
+            patch('src.papyrus_scripts.subsim_search.Path.is_file', return_value=False),
+            patch('src.papyrus_scripts.subsim_search.Path.unlink') as mock_unlink,
+            patch('src.papyrus_scripts.subsim_search.Path.replace') as mock_replace,
+        ):
+            mock_tb.open_file.side_effect = RuntimeError('boom')
+            with self.assertRaises(RuntimeError):
+                ss.sort_db_file('fake.h5')
+        mock_unlink.assert_called_once_with(missing_ok=True)
+        mock_replace.assert_not_called()
 
 
 class TestFPSubSim2Init(unittest.TestCase):
@@ -346,6 +359,7 @@ class TestCreate(unittest.TestCase):
             patch.object(engine, '_single_process_create') as mock_single,
             patch.object(engine, '_parallel_create') as mock_parallel,
             patch.object(engine, 'load') as mock_load,
+            patch.object(Path, 'replace'),
         ):
             mock_tb.Filters.return_value = MagicMock()
             mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
@@ -362,6 +376,7 @@ class TestCreate(unittest.TestCase):
             patch.object(engine, '_single_process_create') as mock_single,
             patch.object(engine, '_parallel_create') as mock_parallel,
             patch.object(engine, 'load'),
+            patch.object(Path, 'replace'),
         ):
             mock_tb.Filters.return_value = MagicMock()
             mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
@@ -377,11 +392,29 @@ class TestCreate(unittest.TestCase):
             patch.object(ss, 'create_schema', create=True),
             patch.object(engine, '_single_process_create'),
             patch.object(engine, 'load'),
+            patch.object(Path, 'replace'),
         ):
             mock_tb.Filters.return_value = MagicMock()
             mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
             engine.create(sd_file='mols.sd', fingerprint=[MorganFingerprint()], njobs=1, progress=False)
         self.assertEqual(engine.h5_filename, Path('Papyrus_custom_FPSubSim2_3D.h5'))
+
+    def test_build_failure_cleans_up_temp_file_and_final_path_untouched(self):
+        engine = make_engine()
+        with (
+            patch.object(ss, 'tb', create=True) as mock_tb,
+            patch.object(ss, 'create_schema', create=True),
+            patch.object(engine, '_single_process_create', side_effect=RuntimeError('boom')),
+            patch.object(Path, 'glob') as mock_glob,
+        ):
+            mock_tb.Filters.return_value = MagicMock()
+            mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
+            leftover = MagicMock()
+            mock_glob.return_value = [leftover]
+            with self.assertRaises(RuntimeError):
+                engine.create(sd_file='mols.sd', fingerprint=[MorganFingerprint()], njobs=1, progress=False)
+        leftover.unlink.assert_called_once_with(missing_ok=True)
+        self.assertEqual(engine.h5_filename, Path('Papyrus_custom_FPSubSim2_2D.h5.building'))
 
 
 class TestLoad(unittest.TestCase):
@@ -1465,6 +1498,7 @@ class TestParallelCreateWorkerCount(unittest.TestCase):
             patch.object(ss.multiprocessing, 'cpu_count', return_value=cpu_count),
             patch.object(engine, '_parallel_create') as mock_parallel,
             patch.object(engine, 'load'),
+            patch.object(Path, 'replace'),
         ):
             mock_tb.Filters.return_value = MagicMock()
             mock_tb.open_file.return_value.__enter__.return_value = MagicMock()

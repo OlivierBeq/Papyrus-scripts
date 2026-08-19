@@ -256,22 +256,32 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
     """Sort an FPSubSim2 HDF5 file by fingerprint popcount.
 
     Sorting enables the efficient popcount-range pruning used by FPSim2 during
-    similarity searches. The operation rewrites the file via a temporary copy.
+    similarity searches. Rewrites via a temp copy; *filename* is untouched
+    until success.
 
     :param filename: path to the ``.h5`` FPSubSim2 database
     :param verbose: show a progress bar
     """
     filename = Path(filename)
-    tmp_filename = filename.with_name(filename.name + '_tmp')
+    tmp_filename = filename.with_name(filename.name + '.sorting')
     if tmp_filename.is_file():
         tmp_filename.unlink()
-    filename.rename(tmp_filename)
 
     filters = tb.Filters(complib='blosc', complevel=1, shuffle=True, bitshuffle=True)
     stats: dict = {'groups': 0, 'leaves': 0, 'links': 0, 'bytes': 0, 'hardlinks': 0}
 
-    with tb.open_file(tmp_filename, mode='r') as src:
-        with tb.open_file(filename, mode='w') as dst:
+    try:
+        _sort_into(filename, tmp_filename, filters, stats, verbose)
+    except BaseException:
+        tmp_filename.unlink(missing_ok=True)
+        raise
+    tmp_filename.replace(filename)
+
+
+def _sort_into(filename: Path, tmp_filename: Path, filters: tb.Filters, stats: dict, verbose: bool) -> None:
+    """Copy *filename* into *tmp_filename*, sorted (helper for :func:`sort_db_file`)."""
+    with tb.open_file(filename, mode='r') as src:
+        with tb.open_file(tmp_filename, mode='w') as dst:
             siminfo_group = dst.create_group(
                 dst.root, 'similarity_info', 'Infos for similarity search',
             )
@@ -329,8 +339,6 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
                     node.copy(dst.root, node._v_name, overwrite=True, stats=stats)
             pbar.update(1)
             pbar.close()
-
-    tmp_filename.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -456,9 +464,11 @@ class FPSubSim2:
 
         dim_tag = '3D' if self.is3d else '2D'
         version_str = str(self.version) if self.version is not None else 'custom'
-        self.h5_filename = Path(outfile) if outfile is not None else Path(
+        final_h5_filename = Path(outfile) if outfile is not None else Path(
             f'Papyrus_{version_str}_FPSubSim2_{dim_tag}.h5',
         )
+        # Build under a temp name; rename to final only on success.
+        self.h5_filename = final_h5_filename.with_name(final_h5_filename.name + '.building')
 
         if not isinstance(njobs, int) or njobs < -1:
             raise ValueError('njobs must be -1 or a positive integer.')
@@ -476,6 +486,33 @@ class FPSubSim2:
         else:
             resolved_n_shards = n_shards if n_shards is not None else DEFAULT_N_SHARDS_SINGLE_PROCESS
 
+        try:
+            self._build(
+                fingerprint, dim_tag, parallel, njobs, progress, total,
+                resolved_n_shards, pattern_holder_bits,
+            )
+        except BaseException:
+            # Remove all build artifacts, incl. sort_db_file's own '.sorting'.
+            for path in self.h5_filename.parent.glob(f'{self.h5_filename.name}*'):
+                path.unlink(missing_ok=True)
+            raise
+
+        self.h5_filename.replace(final_h5_filename)
+        self.h5_filename = final_h5_filename
+        self.load(self.h5_filename)
+
+    def _build(
+            self,
+            fingerprint: list[Fingerprint],
+            dim_tag: str,
+            parallel: bool,
+            njobs: int,
+            progress: bool,
+            total: int | None,
+            resolved_n_shards: int,
+            pattern_holder_bits: int,
+    ) -> None:
+        """Write the schema to ``self.h5_filename`` and populate it."""
         filters = tb.Filters()
         with tb.open_file(self.h5_filename, mode='w') as h5file:
             simil_group = h5file.create_group(
@@ -543,8 +580,6 @@ class FPSubSim2:
         else:
             self._single_process_create(fingerprint, progress, total, resolved_n_shards, pattern_holder_bits)
 
-        self.load(self.h5_filename)
-
     # ------------------------------------------------------------------
     # Load
     # ------------------------------------------------------------------
@@ -553,15 +588,22 @@ class FPSubSim2:
         """Load an existing FPSubSim2 database file.
 
         :param fpsubsim_path: path to the ``.h5`` database
-        :raises ValueError: if *fpsubsim_path* does not exist
+        :raises ValueError: if *fpsubsim_path* does not exist or can't be opened
         """
         fpsubsim_path = Path(fpsubsim_path)
         if not fpsubsim_path.is_file():
             raise ValueError(f'File does not exist: {fpsubsim_path!r}')
-        self.h5_filename = fpsubsim_path
 
-        with tb.open_file(self.h5_filename) as h5file:
-            rdkit_version, version_str, dim_tag = h5file.root.config.read()[0]
+        try:
+            with tb.open_file(fpsubsim_path) as h5file:
+                rdkit_version, version_str, dim_tag = h5file.root.config.read()[0]
+        except Exception as exc:
+            raise ValueError(
+                f'Could not open {fpsubsim_path!r} as an FPSubSim2 database ({exc!r}). '
+                'The file may be incomplete or corrupt, e.g. left behind by an '
+                'interrupted create()/create_from_papyrus() call - delete it and rebuild.',
+            ) from exc
+        self.h5_filename = fpsubsim_path
 
         if rdkit.__version__ != rdkit_version:
             warnings.warn(
