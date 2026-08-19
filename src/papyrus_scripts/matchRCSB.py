@@ -77,7 +77,7 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     """
     # Define output path
     path = papyrus_rcsb_data_root(root_folder)
-    output_path = path.join('rcsb', name='RCSB_data.tsv.xz')
+    output_path = path.join('rcsb', name='RCSB_data.tsv.gz')
     # Check if file is too recent
     if (output_path.is_file() and (time.time() - output_path.stat().st_mtime) < 86400) and not overwrite:
         if verbose:
@@ -207,8 +207,8 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     for stale in output_path.parent.glob(f'{output_path.name}.*.tmp'):
         stale.unlink(missing_ok=True)
     try:
-        # explicit compression: tmp_path's name doesn't end in '.xz'
-        pdb_data.to_csv(tmp_path, sep='\t', index=False, compression='xz')
+        # explicit compression: tmp_path's name doesn't end in '.gz'
+        pdb_data.to_csv(tmp_path, sep='\t', index=False, compression='gzip')
         tmp_path.replace(output_path)
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -250,7 +250,7 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
         if update:
             _ = update_rcsb_data(root_folder, verbose=verbose)
         # Read the mapping from where update_rcsb_data() wrote it
-        rcsb_data_path = papyrus_rcsb_data_root(root_folder).join('rcsb', name='RCSB_data.tsv.xz')
+        rcsb_data_path = papyrus_rcsb_data_root(root_folder).join('rcsb', name='RCSB_data.tsv.gz')
         rcsb_data = pl.read_csv(rcsb_data_path, separator='\t')
         if 'SMILES' in rcsb_data.columns:
             rcsb_data = rcsb_data.drop('SMILES')

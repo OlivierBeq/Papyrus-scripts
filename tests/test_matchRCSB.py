@@ -3,7 +3,7 @@
 """Unit tests for papyrus_scripts.matchRCSB.get_matches.
 
 Mocks update_rcsb_data, polars.read_csv and pystow.module - no network or
-real RCSB_data.tsv.xz file touched. Covers the data-type boundary (pandas/
+real RCSB_data.tsv.gz file touched. Covers the data-type boundary (pandas/
 polars DataFrame/LazyFrame input) and correctness of the match/aggregate
 output (matching runs in polars, always returns pandas).
 """
@@ -228,7 +228,7 @@ class TestUpdateRcsbData(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self.output_path = Path(self._tmpdir.name) / 'RCSB_data.tsv.xz'
+        self.output_path = Path(self._tmpdir.name) / 'RCSB_data.tsv.gz'
         self.root_patch = patch('src.papyrus_scripts.matchRCSB.papyrus_rcsb_data_root')
         mock_root = self.root_patch.start()
         mock_root.return_value.join.return_value = self.output_path
