@@ -81,10 +81,10 @@ _NOT_AVAILABLE_LOCALLY: tuple[type[Exception], ...] = (
 # A freshly-constructed PapyrusDataset must not download (or even check for)
 # its bioactivity/protein files until data is actually needed - not at
 # construction, and not when a filter (keep_quality, keep_accession, …) is
-# applied, only once aggregate()/agg()/consume_chunks()/to_dataframe() (or
-# an equivalent - .proteins(), .match_rcsb_pdb(), FPSubSim2-backed filters)
-# forces materialisation. Every filter method just wraps the *unresolved*
-# state in one more pending operation instead.
+# applied, only once aggregate() (or an alias, or an equivalent - .proteins(),
+# .match_rcsb_pdb(), FPSubSim2-backed filters) forces materialisation. Every
+# filter method just wraps the *unresolved* state in one more pending
+# operation instead.
 
 class _Deferred:
     """A value computed by *loader* the first time it's needed, then cached."""
@@ -316,8 +316,8 @@ class PapyrusDataset:
 
     Every filter method (``keep_*``, ``contains``, ``isin``, …) returns a new
     :class:`PapyrusDataset` whose data stream is lazily filtered.  Call
-    :meth:`aggregate` (or its aliases :meth:`agg`, :meth:`to_dataframe`,
-    :meth:`consume_chunks`) to materialise the result into a DataFrame.
+    :meth:`aggregate` (or an alias: :meth:`agg`, :meth:`collect`,
+    :meth:`to_dataframe`, :meth:`consume_chunks`) to materialise into a DataFrame.
     """
 
     papyrus_bioactivity_data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | Iterator[pd.DataFrame] | _LazyBioactivity
@@ -369,9 +369,9 @@ class PapyrusDataset:
         )
 
         # Nothing is downloaded, converted, or even checked for here - only
-        # once aggregate()/agg()/consume_chunks()/to_dataframe() (or an
-        # equivalent - .proteins(), .match_rcsb_pdb(), a similarity-search
-        # filter, keep_protein_class()/keep_organism()) actually needs the
+        # once aggregate() (or an alias, or an equivalent - .proteins(),
+        # .match_rcsb_pdb(), a similarity-search filter,
+        # keep_protein_class()/keep_organism()) actually needs the
         # data does _PapyrusSource resolve it, downloading only the
         # bioactivity file matching (is3d, plusplus) plus the always-needed
         # protein-target file - not every stereo/++ combination, structures,
@@ -746,6 +746,10 @@ class PapyrusDataset:
         return self.aggregate(progress=progress)
 
     def to_dataframe(self, progress: bool = False) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
+    def collect(self, progress: bool = False) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
@@ -1478,6 +1482,10 @@ class PapyrusMoleculeSet:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
+    def collect(self, progress: bool | None = None) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
     # ------------------------------------------------------------------
     # Descriptors
     # ------------------------------------------------------------------
@@ -1610,6 +1618,10 @@ class PapyrusDescriptorSet:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
+    def collect(self, progress: bool | None = None) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
     # ------------------------------------------------------------------
     # Dunder
     # ------------------------------------------------------------------
@@ -1736,6 +1748,10 @@ class PapyrusProteinSet(ProteinSet):
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
+    def collect(self, progress: bool = False) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
     # ------------------------------------------------------------------
     # Dunder
     # ------------------------------------------------------------------
@@ -1787,6 +1803,10 @@ class PapyrusPDBProteinSet(ProteinSet):
         return self.aggregate(progress=progress)
 
     def to_dataframe(self, progress: bool = False) -> pd.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
+    def collect(self, progress: bool = False) -> pd.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
