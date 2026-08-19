@@ -12,6 +12,7 @@ these must pass regardless of what's actually installed.
 
 import itertools
 import queue
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,9 +22,12 @@ import numpy as np
 import polars as pl
 from rdkit import Chem
 
+from src.papyrus_scripts import fingerprint as fp
 from src.papyrus_scripts import subsim_search as ss
 from src.papyrus_scripts.fingerprint import Fingerprint, MorganFingerprint
 from src.papyrus_scripts.subsim_search import (
+    HAS_FPSIM2,
+    HAS_TABLES,
     FPSubSim2,
     _build_result_df,
     _check_optional_deps,
@@ -1704,6 +1708,57 @@ class TestParallelCreateProgressReporting(unittest.TestCase):
         for proc in process_instances:
             proc.terminate.assert_not_called()
         mock_sort.assert_called_once()
+
+
+@unittest.skipUnless(HAS_TABLES and HAS_FPSIM2, 'requires tables and FPSim2')
+class TestFPSubSim2AllFingerprints(unittest.TestCase):
+    """End-to-end (unmocked): build a real .h5 db with every fingerprint type and query it."""
+
+    SMILES = ['CCO', 'c1ccccc1', 'c1ccccc1O', 'CC(=O)O', 'CC(=O)Oc1ccccc1C(=O)O']  # last is aspirin
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = tempfile.mkdtemp()
+        cls.sd_file = Path(cls.tmpdir) / 'molecules.sd'
+        with Chem.SDWriter(str(cls.sd_file)) as writer:
+            for smi in cls.SMILES:
+                writer.write(Chem.MolFromSmiles(smi))
+
+        cls.fingerprints = [
+            fp.MACCSKeysFingerprint(),
+            fp.AvalonFingerprint(nBits=128),
+            fp.MorganFingerprint(nBits=128),
+            fp.TopologicalTorsionFingerprint(nBits=128),
+            fp.AtomPairFingerprint(nBits=128),
+            fp.RDKitTopologicalFingerprint(fpSize=128),
+            fp.RDKPatternFingerprint(fpSize=128),
+        ]
+        if fp.HAS_PYBEL:
+            cls.fingerprints += [fp.FP2Fingerprint(), fp.FP3Fingerprint(), fp.FP4Fingerprint()]
+
+        cls.h5_file = Path(cls.tmpdir) / 'test.h5'
+        cls.engine_db = FPSubSim2()
+        cls.engine_db.create(
+            sd_file=cls.sd_file, outfile=cls.h5_file,
+            fingerprint=cls.fingerprints, progress=False, njobs=1,
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def test_every_fingerprint_is_stored(self):
+        available = self.engine_db.available_fingerprints
+        self.assertEqual(set(available.keys()), {repr(f) for f in self.fingerprints})
+
+    def test_every_fingerprint_finds_an_exact_self_match(self):
+        for f in self.fingerprints:
+            with self.subTest(fingerprint=f.name):
+                engine = self.engine_db.get_similarity_lib(fp_signature=repr(f))
+                result = engine.similarity(self.SMILES[0], threshold=0.999)
+                self.assertGreaterEqual(result.height, 1)
+                score_col = [c for c in result.columns if c.startswith('Tanimoto')][0]
+                self.assertAlmostEqual(result[score_col].max(), 1.0, places=3)
 
 
 if __name__ == '__main__':
