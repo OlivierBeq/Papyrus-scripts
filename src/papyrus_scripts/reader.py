@@ -5,6 +5,7 @@
 from collections.abc import Generator
 from functools import reduce
 from pathlib import Path
+from typing import cast
 
 import polars as pl
 from prodec import Descriptor, Transform
@@ -19,12 +20,18 @@ from .utils.IO import (
     locate_file,
     papyrus_version_module,
     process_data_version,
+    read_jsonfile,
     widen_indeterminate_notebook_bar,
 )
 from .utils.mol_reader import MolSupplier
 
 
-def _scan_tabular(filepath: Path, **read_kw) -> pl.LazyFrame:
+def _data_sizes(source_mod) -> dict:
+    """Return a version folder's ``data_size.json`` as a ``{key: row_count}`` dict, or ``{}`` if absent."""
+    return cast(dict, read_jsonfile(source_mod.join(name='data_size.json')))
+
+
+def _scan_tabular(filepath: Path, total: int | None = None, **read_kw) -> pl.LazyFrame:
     """Return a lazy scan of a Papyrus tabular file.
 
     Scans a pre-converted ``.parquet`` file directly (dtypes are embedded,
@@ -38,6 +45,11 @@ def _scan_tabular(filepath: Path, **read_kw) -> pl.LazyFrame:
     and OOMs on multi-GB Papyrus files. ``.gz``/uncompressed originals are
     scanned directly since Polars streams those without materialising the
     whole file first.
+
+    :param total: expected row count, forwarded to
+        :func:`~papyrus_scripts.utils.IO.convert_xz_to_parquet`'s progress
+        bar - without it tqdm.notebook shows a placeholder bar stuck at
+        "full" while conversion is still running.
     """
     if filepath.suffix == '.parquet':
         return pl.scan_parquet(filepath)
@@ -50,6 +62,7 @@ def _scan_tabular(filepath: Path, **read_kw) -> pl.LazyFrame:
                 schema_overrides=read_kw.get('schema_overrides'),
                 null_values=read_kw.get('null_values'),
                 progress=True,
+                total=total,
             )
         return pl.scan_parquet(parquet_path)
     # Default quoting (quote_char='"') is deliberately left enabled - some
@@ -126,6 +139,7 @@ def _read_one_mol_descriptor(
     is3d: bool,
     desc_dir: str | Path,
     schemas: dict,
+    sizes: dict,
     lazy: bool,
     ids: list[str] | None,
     id_col: str,
@@ -137,7 +151,10 @@ def _read_one_mol_descriptor(
     if schema:
         read_kw['schema_overrides'] = schema
     picked = _prefer_parquet(files)
-    data: pl.LazyFrame = _scan_tabular(picked, **read_kw)
+    # schema_key doubles as the data_size.json key (see download.py's
+    # _SIZE_KEY_BY_FTYPE/_SCHEMA_KEY_BY_FTYPE).
+    total = sizes.get(schema_key) if schema_key is not None else None
+    data: pl.LazyFrame = _scan_tabular(picked, total=total, **read_kw)
     if ids is not None:
         data = data.filter(pl.col(id_col).is_in(ids))
     return data if lazy else data.collect()
@@ -175,10 +192,12 @@ def read_papyrus(
     stereo_tag = 'with' if is3d else 'without'
     pp_tag     = r'\+\+' if plusplus else ''
     pattern    = rf'\d+\.\d+{pp_tag}_combined_set_{stereo_tag}_stereochemistry\.tsv.*'
+    size_key   = 'papyrus_++' if plusplus else ('papyrus_3D' if is3d else 'papyrus_2D')
 
     filenames = locate_file(source_mod.base, pattern)
     picked    = _prefer_parquet(filenames)
-    data      = _scan_tabular(picked, separator='\t', schema_overrides=schema)
+    total     = _data_sizes(source_mod).get(size_key)
+    data      = _scan_tabular(picked, total=total, separator='\t', schema_overrides=schema)
     return data if chunksize is not None else data.collect()
 
 
@@ -199,10 +218,11 @@ def read_protein_set(
         r'\d+\.\d+_combined_set_protein_targets\.tsv.*',
     )
     picked = _prefer_parquet(filenames)
+    total  = _data_sizes(source_mod).get('papyrus_proteins')
     # null_values=[] keeps empty strings as empty strings (no implicit NA) -
     # only takes effect on the .xz/.gz fallback path; the Parquet file (when
     # present) was already written with the same null_values by download_papyrus.
-    return _scan_tabular(picked, separator='\t', null_values=[]).collect()
+    return _scan_tabular(picked, total=total, separator='\t', null_values=[]).collect()
 
 
 def read_molecular_descriptors(
@@ -237,17 +257,18 @@ def read_molecular_descriptors(
     pv         = _resolve_version(version, source_path)
     source_mod = papyrus_version_module(pv, root_folder=source_path)
     schemas    = load_data_type_schemas(source_mod)
+    sizes      = _data_sizes(source_mod)
     desc_dir   = source_mod.join('descriptors')
     id_col     = 'InChIKey' if is3d else 'connectivity'
     lazy       = chunksize is not None
 
     if desc_type != 'all':
-        return _read_one_mol_descriptor(desc_type, is3d, desc_dir, schemas, lazy, ids, id_col)
+        return _read_one_mol_descriptor(desc_type, is3d, desc_dir, schemas, sizes, lazy, ids, id_col)
 
     available = [k for k, (_, _, dims) in _MOL_DESC_REGISTRY.items() if is3d in dims]
     all_keys  = [k for k in available if k != 'moe'] + [k for k in available if k == 'moe']
     frames    = [
-        _read_one_mol_descriptor(k, is3d, desc_dir, schemas, lazy, ids, id_col)
+        _read_one_mol_descriptor(k, is3d, desc_dir, schemas, sizes, lazy, ids, id_col)
         for k in all_keys
     ]
     # Join all descriptor frames on the common identifier column. Every frame
@@ -322,6 +343,7 @@ def read_protein_descriptors(
             _prefer_parquet(unirep_files),
             schema=schemas.get('unirep', {}),
             ids=ids,
+            total=_data_sizes(source_mod).get('unirep'),
         )
 
     raise ValueError(
@@ -515,8 +537,9 @@ def _read_unirep(
     filepath: str | Path,
     schema: dict,
     ids: list[str] | None,
+    total: int | None = None,
 ) -> pl.DataFrame:
-    df = _scan_tabular(Path(filepath), separator='\t', schema_overrides=schema).collect()
+    df = _scan_tabular(Path(filepath), total=total, separator='\t', schema_overrides=schema).collect()
     if 'TARGET_NAME' in df.columns:
         df = df.rename({'TARGET_NAME': 'target_id'})
     if ids is not None:
