@@ -19,6 +19,7 @@ from .utils.IO import (
     locate_file,
     papyrus_version_module,
     process_data_version,
+    widen_indeterminate_notebook_bar,
 )
 from .utils.mol_reader import MolSupplier
 
@@ -481,6 +482,8 @@ def _read_structures_chunked(
         raise ValueError('chunksize must be a positive integer.')
 
     pbar = tqdm(desc='Loading molecular structures') if verbose else None
+    if pbar is not None:
+        widen_indeterminate_notebook_bar(pbar)
     rows: list = []
     try:
         with MolSupplier(sd_file) as supplier:
