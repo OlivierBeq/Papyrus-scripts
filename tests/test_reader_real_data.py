@@ -206,14 +206,11 @@ class TestRealProteinDescriptors(unittest.TestCase):
         proteins = reader.read_protein_set(version=VERSION, source_path=ROOT)
         sample = proteins.head(2)
         descriptor = ProteinDescriptors().get_descriptor('BLOSUM')
-        try:
-            df = reader.read_protein_descriptors(
-                desc_type=descriptor, version=VERSION, source_path=ROOT,
-                ids=sample['target_id'].to_list(),
-            )
-        except Exception as e:
-            self.skipTest(f'ProDEC descriptor computation unavailable: {e}')
-            return
+        # No file involved here, so any failure is a real bug, not missing data - don't skip it.
+        df = reader.read_protein_descriptors(
+            desc_type=descriptor, version=VERSION, source_path=ROOT,
+            ids=sample['target_id'].to_list(),
+        )
         self.assertGreater(df.height, 0)
         self.assertIn('target_id', df.columns)
 
