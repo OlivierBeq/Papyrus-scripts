@@ -384,7 +384,8 @@ class FPSubSim2:
         :param is3d: use the stereochemistry-aware (3D) SD file
         :param version: Papyrus dataset version
         :param outfile: output ``.h5`` path; auto-generated when ``None``
-        :param fingerprint: fingerprint(s) to store; defaults to all available
+        :param fingerprint: fingerprint(s) to store; defaults to
+            :class:`~fingerprint.MorganFingerprint` (see :meth:`create`)
         :param root_folder: Papyrus data root directory
             (default: pystow's home directory)
         :param progress: display progress bars
@@ -396,9 +397,6 @@ class FPSubSim2:
         :param pattern_holder_bits: bits for the substructure library's
             ``PatternHolder`` prescreen (size vs. query-speed tradeoff)
         """
-        if fingerprint is None:
-            fingerprint = MorganFingerprint()
-
         self.version = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
         if not self.version.is_downloaded(root_folder=root_folder):
             raise ValueError(f'Version {self.version.version} not found. Did you download it first?')
@@ -447,7 +445,10 @@ class FPSubSim2:
 
         :param sd_file: path to the SD file containing structures
         :param outfile: output ``.h5`` path; auto-generated when ``None``
-        :param fingerprint: fingerprint(s) to store; defaults to all available
+        :param fingerprint: fingerprint(s) to store; defaults to
+            :class:`~fingerprint.MorganFingerprint`. Every registered type
+            (e.g. ``[fp() for fp in Fingerprint.derived()]``) is far more
+            expensive and must be requested explicitly
         :param progress: display progress bars
         :param total: molecule count for progress bar display
         :param njobs: worker processes (``-1`` = all, ``1`` = single-process)
@@ -460,6 +461,8 @@ class FPSubSim2:
             for a parallel build
         """
         self.sd_file = Path(sd_file)
+        if fingerprint is None:
+            fingerprint = MorganFingerprint()
         fingerprint = _validate_fingerprints(fingerprint)
 
         dim_tag = '3D' if self.is3d else '2D'
