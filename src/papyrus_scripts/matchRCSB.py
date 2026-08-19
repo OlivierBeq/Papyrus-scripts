@@ -112,7 +112,7 @@ def update_rcsb_data(root_folder: str | Path | None = None,
         }
         """
     results = []
-    chunk_size = 200  # Max entries per GraphQL query to prevent server timeouts
+    chunk_size = 1000  # RCSB GraphQL API hard limit on entry_ids per query
     total_chunks = (len(pdb_ids) - 1) // chunk_size + 1
     if verbose:
         pbar = trange(0, len(pdb_ids), chunk_size, desc='Gather RCSB data', ncols=notebook_safe_ncols(100))

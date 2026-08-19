@@ -390,9 +390,8 @@ class TestUpdateRcsbData(unittest.TestCase):
         self.assertEqual(result['PDBID_ligand'].tolist(), ['LIG1'])
 
     def test_many_pdb_ids_sleeps_between_requests(self):
-        # > chunk_size (200) pdb_ids so the rate-limit sleep after each
-        # chunk is actually exercised.
-        pdb_ids = [f'PDB{i}' for i in range(201)]
+        # > chunk_size (1000) so the rate-limit sleep is exercised
+        pdb_ids = [f'PDB{i}' for i in range(1001)]
         session = self._mock_session(['LIG1'])
         with (
             patch('src.papyrus_scripts.matchRCSB.time.sleep') as mock_sleep,
