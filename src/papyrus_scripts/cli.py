@@ -6,6 +6,7 @@ import ast
 import inspect
 import os
 import sys
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -222,10 +223,21 @@ def pdbmatch(indir: str | None, output: str, version: str, more: bool, is3D: boo
         data=data, root_folder=indir, verbose=verbose,
         total=int(round(total / CHUNKSIZE, 0)), update=False,
     )
-    for i, chunk in enumerate(matched_data):
-        chunk.to_csv(output, sep='\t', index=False, header=(i == 0),
-                     mode='w' if i == 0 else 'a',
-                     )
+    output_path = Path(output)
+    tmp_path = output_path.with_name(f'{output_path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp')
+    for stale in output_path.parent.glob(f'{output_path.name}.*.tmp'):
+        stale.unlink(missing_ok=True)
+    wrote_any = False
+    try:
+        for i, chunk in enumerate(matched_data):
+            chunk.to_csv(tmp_path, sep='\t', index=False, header=(i == 0),
+                         mode='w' if i == 0 else 'a',
+                         )
+            wrote_any = True
+        if wrote_any:
+            tmp_path.replace(output_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 class Mutex(click.Option):
