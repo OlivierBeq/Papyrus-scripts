@@ -249,40 +249,43 @@ def crossvalidate_model(data: pd.DataFrame,
     """
     X, y = data.iloc[:, 1:], data.iloc[:, 0].values.ravel()
     fold_metrics: list[dict[str, Any]] = []
-    if verbose:
-        pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1)
-    models: dict[str, RegressorMixin | ClassifierMixin] = {}
-    split_groups = groups if isinstance(folds, _GROUP_AWARE_SPLITTERS) else None
-    # Perform cross-validation
-    for i, (train, test) in enumerate(folds.split(X, y, split_groups)):
+    pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1) if verbose else None
+    try:
+        models: dict[str, RegressorMixin | ClassifierMixin] = {}
+        split_groups = groups if isinstance(folds, _GROUP_AWARE_SPLITTERS) else None
+        # Perform cross-validation
+        for i, (train, test) in enumerate(folds.split(X, y, split_groups)):
+            if verbose:
+                pbar.set_description(f'Fitting model on fold {i + 1}', refresh=True)
+            X_train, X_test = X.iloc[train, :], X.iloc[test, :]
+            if scale_method is not None:
+                X_train = pd.DataFrame(scale_method.fit_transform(X_train),
+                                       index=X_train.index, columns=X_train.columns)
+                X_test = pd.DataFrame(scale_method.transform(X_test),
+                                      index=X_test.index, columns=X_test.columns)
+            model.fit(X_train, y[train])
+            models[f'Fold {i + 1}'] = deepcopy(model)
+            fold_metrics.append(model_metrics(model, y[test], X_test))
+            if verbose:
+                pbar.update()
+        # Organize result in a dataframe
+        performance = pd.DataFrame(fold_metrics)
+        performance.index = [f'Fold {i + 1}' for i in range(folds.n_splits)]
+        # Add average and sd of performance
+        performance.loc['Mean'] = [np.mean(performance[col]) if ':' not in col else '-' for col in performance]
+        performance.loc['SD'] = [np.std(performance[col]) if ':' not in col else '-' for col in performance]
+        # Fit model on the entire dataset
         if verbose:
-            pbar.set_description(f'Fitting model on fold {i + 1}', refresh=True)
-        X_train, X_test = X.iloc[train, :], X.iloc[test, :]
+            pbar.set_description('Fitting model on entire training set', refresh=True)
         if scale_method is not None:
-            X_train = pd.DataFrame(scale_method.fit_transform(X_train),
-                                   index=X_train.index, columns=X_train.columns)
-            X_test = pd.DataFrame(scale_method.transform(X_test),
-                                  index=X_test.index, columns=X_test.columns)
-        model.fit(X_train, y[train])
-        models[f'Fold {i + 1}'] = deepcopy(model)
-        fold_metrics.append(model_metrics(model, y[test], X_test))
+            X = pd.DataFrame(scale_method.fit_transform(X), index=X.index, columns=X.columns)
+        model.fit(X, y)
+        models['Full model'] = deepcopy(model)
         if verbose:
             pbar.update()
-    # Organize result in a dataframe
-    performance = pd.DataFrame(fold_metrics)
-    performance.index = [f'Fold {i + 1}' for i in range(folds.n_splits)]
-    # Add average and sd of performance
-    performance.loc['Mean'] = [np.mean(performance[col]) if ':' not in col else '-' for col in performance]
-    performance.loc['SD'] = [np.std(performance[col]) if ':' not in col else '-' for col in performance]
-    # Fit model on the entire dataset
-    if verbose:
-        pbar.set_description('Fitting model on entire training set', refresh=True)
-    if scale_method is not None:
-        X = pd.DataFrame(scale_method.fit_transform(X), index=X.index, columns=X.columns)
-    model.fit(X, y)
-    models['Full model'] = deepcopy(model)
-    if verbose:
-        pbar.update()
+    finally:
+        if pbar is not None:
+            pbar.close()
     return performance, models
 
 
@@ -606,100 +609,104 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     final_return_val: dict[str, Any] = {}
     targets = list(data['target_id'].unique())
     n_targets = len(targets)
-    if verbose:
-        pbar = tqdm(total=n_targets, smoothing=0.1)
-    # Build QSAR model for targets reaching criteria
-    for i_target in range(n_targets - 1, -1, -1):
-        tmp_data = data[data['target_id'] == targets[i_target]]
-        tmp_merge_on_values = merge_on_values[merge_on_values.index.isin(tmp_data.index)]
-        if verbose:
-            pbar.set_description(f'Building QSAR for target: {targets[i_target]} #datapoints {tmp_data.shape[0]}',
-                                 refresh=True)
-        # Insufficient data points
-        if tmp_data.shape[0] < num_points:
+    pbar = tqdm(total=n_targets, smoothing=0.1) if verbose else None
+    try:
+        # Build QSAR model for targets reaching criteria
+        for i_target in range(n_targets - 1, -1, -1):
+            tmp_data = data[data['target_id'] == targets[i_target]]
+            tmp_merge_on_values = merge_on_values[merge_on_values.index.isin(tmp_data.index)]
+            if verbose:
+                pbar.set_description(
+                    f'Building QSAR for target: {targets[i_target]} #datapoints {tmp_data.shape[0]}',
+                    refresh=True)
+            # Insufficient data points
+            if tmp_data.shape[0] < num_points:
+                if model_type == 'regressor':
+                    fold_results.append(pd.DataFrame([[targets[i_target],
+                                                  tmp_data.shape[0],
+                                                  f'Number of points {tmp_data.shape[0]} < {num_points}']],
+                                                columns=['target', 'number', 'error']))
+                else:
+                    data_classes = Counter(tmp_data[endpoint])
+                    fold_results.append(
+                        pd.DataFrame([[targets[i_target],
+                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                       f'Number of points {tmp_data.shape[0]} < {num_points}']],
+                                     columns=['target', 'A:N', 'error']))
+                if verbose:
+                    pbar.update()
+                models[targets[i_target]] = None
+                continue
             if model_type == 'regressor':
-                fold_results.append(pd.DataFrame([[targets[i_target],
-                                              tmp_data.shape[0],
-                                              f'Number of points {tmp_data.shape[0]} < {num_points}']],
-                                            columns=['target', 'number', 'error']))
+                min_activity = tmp_data[endpoint].min()
+                max_activity = tmp_data[endpoint].max()
+                delta = max_activity - min_activity
+                # Not enough activity amplitude
+                if delta < delta_activity:
+                    fold_results.append(pd.DataFrame([[targets[i_target],
+                                                  tmp_data.shape[0],
+                                                  f'Delta activity {delta} < {delta_activity}']],
+                                                columns=['target', 'number', 'error']))
+                    if verbose:
+                        pbar.update()
+                    models[targets[i_target]] = None
+                    continue
             else:
                 data_classes = Counter(tmp_data[endpoint])
-                fold_results.append(
-                    pd.DataFrame([[targets[i_target],
-                                   ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                   f'Number of points {tmp_data.shape[0]} < {num_points}']],
-                                 columns=['target', 'A:N', 'error']))
+                # Only one activity class
+                if len(data_classes) == 1:
+                    fold_results.append(
+                        pd.DataFrame([[targets[i_target],
+                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                       'Only one activity class']],
+                                     columns=['target', 'A:N', 'error']))
+                    if verbose:
+                        pbar.update()
+                    models[targets[i_target]] = None
+                    continue
+                # Not enough data in minority class for all folds
+                elif not all(x >= folds for x in data_classes.values()):
+                    fold_results.append(
+                        pd.DataFrame([[targets[i_target],
+                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                       f'Not enough data in minority class for all {folds} folds']],
+                                     columns=['target', 'A:N', 'error']))
+                    if verbose:
+                        pbar.update()
+                    models[targets[i_target]] = None
+                    continue
+            # Split, fit and evaluate this target - see _fit_and_evaluate's
+            # docstring for the pipeline shared with pcm().
+            try:
+                performance, final_return_val, cv_models = _fit_and_evaluate(
+                    tmp_data, endpoint, model_type, model, merge_on, tmp_merge_on_values,
+                    split_by, split_year, test_set_size, cluster_method, custom_groups,
+                    features_to_ignore, ['Year', 'target_id'], scale, scale_method,
+                    yscramble, stratify, folds, random_state, verbose,
+                    strict_split_checks=True,
+                )
+            except _InsufficientDataError as exc:
+                if model_type == 'regressor':
+                    fold_results.append(pd.DataFrame([[targets[i_target], tmp_data.shape[0], str(exc)]],
+                                                columns=['target', 'number', 'error']))
+                else:
+                    data_classes = Counter(tmp_data[endpoint])
+                    fold_results.append(pd.DataFrame([[targets[i_target],
+                                                  ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                                  str(exc)]],
+                                                columns=['target', 'A:N', 'error']))
+                if verbose:
+                    pbar.update()
+                models[targets[i_target]] = None
+                continue
+            performance.loc[:, 'target'] = targets[i_target]
+            fold_results.append(performance.reset_index())
+            models[targets[i_target]] = cv_models
             if verbose:
                 pbar.update()
-            models[targets[i_target]] = None
-            continue
-        if model_type == 'regressor':
-            min_activity = tmp_data[endpoint].min()
-            max_activity = tmp_data[endpoint].max()
-            delta = max_activity - min_activity
-            # Not enough activity amplitude
-            if delta < delta_activity:
-                fold_results.append(pd.DataFrame([[targets[i_target],
-                                              tmp_data.shape[0],
-                                              f'Delta activity {delta} < {delta_activity}']],
-                                            columns=['target', 'number', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-        else:
-            data_classes = Counter(tmp_data[endpoint])
-            # Only one activity class
-            if len(data_classes) == 1:
-                fold_results.append(
-                    pd.DataFrame([[targets[i_target],
-                                   ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                   'Only one activity class']],
-                                 columns=['target', 'A:N', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-            # Not enough data in minority class for all folds
-            elif not all(x >= folds for x in data_classes.values()):
-                fold_results.append(
-                    pd.DataFrame([[targets[i_target],
-                                   ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                   f'Not enough data in minority class for all {folds} folds']],
-                                 columns=['target', 'A:N', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-        # Split, fit and evaluate this target - see _fit_and_evaluate's
-        # docstring for the pipeline shared with pcm().
-        try:
-            performance, final_return_val, cv_models = _fit_and_evaluate(
-                tmp_data, endpoint, model_type, model, merge_on, tmp_merge_on_values,
-                split_by, split_year, test_set_size, cluster_method, custom_groups,
-                features_to_ignore, ['Year', 'target_id'], scale, scale_method,
-                yscramble, stratify, folds, random_state, verbose,
-                strict_split_checks=True,
-            )
-        except _InsufficientDataError as exc:
-            if model_type == 'regressor':
-                fold_results.append(pd.DataFrame([[targets[i_target], tmp_data.shape[0], str(exc)]],
-                                            columns=['target', 'number', 'error']))
-            else:
-                data_classes = Counter(tmp_data[endpoint])
-                fold_results.append(pd.DataFrame([[targets[i_target],
-                                              ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                              str(exc)]],
-                                            columns=['target', 'A:N', 'error']))
-            if verbose:
-                pbar.update()
-            models[targets[i_target]] = None
-            continue
-        performance.loc[:, 'target'] = targets[i_target]
-        fold_results.append(performance.reset_index())
-        models[targets[i_target]] = cv_models
-        if verbose:
-            pbar.update()
+    finally:
+        if pbar is not None:
+            pbar.close()
     if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
