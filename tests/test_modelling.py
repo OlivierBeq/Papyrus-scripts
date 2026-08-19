@@ -119,6 +119,44 @@ class TestCrossvalidateModelVerbose(unittest.TestCase):
                                 KFold(n_splits=4, shuffle=True, random_state=0), verbose=True, leave=False)
         self.assertFalse(mock_tqdm.call_args.kwargs['leave'])
 
+    def test_close_forces_n_to_total_after_mid_loop_exception(self):
+        # tqdm.notebook.close() only hides its widget when n == total.
+        closed_state = []
+
+        class _RecordingTqdm:
+            def __init__(self, *args, **kwargs):
+                self.n = 0
+                self.total = kwargs.get('total')
+
+            def set_description(self, *args, **kwargs):
+                pass
+
+            def update(self, n=1, *args, **kwargs):
+                self.n += n
+
+            def close(self):
+                closed_state.append((self.n, self.total))
+
+        call_count = [0]
+
+        class _FlakyRegressor(DecisionTreeRegressor):
+            def fit(self, X, y, **kwargs):
+                call_count[0] += 1
+                if call_count[0] == 2:
+                    raise RuntimeError('boom')
+                return super().fit(X, y, **kwargs)
+
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.random((20, 3)), columns=['a', 'b', 'c'])
+        y = pd.Series(rng.random(20), name='y')
+        data = pd.concat([y, X], axis=1)
+        with patch('src.papyrus_scripts.modelling.tqdm', new=_RecordingTqdm):
+            with self.assertRaises(RuntimeError):
+                crossvalidate_model(data, _FlakyRegressor(random_state=0),
+                                    KFold(n_splits=4, shuffle=True, random_state=0), verbose=True)
+        n, total = closed_state[0]
+        self.assertEqual(n, total)
+
 
 class TestTrainTestProportionalGroupSplitVerbose(unittest.TestCase):
 
@@ -535,6 +573,45 @@ def _make_multi_target_descriptors():
         'C100', 'C101', 'C102', 'C103', 'C104', 'C105', 'C106', 'C107', 'C108', 'C109', 'C110', 'C111', 'C112',
     ]
     return {'connectivity': connectivity, 'Desc_1': [i / len(connectivity) for i in range(len(connectivity))]}
+
+
+class TestQsarProgressBarClosedOnException(unittest.TestCase):
+    """Same stuck-widget bug as TestCrossvalidateModelVerbose, for qsar()'s own bar."""
+
+    def test_close_forces_n_to_total_after_mid_loop_exception(self):
+        closed_state = []
+
+        class _RecordingTqdm:
+            def __init__(self, *args, **kwargs):
+                self.n = 0
+                self.total = kwargs.get('total')
+
+            def set_description(self, *args, **kwargs):
+                pass
+
+            def update(self, n=1, *args, **kwargs):
+                self.n += n
+
+            def close(self):
+                closed_state.append((self.n, self.total))
+
+        class _FlakyClassifier(DecisionTreeClassifier):
+            def fit(self, X, y, **kwargs):
+                raise RuntimeError('boom')
+
+        with (
+            patch('src.papyrus_scripts.modelling.tqdm', new=_RecordingTqdm),
+            patch(
+                'src.papyrus_scripts.modelling.read_molecular_descriptors',
+                return_value=pl.LazyFrame(_make_multi_target_descriptors()),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                qsar(pd.DataFrame(_make_multi_target_classifier_data()), model=_FlakyClassifier(),
+                    num_points=3, folds=2, split_year=2016, verbose=True)
+        self.assertTrue(closed_state)
+        for n, total in closed_state:
+            self.assertEqual(n, total)
 
 
 class TestQsarVerboseLoop(unittest.TestCase):

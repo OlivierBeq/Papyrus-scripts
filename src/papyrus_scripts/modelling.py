@@ -287,6 +287,8 @@ def crossvalidate_model(data: pd.DataFrame,
             pbar.update()
     finally:
         if pbar is not None:
+            # avoids tqdm.notebook leaving a stuck widget if closed early
+            pbar.n = pbar.total
             pbar.close()
     return performance, models
 
@@ -720,6 +722,7 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
                 pbar.update()
     finally:
         if pbar is not None:
+            pbar.n = pbar.total
             pbar.close()
     if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("default", category=UserWarning)
