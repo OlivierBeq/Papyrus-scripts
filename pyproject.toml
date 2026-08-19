@@ -43,6 +43,7 @@ dependencies = [
     "requests",
     "fake-useragent",
     "tqdm",
+    "ipywidgets",
     "colorama; platform_system == 'Windows'",
     "mordred",
     "scikit-learn",
