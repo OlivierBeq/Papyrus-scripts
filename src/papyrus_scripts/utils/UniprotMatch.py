@@ -54,6 +54,8 @@ def uniprot_mappings(query: str | list[str],
         if query is not None:
             query = [x.lower() for x in query]
             data = data[data[map_from].str.lower().isin(query)]
+        # SIFTS PDB codes are lowercase; RCSB and callers use uppercase.
+        data[map_from] = data[map_from].str.upper()
         return data
     else:
         # Use UniProt API
