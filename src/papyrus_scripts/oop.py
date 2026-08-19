@@ -630,6 +630,27 @@ class PapyrusDataset:
     # Filters — molecular structure
     # ------------------------------------------------------------------
 
+    def create_fp_subsim_search(
+            self,
+            fp: Fingerprint | list[Fingerprint] | None = None,
+            path: str | Path | None = None,
+            progress: bool = True,
+            njobs: int = 1,
+            n_shards: int | None = None,
+            pattern_holder_bits: int = subsim_search.DEFAULT_PATTERN_HOLDER_BITS,
+            force: bool = False,
+    ) -> Path:
+        """Create the FPSubSim2 search database file.
+
+        Called automatically by the ``keep_*_molecules`` filters if the
+        file is missing. See :meth:`FPSubSim2Engine.create_fp_subsim_search`
+        for parameter details.
+        """
+        return self._fpsubsim2.create_fp_subsim_search(
+            fp=fp, path=path, progress=progress, njobs=njobs,
+            n_shards=n_shards, pattern_holder_bits=pattern_holder_bits, force=force,
+        )
+
     def keep_similar_molecules(
             self,
             smiles: str | list[str],
@@ -1243,14 +1264,37 @@ class FPSubSim2Engine:
             )
         return path
 
-    def _ensure_loaded(self) -> None:
-        """Load or create the FPSubSim2 database as needed."""
-        if self.path is None:
-            self.path = self._resolve_path()
+    def create_fp_subsim_search(
+            self,
+            fp: Fingerprint | list[Fingerprint] | None = None,
+            path: str | Path | None = None,
+            progress: bool = True,
+            njobs: int = 1,
+            n_shards: int | None = None,
+            pattern_holder_bits: int = subsim_search.DEFAULT_PATTERN_HOLDER_BITS,
+            force: bool = False,
+    ) -> Path:
+        """Create the FPSubSim2 similarity/substructure search database file.
 
-        if Path(self.path).is_file():
-            self.fpsubsim2.load(fpsubsim_path=self.path)
-        else:
+        :param fp: fingerprint(s) to store (default: Morgan)
+        :param path: ``.h5`` output path; auto-derived when ``None``
+        :param progress: show progress bars (default ``True``)
+        :param njobs: worker processes (``-1`` = all cores, ``1`` = single-process)
+        :param n_shards: substructure shard count; single-process builds only
+            (raises :exc:`ValueError` if set with ``njobs > 1``)
+        :param pattern_holder_bits: ``PatternHolder`` prescreen size
+        :param force: rebuild even if the file already exists
+        :returns: path to the ``.h5`` file
+        """
+        if fp is not None:
+            self.fp = fp
+        if path is not None:
+            self.path = path
+        elif self.path is None:
+            self.path = self._resolve_path()
+        self.progress = progress
+
+        if force or not Path(self.path).is_file():
             create_kwargs = dict(
                 is3d=self.papyrus_params['is3d'],
                 version=self.papyrus_params['version'],
@@ -1258,6 +1302,9 @@ class FPSubSim2Engine:
                 fingerprint=self.fp,
                 root_folder=self.papyrus_params['source_path'],
                 progress=self.progress,
+                njobs=njobs,
+                n_shards=n_shards,
+                pattern_holder_bits=pattern_holder_bits,
             )
             try:
                 self.fpsubsim2.create_from_papyrus(**create_kwargs)
@@ -1275,6 +1322,12 @@ class FPSubSim2Engine:
                     keep_xz=self.papyrus_params['keep_original_files'],
                 )
                 self.fpsubsim2.create_from_papyrus(**create_kwargs)
+        return Path(self.path)
+
+    def _ensure_loaded(self) -> None:
+        """Create the database if needed, then load it."""
+        self.create_fp_subsim_search()
+        self.fpsubsim2.load(fpsubsim_path=self.path)
 
     def _set_data(
             self,
