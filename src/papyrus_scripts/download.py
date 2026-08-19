@@ -404,16 +404,10 @@ _CONVERSION_DONE = None
 
 #: Messages put on the progress queue by _convert_worker, consumed by
 #: _drain_progress_queue in the parent process:
-#: ('start', desc, total_rows) - beginning a new file: reset the current
-#:     file's row count to 0 and record its description/total
-#: ('reset',)                  - conversion restarted from row 0 (dtype
-#:     drift healing) - reset the current file's row count, keep its total
-#: ('chunk', n)                - n more rows written for the current file
-#: ('done',)                   - current file finished; advance the
-#:     "files converted" bar by one
-#: 'start'/'reset'/'chunk' only ever update the *description* of the single
-#: "Converting files" bar (current file + its row progress) - never a
-#: second bar object; see download_papyrus's own comments for why.
+#: ('start', desc, total_rows) - new file: reset row count, set desc/total
+#: ('reset',)   - dtype drift healing: undo credited rows, reset row count
+#: ('chunk', n) - n more rows written; advances the row-unit progress bar
+#: ('done',)    - current file finished
 _PROGRESS_START = 'start'
 _PROGRESS_RESET = 'reset'
 _PROGRESS_CHUNK = 'chunk'
@@ -728,7 +722,6 @@ def download_papyrus(outdir: str | Path | None = None,
         error_queue: mp.Queue | None = None
         progress_queue: mp.Queue | None = None
         converting_pbar: tqdm | None = None
-        files_converted = 0
         current_desc = ''
         current_rows = 0
         current_total: int | None = None
@@ -744,18 +737,13 @@ def download_papyrus(outdir: str | Path | None = None,
             # Only ever called once converting_pbar has been created (see call sites).
             if converting_pbar is None:  # noqa: B023
                 raise RuntimeError('converting_pbar not created despite progress=True')
-            # refresh=False: the caller immediately follows this with
-            # update(1), which does its own refresh - two separate refreshes
-            # for the same event means two consecutive cursor-repositioning
-            # writes (moveto's newline-down/ANSI-up dance) with nothing in
-            # between them, which on Windows (even with colorama) has been
-            # observed to leave the cursor one line off, so the *next*
-            # redraw lands on a fresh line instead of overwriting in place.
+            # refresh=False: caller's own refresh() follows right after; two
+            # back-to-back refreshes can leave the cursor off by a line on Windows.
             converting_pbar.set_description(f'{current_desc} (complete)', refresh=False)  # noqa: B023
 
         def _drain_progress_queue() -> None:
             """Apply every conversion-progress message available right now, without blocking."""
-            nonlocal files_converted, current_desc, current_rows, current_total
+            nonlocal current_desc, current_rows, current_total
             # Only ever called once progress_queue has been created (see call sites).
             if progress_queue is None:  # noqa: B023
                 raise RuntimeError('progress_queue not created despite progress=True')
@@ -769,24 +757,25 @@ def download_papyrus(outdir: str | Path | None = None,
                     _, current_desc, current_total = message
                     current_rows = 0
                 elif kind == _PROGRESS_RESET:
+                    # Undo rows already credited before restarting from 0.
+                    if converting_pbar is not None and current_rows:  # noqa: B023
+                        converting_pbar.update(-current_rows)  # noqa: B023
                     current_rows = 0
                 elif kind == _PROGRESS_CHUNK:
                     current_rows += message[1]
-                elif kind == _PROGRESS_DONE:
-                    files_converted += 1
                 # Defensive only: progress_queue only ever receives messages
                 # when progress is True, which is also when converting_pbar
                 # is created - the two are never out of sync in practice.
                 if converting_pbar is None:  # pragma: no cover  # noqa: B023
                     continue
-                if kind == _PROGRESS_DONE:
-                    # Set the description first (no refresh), then let the
-                    # single update(1) refresh show both the new count and
-                    # the new description together - see
-                    # _mark_current_file_complete's own comment for why.
+                if kind == _PROGRESS_CHUNK:
+                    # update()'s refresh also repaints the description set below.
+                    converting_pbar.update(message[1])  # noqa: B023
+                    _update_current_file_description()
+                elif kind == _PROGRESS_DONE:
                     _mark_current_file_complete()
-                    converting_pbar.update(1)  # noqa: B023
-                elif kind in (_PROGRESS_START, _PROGRESS_RESET, _PROGRESS_CHUNK):
+                    converting_pbar.refresh()  # noqa: B023
+                elif kind in (_PROGRESS_START, _PROGRESS_RESET):
                     _update_current_file_description()
 
         def _wait_for_converter() -> None:
@@ -833,20 +822,24 @@ def download_papyrus(outdir: str | Path | None = None,
                     _drain_progress_queue()
 
         if not keep_xz:
-            to_convert_total = 0
+            # ftype per file still needing conversion; used once data_size.json
+            # is read to compute converting_pbar's total row count.
+            to_convert_ftypes: list[str] = []
             for ftype in ordered_ftypes:
                 for entry in _iter_entries(version_files[ftype]):
                     fpath = _file_path(papyrus_version_root, ftype, entry['name'])
                     parquet_path = _parquet_sibling(fpath)
                     if parquet_path is not None and not parquet_path.is_file():
-                        to_convert_total += 1
+                        to_convert_ftypes.append(ftype)
 
             task_queue = mp.Queue(maxsize=1)
             error_queue = mp.Queue()
             progress_queue = mp.Queue()
             if progress:
                 converting_pbar = tqdm(
-                    total=to_convert_total, desc='Converting files', unit=' file',
+                    # Unknown total until sizes is loaded, unless nothing to convert.
+                    total=(0 if not to_convert_ftypes else None),
+                    desc='Converting files', unit=' row', unit_scale=True,
                     ncols=notebook_safe_ncols(_PBAR_NCOLS), position=1,
                 )
             converter_process = mp.Process(
@@ -934,6 +927,16 @@ def download_papyrus(outdir: str | Path | None = None,
                                 # data_size.json is always written as a JSON object.
                                 sizes = cast(dict, read_jsonfile(papyrus_version_root.join(name='data_size.json')))
                                 metadata_loaded = True
+                                # Sum per-ftype row counts into the real total,
+                                # unless any is unknown (avoid understating it).
+                                if progress and converting_pbar is not None and to_convert_ftypes:
+                                    per_file_rows = [
+                                        sizes.get(_SIZE_KEY_BY_FTYPE.get(ft))
+                                        for ft in to_convert_ftypes
+                                    ]
+                                    if all(n is not None for n in per_file_rows):
+                                        converting_pbar.total = sum(per_file_rows)
+                                        converting_pbar.refresh()
                         if task_queue is None:
                             raise RuntimeError('task_queue not created')
                         _enqueue({
