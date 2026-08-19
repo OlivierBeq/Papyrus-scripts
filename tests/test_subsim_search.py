@@ -1752,10 +1752,13 @@ class TestFPSubSim2AllFingerprints(unittest.TestCase):
         self.assertEqual(set(available.keys()), {repr(f) for f in self.fingerprints})
 
     def test_every_fingerprint_finds_an_exact_self_match(self):
+        # Aspirin, not CCO: CCO is too small for a non-empty TopologicalTorsion
+        # fingerprint, and Tanimoto self-similarity of an all-zero vector is undefined.
+        query = self.SMILES[-1]
         for f in self.fingerprints:
             with self.subTest(fingerprint=f.name):
                 engine = self.engine_db.get_similarity_lib(fp_signature=repr(f))
-                result = engine.similarity(self.SMILES[0], threshold=0.999)
+                result = engine.similarity(query, threshold=0.999)
                 self.assertGreaterEqual(result.height, 1)
                 score_col = [c for c in result.columns if c.startswith('Tanimoto')][0]
                 self.assertAlmostEqual(result[score_col].max(), 1.0, places=3)
