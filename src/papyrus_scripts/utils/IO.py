@@ -143,6 +143,8 @@ def new_session(retries: int = 5, backoff_factor: float = 0.25,
     session.hooks['response'].append(_make_ua_fallback_hook(session))
     adapter = HTTPAdapter(max_retries=Retry(
         total=retries, backoff_factor=backoff_factor, status_forcelist=list(status_forcelist),
+        # default excludes POST; our POST calls are idempotent, so retry them too
+        allowed_methods=frozenset(Retry.DEFAULT_ALLOWED_METHODS | {'POST'}),
     ))
     session.mount('https://', adapter)
     session.mount('http://', adapter)
