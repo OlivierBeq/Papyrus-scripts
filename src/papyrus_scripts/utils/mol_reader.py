@@ -24,6 +24,8 @@ from rdkit.Chem import (
 )
 from tqdm.auto import tqdm
 
+from .IO import notebook_safe_ncols
+
 
 @contextmanager
 def suppress_rdkit_log() -> Generator[None]:
@@ -682,7 +684,7 @@ class MolSupplier:
             raise RuntimeError('MolSupplier is closed.')
         enumerated = enumerate(self._inner_supplier, self._iter_start)
         if self._iter_progress:
-            enumerated = tqdm(enumerated, total=self._iter_total, ncols=100)
+            enumerated = tqdm(enumerated, total=self._iter_total, ncols=notebook_safe_ncols(100))
 
         failed_ids: list[int] = []
         try:
