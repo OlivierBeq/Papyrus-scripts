@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import cast
 
 import pystow
+import requests
 from tqdm.auto import tqdm
 
 from .utils.IO import (
@@ -877,27 +878,39 @@ def download_papyrus(outdir: str | Path | None = None,
                         # Attempt download with up to _RETRIES tries
                         success = False
                         remaining = _RETRIES
+                        last_error: Exception | None = None
                         while not success and remaining > 0:
-                            res = session.get(
-                                durl,
-                                stream=True,
-                                verify=True,
-                            )
-                            with open(fpath, 'wb') as fh:
-                                for chunk in res.iter_content(chunk_size=_CHUNKSIZE):
-                                    fh.write(chunk)
-                                    if progress:
-                                        pbar.update(len(chunk))
-                                    if progress_queue is not None:
-                                        _drain_progress_queue()
+                            try:
+                                res = session.get(
+                                    durl,
+                                    stream=True,
+                                    verify=True,
+                                )
+                                with open(fpath, 'wb') as fh:
+                                    for chunk in res.iter_content(chunk_size=_CHUNKSIZE):
+                                        fh.write(chunk)
+                                        if progress:
+                                            pbar.update(len(chunk))
+                                        if progress_queue is not None:
+                                            _drain_progress_queue()
+                                success = assert_sha256sum(fpath, dhash)
+                                last_error = None
+                            except requests.exceptions.RequestException as err:
+                                # Chunk failed mid-stream - retry like a hash mismatch.
+                                success = False
+                                last_error = err
 
-                            success = assert_sha256sum(fpath, dhash)
                             if not success:
                                 remaining -= 1
-                                fpath.unlink()
+                                # Never leave a truncated file behind.
+                                fpath.unlink(missing_ok=True)
                                 if progress:
+                                    if last_error is not None:
+                                        reason = f'Connection error downloading {dname}: {last_error}. '
+                                    else:
+                                        reason = f'SHA256 mismatch for {dname}. '
                                     msg = (
-                                            f'SHA256 mismatch for {dname}. '
+                                            reason
                                             + (f'Retrying ({remaining} left).'
                                                if remaining > 0
                                                else f'All {_RETRIES} attempts failed.')
@@ -907,7 +920,7 @@ def download_papyrus(outdir: str | Path | None = None,
                         if not success:
                             # pbar is intentionally left open here (not
                             # closed) - see the except handler below for why.
-                            raise OSError(f'Download failed for {dname}')
+                            raise OSError(f'Download failed for {dname}') from last_error
 
                     # Extract ZIP archives in-place
                     if dname.endswith('.zip'):
