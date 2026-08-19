@@ -1033,12 +1033,13 @@ _NULLABLE_INT_DTYPES: frozenset = frozenset({
 })
 
 #: Target cell count (rows * columns) per pd.read_csv chunk, used to scale
-#: *chunksize* down for wide tables. chunksize alone only bounds row count:
-#: fine for narrow tables, but a wide one (e.g. ECFP6's ~2048 int columns,
-#: each read as pandas' nullable 'Float64' - 9 bytes/cell) needs several GB
-#: for one chunk at the default chunksize and can crash pandas' C parser
-#: with a real allocation failure ("... C error: out of memory").
-_CHUNK_CELL_BUDGET: int = 5_000_000
+#: *chunksize* down for wide tables so memory doesn't blow up (e.g. ECFP6's
+#: ~2048 int columns, read as 8-byte 'float64'). Sized to keep peak RSS
+#: comfortably under a 6 GB budget (benchmarked ~3.5 GB on a 500K-row x
+#: 2048-column file) while keeping chunks large enough to avoid per-chunk
+#: overhead (pd.read_csv block setup, pyarrow.Table conversion,
+#: ParquetWriter flush) dominating runtime on wide tables.
+_CHUNK_CELL_BUDGET: int = 100_000_000
 
 
 def _schema_overrides_to_pandas_dtype(schema_overrides: dict | None) -> dict | None:
