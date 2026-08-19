@@ -349,9 +349,13 @@ def read_protein_descriptors(
         )
         if ids is not None:
             protein_data = protein_data.filter(pl.col('target_id').is_in(ids))
+        # Transform exposes is_sequence_valid via its wrapped .Descriptor; a bare Descriptor exposes it directly.
+        underlying_descriptor = (
+            desc_type.Descriptor if isinstance(desc_type, Transform) else desc_type
+        )
         protein_data = protein_data.filter(
             pl.col('Sequence').map_elements(
-                desc_type.Descriptor.is_sequence_valid, return_dtype=pl.Boolean,
+                underlying_descriptor.is_sequence_valid, return_dtype=pl.Boolean,
             ),
         )
         # ProDEC returns a pandas DataFrame; convert to polars.
