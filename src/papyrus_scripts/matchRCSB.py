@@ -15,7 +15,7 @@ from rdkit import Chem
 from tqdm.auto import tqdm, trange
 
 from .utils import IO, UniprotMatch
-from .utils.IO import new_session
+from .utils.IO import new_session, notebook_safe_ncols
 from .utils.mol_reader import suppress_rdkit_log
 
 
@@ -113,7 +113,7 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     chunk_size = 200  # Max entries per GraphQL query to prevent server timeouts
     total_chunks = (len(pdb_ids) - 1) // chunk_size + 1
     if verbose:
-        pbar = trange(0, len(pdb_ids), chunk_size, desc='Gather RCSB data', ncols=100)
+        pbar = trange(0, len(pdb_ids), chunk_size, desc='Gather RCSB data', ncols=notebook_safe_ncols(100))
     else:
         pbar = range(0, len(pdb_ids), chunk_size)
     # 2. Process the IDs in chunks (RDKit warnings suppressed due to InChI-fication)
@@ -266,7 +266,7 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
 def _chunked_get_matches(chunks: PandasTextFileReader | Iterator, root_folder: str | Path | None, verbose: bool,
                          total: int | None) -> Generator[pd.DataFrame, None, None]:
     if verbose:
-        pbar = tqdm(chunks, total=total, ncols=100)
+        pbar = tqdm(chunks, total=total, ncols=notebook_safe_ncols(100))
     else:
         pbar = chunks
     for chunk in pbar:
