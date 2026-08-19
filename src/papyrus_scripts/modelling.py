@@ -232,6 +232,7 @@ def crossvalidate_model(data: pd.DataFrame,
                         groups: list[int] | pd.Series | None = None,
                         scale_method: TransformerMixin | None = None,
                         verbose: bool = False,
+                        leave: bool = True,
                         ) -> tuple[pd.DataFrame, dict[str, RegressorMixin | ClassifierMixin]]:
     """Create a machine learning model predicting values in the first column.
 
@@ -245,11 +246,12 @@ def crossvalidate_model(data: pd.DataFrame,
        the final "Full model" - left fitted on that full-dataset call when
        this function returns, so a caller can reuse it as-is
     :param verbose: whether to show fold progression
+    :param leave: whether this function's progress bar stays on screen once done
     :return: cross-validated performance and model trained on the entire dataset
     """
     X, y = data.iloc[:, 1:], data.iloc[:, 0].values.ravel()
     fold_metrics: list[dict[str, Any]] = []
-    pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1) if verbose else None
+    pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1, leave=leave) if verbose else None
     try:
         models: dict[str, RegressorMixin | ClassifierMixin] = {}
         split_groups = groups if isinstance(folds, _GROUP_AWARE_SPLITTERS) else None
@@ -321,6 +323,11 @@ def train_test_proportional_group_split(data: pd.DataFrame,
     return data[opposite], data[assignment], t_groups, best
 
 
+def _leave_bar(leave_level: int, depth: int) -> bool:
+    """Whether a bar nested *depth* levels deep (1 = outermost) leaves, per ``leave_level``."""
+    return leave_level < 0 or leave_level >= depth
+
+
 class _InsufficientDataError(Exception):
     """Raised by _fit_and_evaluate when a split/class-balance check fails.
 
@@ -350,6 +357,7 @@ def _fit_and_evaluate(data: pd.DataFrame,
                       random_state: int,
                       verbose: bool,
                       strict_split_checks: bool,
+                      cv_leave: bool = True,
                       ) -> tuple[pd.DataFrame, dict[str, Any], dict[str, RegressorMixin | ClassifierMixin]]:
     """Split *data*, fit *model* via cross-validation, and evaluate on the held-out test set.
 
@@ -360,6 +368,7 @@ def _fit_and_evaluate(data: pd.DataFrame,
         dropped it after merging protein descriptors
     :param strict_split_checks: qsar() also requires >= *folds* training
         rows and balanced test-set classes; pcm() checks neither
+    :param cv_leave: passed through as crossvalidate_model()'s ``leave``
     :raises _InsufficientDataError: if a split/class-balance check fails
     :returns: (performance, return_val, cv_models) - return_val holds the
         scaler/label_encoder/data_splitter (as applicable); cv_models is
@@ -456,7 +465,7 @@ def _fit_and_evaluate(data: pd.DataFrame,
         kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
     performance, cv_models = crossvalidate_model(
         training_set, model, kfold, training_groups,
-        scale_method=scale_method if scale else None, verbose=verbose,
+        scale_method=scale_method if scale else None, verbose=verbose, leave=cv_leave,
     )
     full_model = cv_models['Full model']
     X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
@@ -501,6 +510,7 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
          yscramble: bool = False,
          random_state: int = 1234,
          verbose: bool = True,
+         leave_level: int = -1,
          ) -> tuple[pd.DataFrame, dict[str,
                                        None | (TransformerMixin | LabelEncoder |
                                                       BaseCrossValidator | dict[str, ClassifierMixin])]]:
@@ -546,6 +556,9 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
     :param random_state: seed to use for train/test splitting and KFold shuffling
     :param verbose: log details to stdout
+    :param leave_level: how many nested progress bar levels stay on screen
+        once done (level 1: per-target; level 2: per-fold); ``0`` none,
+        ``-1`` all (default)
     :return: both:
     - a dataframe of the cross-validation results where each line is a fold of QSAR modelling of an accession
     - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
@@ -609,7 +622,8 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     final_return_val: dict[str, Any] = {}
     targets = list(data['target_id'].unique())
     n_targets = len(targets)
-    pbar = tqdm(total=n_targets, smoothing=0.1) if verbose else None
+    cv_leave = _leave_bar(leave_level, 2)
+    pbar = tqdm(total=n_targets, smoothing=0.1, leave=_leave_bar(leave_level, 1)) if verbose else None
     try:
         # Build QSAR model for targets reaching criteria
         for i_target in range(n_targets - 1, -1, -1):
@@ -683,7 +697,7 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
                     split_by, split_year, test_set_size, cluster_method, custom_groups,
                     features_to_ignore, ['Year', 'target_id'], scale, scale_method,
                     yscramble, stratify, folds, random_state, verbose,
-                    strict_split_checks=True,
+                    strict_split_checks=True, cv_leave=cv_leave,
                 )
             except _InsufficientDataError as exc:
                 if model_type == 'regressor':
@@ -750,6 +764,7 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         yscramble: bool = False,
         random_state: int = 1234,
         verbose: bool = True,
+        leave_level: int = -1,
         ) -> tuple[pd.DataFrame, dict[str,
                                       (TransformerMixin | LabelEncoder |
                                             BaseCrossValidator | RegressorMixin | ClassifierMixin)]]:
@@ -801,6 +816,8 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
     :param random_state: seed to use for train/test splitting and KFold shuffling
     :param verbose: log details to stdout
+    :param leave_level: whether the (single) progress bar stays on screen
+        once done; ``0`` no, anything else (``-1`` default) yes
     :return: both:
     - a dataframe of the cross-validation results where each line is a fold of PCM modelling
     - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
@@ -886,7 +903,7 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
             split_by, split_year, test_set_size, cluster_method, custom_groups,
             features_to_ignore, ['Year'], scale, scale_method,
             yscramble, stratify, folds, random_state, verbose,
-            strict_split_checks=False,
+            strict_split_checks=False, cv_leave=_leave_bar(leave_level, 1),
         )
     except _InsufficientDataError as exc:
         raise ValueError(str(exc)) from None

@@ -99,6 +99,26 @@ class TestCrossvalidateModelVerbose(unittest.TestCase):
         crossvalidate_model(data, DecisionTreeRegressor(random_state=0),
                             KFold(n_splits=4, shuffle=True, random_state=0), verbose=True)
 
+    def test_leave_defaults_to_true(self):
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.random((20, 3)), columns=['a', 'b', 'c'])
+        y = pd.Series(rng.random(20), name='y')
+        data = pd.concat([y, X], axis=1)
+        with patch('src.papyrus_scripts.modelling.tqdm') as mock_tqdm:
+            crossvalidate_model(data, DecisionTreeRegressor(random_state=0),
+                                KFold(n_splits=4, shuffle=True, random_state=0), verbose=True)
+        self.assertTrue(mock_tqdm.call_args.kwargs['leave'])
+
+    def test_leave_false_is_forwarded_to_tqdm(self):
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.random((20, 3)), columns=['a', 'b', 'c'])
+        y = pd.Series(rng.random(20), name='y')
+        data = pd.concat([y, X], axis=1)
+        with patch('src.papyrus_scripts.modelling.tqdm') as mock_tqdm:
+            crossvalidate_model(data, DecisionTreeRegressor(random_state=0),
+                                KFold(n_splits=4, shuffle=True, random_state=0), verbose=True, leave=False)
+        self.assertFalse(mock_tqdm.call_args.kwargs['leave'])
+
 
 class TestTrainTestProportionalGroupSplitVerbose(unittest.TestCase):
 
@@ -550,6 +570,79 @@ class TestQsarVerboseLoop(unittest.TestCase):
             results, _ = qsar(pd.DataFrame(data), model=DecisionTreeRegressor(),
                              num_points=3, folds=2, split_year=2016, verbose=True)
         self.assertEqual(list(results.index.get_level_values('target').unique()), ['T2'])
+
+
+class TestLeaveLevel(unittest.TestCase):
+    """leave_level controls each nested tqdm bar's ``leave`` kwarg.
+
+    Only T1 reaches a real fit, so recorded[0] is qsar()'s bar (level 1),
+    recorded[1] crossvalidate_model's (level 2).
+    """
+
+    def _recording_tqdm(self, recorded):
+        class _RecordingTqdm:
+            def __init__(self, *args, **kwargs):
+                recorded.append(kwargs.get('leave'))
+                self.n = 0
+                self.total = kwargs.get('total')
+
+            def set_description(self, *args, **kwargs):
+                pass
+
+            def update(self, n=1, *args, **kwargs):
+                self.n += n
+
+            def close(self):
+                pass
+        return _RecordingTqdm
+
+    def _run_qsar(self, leave_level):
+        recorded: list[bool] = []
+        with (
+            patch('src.papyrus_scripts.modelling.tqdm', new=self._recording_tqdm(recorded)),
+            patch(
+                'src.papyrus_scripts.modelling.read_molecular_descriptors',
+                return_value=pl.LazyFrame(_make_multi_target_descriptors()),
+            ),
+        ):
+            qsar(pd.DataFrame(_make_multi_target_classifier_data()), model=DecisionTreeClassifier(),
+                num_points=3, folds=2, split_year=2016, verbose=True, leave_level=leave_level)
+        return recorded
+
+    def test_qsar_default_leaves_every_level(self):
+        self.assertEqual(self._run_qsar(leave_level=-1), [True, True])
+
+    def test_qsar_level_0_leaves_nothing(self):
+        self.assertEqual(self._run_qsar(leave_level=0), [False, False])
+
+    def test_qsar_level_1_leaves_only_outermost(self):
+        self.assertEqual(self._run_qsar(leave_level=1), [True, False])
+
+    def test_qsar_level_2_leaves_both_levels(self):
+        self.assertEqual(self._run_qsar(leave_level=2), [True, True])
+
+    def _run_pcm(self, leave_level):
+        recorded: list[bool] = []
+        with (
+            patch('src.papyrus_scripts.modelling.tqdm', new=self._recording_tqdm(recorded)),
+            patch(
+                'src.papyrus_scripts.modelling.read_molecular_descriptors',
+                return_value=pl.LazyFrame(_make_descriptors()),
+            ),
+            patch(
+                'src.papyrus_scripts.modelling.read_protein_descriptors',
+                return_value=pd.DataFrame({'target_id': ['T1'], 'Prot_1': [0.0]}),
+            ),
+        ):
+            pcm(pd.DataFrame(_make_bioactivity_data()), num_points=3, folds=2, split_year=2016,
+               verbose=True, leave_level=leave_level)
+        return recorded
+
+    def test_pcm_default_leaves_its_only_bar(self):
+        self.assertEqual(self._run_pcm(leave_level=-1), [True])
+
+    def test_pcm_level_0_leaves_nothing(self):
+        self.assertEqual(self._run_pcm(leave_level=0), [False])
 
 
 if __name__ == '__main__':
