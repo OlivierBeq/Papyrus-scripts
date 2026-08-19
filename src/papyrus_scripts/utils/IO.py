@@ -69,6 +69,16 @@ def notebook_safe_ncols(ncols: int | None) -> int | None:
     return ncols
 
 
+def widen_indeterminate_notebook_bar(pbar) -> None:
+    """Undo tqdm.notebook's 20px widget width for a bar with no known total yet."""
+    from tqdm.notebook import tqdm_notebook
+    if not isinstance(pbar, tqdm_notebook) or pbar.total:
+        return
+    container = getattr(pbar, 'container', None)
+    if container is not None and len(container.children) > 1:
+        container.children[1].layout.width = ''
+
+
 def get_user_agent(randomize: bool = False) -> str:
     """Return a User-Agent string to send with requests to external APIs.
 
@@ -972,6 +982,7 @@ def convert_xz_to_gz(
     ):
         if progress:
             pbar = tqdm(desc='Determining size', unit='B', unit_scale=True)
+            widen_indeterminate_notebook_bar(pbar)
             size = fh.seek(0, 2)
             fh.seek(0, 0)
             pbar.set_description('Converting')
@@ -1222,6 +1233,8 @@ def convert_xz_to_parquet(
         desc=desc, unit=' rows', unit_scale=True, position=position,
         total=total, leave=leave, ncols=notebook_safe_ncols(ncols),
     ) if progress else None
+    if pbar is not None:
+        widen_indeterminate_notebook_bar(pbar)
     try:
         while True:
             # Every int-schema column is read as 'Float64' - never its real
@@ -1445,6 +1458,8 @@ def convert_sd_to_parquet(
         desc=desc, unit=' mols', unit_scale=True, position=position,
         total=total, leave=leave, ncols=notebook_safe_ncols(ncols),
     ) if progress else None
+    if pbar is not None:
+        widen_indeterminate_notebook_bar(pbar)
     try:
         with pq.ParquetWriter(tmp_parquet, schema, compression='zstd') as writer:
             with lzma.open(input_file, 'rt') as fh:
@@ -1500,6 +1515,7 @@ def convert_gz_to_xz(
     ):
         if progress:
             pbar = tqdm(desc='Determining size', unit='B', unit_scale=True)
+            widen_indeterminate_notebook_bar(pbar)
             size = fh.seek(0, 2)
             fh.seek(0, 0)
             pbar.set_description('Converting')
