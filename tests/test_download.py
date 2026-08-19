@@ -1936,6 +1936,27 @@ class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
             )
         self.assertIn('u:requirements', self.requested_urls)
 
+    def test_requirements_zip_already_extracted_is_excluded_from_download_count(self):
+        # The "N file(s) to download" banner is printed before the download
+        # loop, so it must exclude an already-extracted 'requirements' too.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        version_root.mkdir(parents=True)
+        (version_root / 'data_types.json').write_text('{}')
+        (version_root / 'data_size.json').write_text('{}')
+        (version_root / 'README.txt').write_text('a readme')
+        (version_root / 'proteins.tsv.parquet').touch()
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
+            self.assertWarns(DeprecationWarning),
+            redirect_stdout(io.StringIO()) as buf,
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=True, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        # readme + proteins only - requirements excluded, not the full 3.
+        self.assertIn('2 file(s) to download', buf.getvalue())
+
     def test_hash_mismatch_retries_then_succeeds(self):
         # Every file goes through the same hash check - only 'proteins'
         # should ever mismatch, so readme/requirements must always pass.

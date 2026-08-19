@@ -137,6 +137,14 @@ def _print_banner(emoji: str, title: str, *lines: str) -> None:
     print(f'└{rule}┘')
 
 
+def _requirements_already_extracted(papyrus_version_root) -> bool:
+    """Whether the 'requirements' zip was already downloaded and extracted (it's deleted after extraction)."""
+    return (
+        papyrus_version_root.join(name='data_types.json').is_file()
+        and papyrus_version_root.join(name='data_size.json').is_file()
+    )
+
+
 def _parquet_sibling(fpath: Path) -> Path | None:
     """Return the ``.parquet`` sibling of a downloaded ``.tsv.xz``/``.sd.xz`` file.
 
@@ -643,6 +651,10 @@ def download_papyrus(outdir: str | Path | None = None,
         # Drop any key that is absent from this version's link table
         downloads = {ft for ft in downloads if ft in version_files}
 
+        # Drop 'requirements' before the count/total below if already extracted.
+        if 'requirements' in downloads and _requirements_already_extracted(papyrus_version_root):
+            downloads.discard('requirements')
+
         # ------------------------------------------------------------------
         # Check available disk space
         # ------------------------------------------------------------------
@@ -869,17 +881,6 @@ def download_papyrus(outdir: str | Path | None = None,
                         if progress:
                             pbar.update(dsize)
                         continue
-
-                    # 'requirements' is deleted after extraction, so check
-                    # its extracted output instead of its own fpath.
-                    if ftype == 'requirements' and dname.endswith('.zip'):
-                        if (
-                            papyrus_version_root.join(name='data_types.json').is_file()
-                            and papyrus_version_root.join(name='data_size.json').is_file()
-                        ):
-                            if progress:
-                                pbar.update(dsize)
-                            continue
 
                     # Download unless already present and intact.
                     if fpath.is_file() and assert_sha256sum(fpath, dhash):
