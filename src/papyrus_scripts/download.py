@@ -28,6 +28,7 @@ from .utils.IO import (
     new_session,
     notebook_safe_ncols,
     read_jsonfile,
+    widen_indeterminate_notebook_bar,
     write_jsonfile,
 )
 
@@ -842,6 +843,7 @@ def download_papyrus(outdir: str | Path | None = None,
                     desc='Converting files', unit=' row', unit_scale=True,
                     ncols=notebook_safe_ncols(_PBAR_NCOLS), position=1,
                 )
+                widen_indeterminate_notebook_bar(converting_pbar)
             converter_process = mp.Process(
                 target=_convert_worker,
                 args=(task_queue, error_queue, progress_queue, progress),
