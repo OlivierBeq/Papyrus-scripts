@@ -1902,6 +1902,40 @@ class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
             )
         self.assertNotIn('u:proteins', self.requested_urls)
 
+    def test_requirements_zip_already_extracted_is_not_redownloaded(self):
+        # Extracted metadata present -> zip must not be re-fetched.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        version_root.mkdir(parents=True)
+        (version_root / 'data_types.json').write_text('{}')
+        (version_root / 'data_size.json').write_text('{}')
+        (version_root / 'README.txt').write_text('a readme')
+        (version_root / 'proteins.tsv.parquet').touch()
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
+            self.assertWarns(DeprecationWarning),
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=True, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertNotIn('u:requirements', self.requested_urls)
+
+    def test_requirements_zip_redownloaded_when_extraction_incomplete(self):
+        # Partial metadata -> zip must still be fetched.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        version_root.mkdir(parents=True)
+        (version_root / 'data_types.json').write_text('{}')
+        # data_size.json deliberately missing.
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
+            self.assertWarns(DeprecationWarning),
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='05.4', progress=False, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertIn('u:requirements', self.requested_urls)
+
     def test_hash_mismatch_retries_then_succeeds(self):
         # Every file goes through the same hash check - only 'proteins'
         # should ever mismatch, so readme/requirements must always pass.

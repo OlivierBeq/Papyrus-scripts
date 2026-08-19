@@ -870,6 +870,17 @@ def download_papyrus(outdir: str | Path | None = None,
                             pbar.update(dsize)
                         continue
 
+                    # 'requirements' is deleted after extraction, so check
+                    # its extracted output instead of its own fpath.
+                    if ftype == 'requirements' and dname.endswith('.zip'):
+                        if (
+                            papyrus_version_root.join(name='data_types.json').is_file()
+                            and papyrus_version_root.join(name='data_size.json').is_file()
+                        ):
+                            if progress:
+                                pbar.update(dsize)
+                            continue
+
                     # Download unless already present and intact.
                     if fpath.is_file() and assert_sha256sum(fpath, dhash):
                         if progress:
