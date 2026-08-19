@@ -1293,6 +1293,7 @@ class TestFPSubSim2CudaEngineImportGuard(unittest.TestCase):
     def test_element_wise_kernel_guard_is_skipped_when_ew_kernel_exists(self):
         with (
             patch.object(ss, 'HAS_CUPY', True),
+            patch.object(ss, 'HAS_TABLES', True), patch.object(ss, 'HAS_FPSIM2', True),
             patch.object(ss, 'cupy', create=True),
             patch.object(ss.FPSim2CudaEngine, 'ew_kernel', 'fake_kernel_source', create=True),
             patch.object(ss, 'PyTablesMultiFpStorageBackend') as mock_backend_cls,
