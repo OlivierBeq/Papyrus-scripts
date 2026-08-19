@@ -210,16 +210,18 @@ def _derive_connectivity(props: dict, rdmol: Chem.Mol) -> tuple[str, str]:
 
 
 def _decode_bytes_df(df: pl.DataFrame) -> pl.DataFrame:
-    """Decode any ``Object``-typed column that contains bytes values to ``str``."""
-    cast_exprs = [
-        pl.col(c).map_elements(
-            lambda x: x.decode('utf-8') if isinstance(x, bytes) else x,
-            return_dtype=pl.Utf8,
-        )
-        if df.schema[c] == pl.Object else pl.col(c)
-        for c in df.columns
-    ]
-    return df.select(cast_exprs)
+    """Decode bytes columns (``Binary``/``Object``) to ``str``."""
+    def _decode_col(c: str) -> pl.Expr:
+        if df.schema[c] == pl.Binary:
+            return pl.col(c).cast(pl.Utf8)
+        if df.schema[c] == pl.Object:
+            return pl.col(c).map_elements(
+                lambda x: x.decode('utf-8') if isinstance(x, bytes) else x,
+                return_dtype=pl.Utf8,
+            )
+        return pl.col(c)
+
+    return df.select([_decode_col(c) for c in df.columns])
 
 
 def _build_result_df(

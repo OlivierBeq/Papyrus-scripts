@@ -135,6 +135,13 @@ class TestDecodeBytesDf(unittest.TestCase):
         out = _decode_bytes_df(df)
         self.assertEqual(out['a'].to_list(), ['x', 'y'])
 
+    def test_decodes_binary_column_from_pytables_fixed_length_strings(self):
+        # PyTables 'S' columns surface as pl.Binary, not pl.Object.
+        df = pl.DataFrame({'a': pl.Series([b'x', b'y'], dtype=pl.Binary), 'b': [1, 2]})
+        out = _decode_bytes_df(df)
+        self.assertEqual(out.schema['a'], pl.Utf8)
+        self.assertEqual(out['a'].to_list(), ['x', 'y'])
+
 
 class TestBuildResultDf(unittest.TestCase):
 
