@@ -830,10 +830,11 @@ class PapyrusDataset:
             :meth:`~PapyrusDescriptorSet.aggregate` when not overridden there
         :returns: a :class:`PapyrusDescriptorSet`
         """
+        descriptor_set = PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
         source = self.papyrus_params.get('_source')
         if source is not None:
             source.request_descriptors(desc_type)
-        return PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
+        return descriptor_set
 
     # ------------------------------------------------------------------
     # Administration
@@ -1494,10 +1495,11 @@ class PapyrusMoleculeSet:
             :meth:`~PapyrusDescriptorSet.aggregate` when not overridden there
         :returns: a :class:`PapyrusDescriptorSet`
         """
+        descriptor_set = PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
         source = self.papyrus_params.get('_source')
         if source is not None:
             source.request_descriptors(desc_type)
-        return PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
+        return descriptor_set
 
     # ------------------------------------------------------------------
     # Dunder
@@ -1534,6 +1536,11 @@ class PapyrusDescriptorSet:
             progress: bool = False,
     ) -> None:
         """Record *dataset* and *desc_type*; nothing is loaded until :meth:`aggregate`."""
+        if desc_type not in reader._VALID_DESC_TYPES:
+            raise ValueError(
+                f'desc_type must be one of {sorted(reader._VALID_DESC_TYPES)}, '
+                f'got {desc_type!r}',
+            )
         self._dataset = dataset
         self._desc_type = desc_type
         self._default_progress = progress

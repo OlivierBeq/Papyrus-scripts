@@ -719,6 +719,17 @@ class TestMoleculesAndMolecularDescriptorsAreLazy(unittest.TestCase):
         self.assertIsInstance(desc_set, PapyrusDescriptorSet)
         self.assertIsNone(desc_set.data)
 
+    def test_molecular_descriptors_rejects_invalid_desc_type_before_downloading(self):
+        """Invalid desc_type raises immediately, before any download starts."""
+        with (
+            patch('src.papyrus_scripts.oop.reader.read_molecular_descriptors') as mock_read,
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+        ):
+            with self.assertRaises(ValueError):
+                self.dataset.molecular_descriptors('rdkit')
+            mock_read.assert_not_called()
+            mock_download.assert_not_called()
+
     def test_molecules_aggregate_reads_without_downloading_on_a_cache_hit(self):
         mol_set = self.dataset.molecules()
         structures = pl.DataFrame({'connectivity': [], 'mol': []})
@@ -1279,6 +1290,18 @@ class TestPapyrusMoleculeSetExtras(unittest.TestCase):
         desc_set = mol_set.molecular_descriptors('mold2')
         self.assertIsInstance(desc_set, PapyrusDescriptorSet)
         self.assertIn('mold2', dataset.papyrus_params['_source']._descriptor_types)
+
+    def test_molecular_descriptors_invalid_desc_type_not_registered_with_source(self):
+        with (
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=1),
+            patch('src.papyrus_scripts.oop.reader.read_papyrus', return_value=pl.DataFrame()),
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()),
+        ):
+            dataset = PapyrusDataset(version='2022.04.2', download_progress=False)
+        mol_set = dataset.molecules()
+        with self.assertRaises(ValueError):
+            mol_set.molecular_descriptors('rdkit')
+        self.assertNotIn('rdkit', dataset.papyrus_params['_source']._descriptor_types)
 
 
 class TestPapyrusDescriptorSetExtras(unittest.TestCase):
