@@ -24,7 +24,7 @@ from rdkit.Chem import (
 )
 from tqdm.auto import tqdm
 
-from .IO import notebook_safe_ncols
+from .IO import notebook_safe_ncols, widen_indeterminate_notebook_bar
 
 
 @contextmanager
@@ -685,6 +685,7 @@ class MolSupplier:
         enumerated = enumerate(self._inner_supplier, self._iter_start)
         if self._iter_progress:
             enumerated = tqdm(enumerated, total=self._iter_total, ncols=notebook_safe_ncols(100))
+            widen_indeterminate_notebook_bar(enumerated)
 
         failed_ids: list[int] = []
         try:
