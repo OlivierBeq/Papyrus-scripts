@@ -1493,6 +1493,9 @@ class _MappingMixin:
     def _get_mapping(self, ids: list[int] | int) -> pl.DataFrame:
         """Return a DataFrame with Papyrus identifiers for the given integer *ids*.
 
+        Reads the table once and joins in memory - a per-id ``where()`` loop
+        doesn't scale to large hit counts.
+
         :param ids: one or more molecule IDs from the similarity/substructure result
         :raises ValueError: if any ID is not an integer or is not in the database
         """
@@ -1507,16 +1510,16 @@ class _MappingMixin:
         with tb.open_file(self.fp_filename) as fp_file:
             mappings_table = fp_file.root.mol_mappings
             colnames = mappings_table.cols._v_colnames
-            rows = []
-            for i in ids:
-                ptr = mappings_table.where(f'idnumber == {i}')
-                try:
-                    rows.append(next(ptr).fetch_all_fields())
-                except StopIteration:
-                    raise ValueError(f'Index {i} not found in the database.') from None
+            data = mappings_table.read()
 
-        rows_as_dicts = [dict(zip(colnames, r, strict=True)) for r in rows]
-        return _decode_bytes_df(pl.DataFrame(rows_as_dicts))
+        full = _decode_bytes_df(pl.DataFrame({c: data[c] for c in colnames}))
+        result = pl.DataFrame({'idnumber': pl.Series(ids, dtype=pl.Int64)}).join(
+            full, on='idnumber', how='left',
+        )
+        missing = result.filter(pl.col('InChIKey').is_null())
+        if missing.height:
+            raise ValueError(f'Index {missing["idnumber"][0]} not found in the database.')
+        return result
 
 
 # ---------------------------------------------------------------------------

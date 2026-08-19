@@ -1181,13 +1181,17 @@ class TestMappingMixinGetMapping(unittest.TestCase):
         obj.fp_filename = 'fake.h5'
         return obj
 
-    def test_wraps_scalar_id_in_list(self):
-        obj = self._make_mixin()
-        row = MagicMock()
-        row.fetch_all_fields.return_value = (1, b'CONN', b'INCHI')
+    _MAPPING_DTYPE = [('idnumber', '<i8'), ('connectivity', 'S4'), ('InChIKey', 'S5')]
+
+    def _mock_mappings_table(self, rows: list[tuple]) -> MagicMock:
         mappings_table = MagicMock()
         mappings_table.cols._v_colnames = ['idnumber', 'connectivity', 'InChIKey']
-        mappings_table.where.return_value = iter([row])
+        mappings_table.read.return_value = np.array(rows, dtype=self._MAPPING_DTYPE)
+        return mappings_table
+
+    def test_wraps_scalar_id_in_list(self):
+        obj = self._make_mixin()
+        mappings_table = self._mock_mappings_table([(1, b'CONN', b'INCHI')])
         h5file = MagicMock()
         h5file.root.mol_mappings = mappings_table
         with patch.object(ss, 'tb', create=True) as mock_tb:
@@ -1208,9 +1212,7 @@ class TestMappingMixinGetMapping(unittest.TestCase):
 
     def test_missing_id_raises(self):
         obj = self._make_mixin()
-        mappings_table = MagicMock()
-        mappings_table.cols._v_colnames = ['idnumber', 'connectivity', 'InChIKey']
-        mappings_table.where.return_value = iter([])
+        mappings_table = self._mock_mappings_table([])
         h5file = MagicMock()
         h5file.root.mol_mappings = mappings_table
         with patch.object(ss, 'tb', create=True) as mock_tb:
