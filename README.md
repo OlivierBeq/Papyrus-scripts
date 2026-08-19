@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/refs/heads/master/figures/logo/Papyrus_trnsp-bg-white.svg" alt="Papyrus logo" width="200">
+  <img src="https://raw.githubusercontent.com/OlivierBeq/Papyrus-scripts/refs/heads/master/figures/logo/Papyrus_trnsp-bg.svg" alt="Papyrus logo" width="200">
 
   # 📜 Papyrus-scripts
 
