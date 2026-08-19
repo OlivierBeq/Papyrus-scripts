@@ -55,6 +55,20 @@ _user_agent_factory: Any | None = None
 _BLOCKED_STATUS_CODES = frozenset({403, 429})
 
 
+def notebook_safe_ncols(ncols: int | None) -> int | None:
+    """Return *ncols*, or ``None`` if ``tqdm.auto`` resolved to the notebook widget backend.
+
+    tqdm.notebook treats ``ncols`` as a pixel width, not a character count,
+    so a terminal-sized value squashes the widget. MRO check is needed since
+    tqdm.auto's notebook class subclasses tqdm_notebook but reports
+    ``__module__ == 'tqdm.auto'``.
+    """
+    from tqdm.notebook import tqdm_notebook
+    if issubclass(tqdm, tqdm_notebook):
+        return None
+    return ncols
+
+
 def get_user_agent(randomize: bool = False) -> str:
     """Return a User-Agent string to send with requests to external APIs.
 
@@ -1206,7 +1220,7 @@ def convert_xz_to_parquet(
 
     pbar = tqdm(
         desc=desc, unit=' rows', unit_scale=True, position=position,
-        total=total, leave=leave, ncols=ncols,
+        total=total, leave=leave, ncols=notebook_safe_ncols(ncols),
     ) if progress else None
     try:
         while True:
@@ -1429,7 +1443,7 @@ def convert_sd_to_parquet(
 
     pbar = tqdm(
         desc=desc, unit=' mols', unit_scale=True, position=position,
-        total=total, leave=leave, ncols=ncols,
+        total=total, leave=leave, ncols=notebook_safe_ncols(ncols),
     ) if progress else None
     try:
         with pq.ParquetWriter(tmp_parquet, schema, compression='zstd') as writer:
