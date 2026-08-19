@@ -20,6 +20,7 @@ from unittest.mock import ANY, MagicMock, call, patch
 
 import numpy as np
 import polars as pl
+import pytest
 from rdkit import Chem
 
 from src.papyrus_scripts import fingerprint as fp
@@ -1711,6 +1712,10 @@ class TestParallelCreateProgressReporting(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_TABLES and HAS_FPSIM2, 'requires tables and FPSim2')
+# pytables >=3.11 can raise AttributeError from a Table/EArray's __del__
+# during cyclic-GC finalization after its File is already closed - a
+# finalizer bug, not a correctness issue; silenced rather than worked around.
+@pytest.mark.filterwarnings('ignore::pytest.PytestUnraisableExceptionWarning')
 class TestFPSubSim2AllFingerprints(unittest.TestCase):
     """End-to-end (unmocked): build a real .h5 db with every fingerprint type and query it."""
 
