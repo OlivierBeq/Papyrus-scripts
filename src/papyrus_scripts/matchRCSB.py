@@ -249,11 +249,8 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
         # Update the data if possible
         if update:
             _ = update_rcsb_data(root_folder, verbose=verbose)
-        # Set pystow root folder
-        IO._set_root_folder(root_folder)
-        papyrus_root = pystow.module('papyrus')
-        rcsb_data_path = papyrus_root.join('rcsb', name='RCSB_data.tsv.xz')
-        # Read the data mapping
+        # Read the mapping from where update_rcsb_data() wrote it
+        rcsb_data_path = papyrus_rcsb_data_root(root_folder).join('rcsb', name='RCSB_data.tsv.xz')
         rcsb_data = pl.read_csv(rcsb_data_path, separator='\t')
         if 'SMILES' in rcsb_data.columns:
             rcsb_data = rcsb_data.drop('SMILES')
