@@ -86,7 +86,7 @@ class TestPdbmatchCommand(unittest.TestCase):
         with (
             patch('src.papyrus_scripts.cli.update_rcsb_data') as mock_update,
             patch('src.papyrus_scripts.cli.read_papyrus', return_value=MagicMock()) as mock_read,
-            patch('src.papyrus_scripts.cli.get_num_rows_in_file', return_value=2_000_000),
+            patch('src.papyrus_scripts.cli.get_num_rows_in_file', return_value=2_000_000) as mock_rows,
             patch('src.papyrus_scripts.cli.get_matches', return_value=[chunk1, chunk2]) as mock_matches,
             runner.isolated_filesystem(),
         ):
@@ -97,6 +97,22 @@ class TestPdbmatchCommand(unittest.TestCase):
         self.assertEqual(mock_matches.call_args.kwargs['total'], 2)
         chunk1.to_csv.assert_called_once_with('out.tsv', sep='\t', index=False, header=True, mode='w')
         chunk2.to_csv.assert_called_once_with('out.tsv', sep='\t', index=False, header=False, mode='a')
+        # get_num_rows_in_file must use the same dataset variant as read_papyrus.
+        self.assertEqual(mock_rows.call_args.kwargs['plusplus'], mock_read.call_args.kwargs['plusplus'])
+
+    def test_more_flag_uses_full_dataset_row_count(self):
+        runner = CliRunner()
+        with (
+            patch('src.papyrus_scripts.cli.update_rcsb_data'),
+            patch('src.papyrus_scripts.cli.read_papyrus', return_value=MagicMock()) as mock_read,
+            patch('src.papyrus_scripts.cli.get_num_rows_in_file', return_value=2_000_000) as mock_rows,
+            patch('src.papyrus_scripts.cli.get_matches', return_value=[]),
+            runner.isolated_filesystem(),
+        ):
+            result = runner.invoke(main, ['pdbmatch', '--output', 'out.tsv', '--more'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertFalse(mock_read.call_args.kwargs['plusplus'])
+        self.assertFalse(mock_rows.call_args.kwargs['plusplus'])
 
 
 class TestFpsubsim2MutexOption(unittest.TestCase):

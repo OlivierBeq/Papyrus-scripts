@@ -216,7 +216,8 @@ def pdbmatch(indir: str | None, output: str, version: str, more: bool, is3D: boo
     data = read_papyrus(is3d=is3D, version=version, plusplus=not more,
                         chunksize=CHUNKSIZE, source_path=indir,
                         )
-    total = get_num_rows_in_file('bioactivities', is3D=is3D, version=version, root_folder=indir)
+    total = get_num_rows_in_file('bioactivities', is3D=is3D, version=version,
+                                  plusplus=not more, root_folder=indir)
     matched_data = get_matches(
         data=data, root_folder=indir, verbose=verbose,
         total=int(round(total / CHUNKSIZE, 0)), update=False,
