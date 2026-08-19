@@ -950,8 +950,8 @@ def download_papyrus(outdir: str | Path | None = None,
                                         for ft in to_convert_ftypes
                                     ]
                                     if all(n is not None for n in per_file_rows):
-                                        converting_pbar.total = sum(per_file_rows)
-                                        converting_pbar.refresh()
+                                        # reset() syncs the widget's max too, unlike plain `.total =`.
+                                        converting_pbar.reset(total=sum(per_file_rows))
                         if task_queue is None:
                             raise RuntimeError('task_queue not created')
                         _enqueue({
