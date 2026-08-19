@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import polars as pl
+from sklearn.preprocessing import StandardScaler
 
 try:
     import skorch
@@ -102,7 +103,7 @@ class BaseNN:
     def __init__(self, out: str | Path, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  hidden_layers: list[int] | None = None,
-                 random_seed: int | None = None, **kwargs) -> None:
+                 random_seed: int | None = None, scale: bool = True, **kwargs) -> None:
         """Configure the estimator.
 
         :param out: output folder for checkpoints (best weights, optimizer
@@ -117,6 +118,9 @@ class BaseNN:
         :param hidden_layers: sizes of the hidden layers between the input
             and output layers; defaults to ``[8000, 4000, 2000]``
         :param random_seed: seed of random number generators
+        :param scale: standardize input features; fit on the training set
+            only and reused for validation/inference. Defaults to ``True``,
+            as unscaled features hurt convergence.
         """
         _require_torch()
         self.out = Path(out)
@@ -126,6 +130,10 @@ class BaseNN:
         self.random_seed = random_seed
         self.rng = np.random.default_rng(random_seed) if random_seed is not None else None
         self._dims: list[int] | None = None
+        self.scale = scale
+        self.scaler_: StandardScaler | None = None
+        self._valid_X_raw: np.ndarray | None = None
+        self._valid_y_prepped: np.ndarray | None = None
         _set_seed(random_seed)
 
         callbacks = [
@@ -194,14 +202,24 @@ class BaseNN:
         Must be called after :meth:`set_architecture`, which determines how
         *y* needs to be encoded (e.g. class indices vs. one-hot probabilities).
 
+        Scaling of *X* is deferred to :meth:`fit`, since the scaler must be
+        fit on the training set only.
+
         :param X: features to predict y from
         :param y: feature(s) to be predicted (dependent variable(s))
         """
-        self.train_split = predefined_split(SkorchDataset(self._prep_X(X), self._prep_y(y)))
+        self._valid_X_raw = self._prep_X(X)
+        self._valid_y_prepped = self._prep_y(y)
 
     # ------------------------------------------------------------------
     # sklearn-style estimator interface
     # ------------------------------------------------------------------
+
+    def _scale(self, X: np.ndarray) -> np.ndarray:
+        """Apply the fitted scaler to already-prepped features, if scaling is enabled."""
+        if not self.scale:
+            return X
+        return self.scaler_.transform(X).astype('float32')
 
     def fit(self, X: pd.DataFrame | np.ndarray, y: pd.Series | pd.DataFrame | np.ndarray, **kwargs) -> BaseNN:
         """Fit the network on the training set, validating against the set from :meth:`set_validation`.
@@ -209,16 +227,22 @@ class BaseNN:
         :param X: features to predict y from
         :param y: feature(s) to be predicted (dependent variable(s))
         """
-        if self.train_split is None:
+        if self._valid_X_raw is None:
             raise ValueError('call set_validation(X, y) before fit()')
-        return super().fit(self._prep_X(X), self._prep_y(y), **kwargs)  # type: ignore[misc]
+        X_prepped = self._prep_X(X)
+        if self.scale:
+            self.scaler_ = StandardScaler().fit(X_prepped)
+        self.train_split = predefined_split(
+            SkorchDataset(self._scale(self._valid_X_raw), self._valid_y_prepped),
+        )
+        return super().fit(self._scale(X_prepped), self._prep_y(y), **kwargs)  # type: ignore[misc]
 
     def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         """Predict class/task probabilities for the incoming data.
 
         :param X: features to predict the endpoint probabilities from
         """
-        return super().predict_proba(self._prep_X(X))  # type: ignore[misc]
+        return super().predict_proba(self._scale(self._prep_X(X)))  # type: ignore[misc]
 
     def reset(self) -> None:
         """Reset weights, optimizer and criterion to a freshly initialised state."""
