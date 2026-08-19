@@ -1,384 +1,533 @@
 # -*- coding: utf-8 -*-
 
-"""Reading capacities of the Papyrus-scripts."""
-from __future__ import annotations
+"""Reading functions for the Papyrus dataset."""
 
-import json
-import os
-from typing import Optional, Union, Iterator, List
-from functools import partial
+from collections.abc import Generator
+from functools import reduce
+from pathlib import Path
 
-import pystow
-import pandas as pd
-from tqdm.auto import tqdm
+import polars as pl
 from prodec import Descriptor, Transform
+from tqdm.auto import tqdm
 
+from .utils.IO import (
+    PapyrusVersion,
+    _prefer_parquet,
+    _set_root_folder,
+    convert_xz_to_parquet,
+    load_data_type_schemas,
+    locate_file,
+    papyrus_version_module,
+    process_data_version,
+)
 from .utils.mol_reader import MolSupplier
-from .utils.IO import locate_file, process_data_version, TypeDecoder, PapyrusVersion
 
 
-def read_papyrus(is3d: bool = False, version: str | PapyrusVersion = 'latest', plusplus: bool = True,
-                 chunksize: Optional[int] = None, source_path: Optional[str] = None
-                 ) -> Union[Iterator[pd.DataFrame], pd.DataFrame]:
+def _scan_tabular(filepath: Path, **read_kw) -> pl.LazyFrame:
+    """Return a lazy scan of a Papyrus tabular file.
 
-    """Read the Papyrus dataset.
-
-    :param is3d: whether to consider stereochemistry or not (default: False)
-    :param version: version of the dataset to be read
-    :param plusplus: read the Papyrus++ curated subset of very high quality
-    :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
-    :return: the Papyrus activity dataset
+    Scans a pre-converted ``.parquet`` file directly (dtypes are embedded,
+    *read_kw* is unused). A ``.xz`` original with no ``.parquet`` sibling yet
+    (data downloaded before this project converted tabular files, or with
+    ``keep_xz=True``) is converted once, via the same memory-bounded chunked
+    conversion ``download_papyrus`` uses, and the resulting Parquet file is
+    scanned lazily instead - handing Polars the whole decompressed CSV
+    content in memory (the only way to give ``pl.scan_csv`` ``.xz`` data,
+    since it only decompresses ``.gz`` natively) defeats laziness entirely
+    and OOMs on multi-GB Papyrus files. ``.gz``/uncompressed originals are
+    scanned directly since Polars streams those without materialising the
+    whole file first.
     """
-    # Papyrus++ with stereo does not exist
+    if filepath.suffix == '.parquet':
+        return pl.scan_parquet(filepath)
+    if filepath.suffix == '.xz':
+        parquet_path = filepath.with_suffix('.parquet')
+        if not parquet_path.is_file():
+            convert_xz_to_parquet(
+                filepath, parquet_path,
+                separator=read_kw.get('separator', '\t'),
+                schema_overrides=read_kw.get('schema_overrides'),
+                null_values=read_kw.get('null_values'),
+                progress=True,
+            )
+        return pl.scan_parquet(parquet_path)
+    # Default quoting (quote_char='"') is deliberately left enabled - some
+    # Papyrus columns (InChI_AuxInfo, doc_id/citation fields) legitimately
+    # hold values with an embedded literal '"' and even a literal newline,
+    # properly RFC4180-quoted by the exporter. Disabling quoting doesn't
+    # avoid a bug, it causes one: it corrupts those specific records by
+    # splitting one logical row into several garbage fragments instead of
+    # reconstructing the single multi-line record correctly.
+    return pl.scan_csv(filepath, **read_kw)
+
+
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+
+#: A single eager DataFrame or a lazy scan (non-greedy).
+DataOrChunks = pl.DataFrame | pl.LazyFrame
+
+#: Anything accepted as a ``version`` argument.
+VersionArg = str | PapyrusVersion
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_version(
+    version: VersionArg,
+    source_path: str | Path | None,
+) -> PapyrusVersion:
+    """Set pystow home and validate *version* against local data."""
+    _set_root_folder(source_path)
+    return process_data_version(version=version, root_folder=source_path)
+
+
+# ---------------------------------------------------------------------------
+# Molecular-descriptor helpers
+# ---------------------------------------------------------------------------
+
+#: {key: (pattern_tmpl, schema_key_tmpl, dims)} - *dims* lists which of
+#: {False (2D), True (3D)} Papyrus actually ships for this descriptor type.
+#: mold2/CDDD are 2D-only tools - Papyrus never publishes a 3D variant of
+#: either (confirmed against links.json: only '2D_mold2'/'2D_cddd' exist,
+#: no '3D_mold2'/'3D_cddd') - so desc_type='all' must skip them for
+#: is3d=True instead of unconditionally trying (and failing to find) a file
+#: that structurally never exists for this dataset.
+_MOL_DESC_REGISTRY = {
+    'mold2':       (r'\d+\.\d+_combined_{dim}D_moldescs_mold2\.tsv.*',             'mold2',              (False,)),
+    'mordred':     (r'\d+\.\d+_combined_{dim}D_moldescs_mordred{dim_int}D\.tsv.*', 'mordred_{dim_int}D', (False, True)),
+    'cddd':        (r'\d+\.\d+_combined_{dim}D_moldescs_CDDDs\.tsv.*',             'CDDD',               (False,)),
+    'fingerprint': (r'\d+\.\d+_combined_{dim}D_moldescs_{fp}\.tsv.*',              '{fp}',               (False, True)),
+    'moe':         (r'\d+\.\d+_combined_{dim}D_moldescs_MOE\.tsv.*',               None,                 (False, True)),
+}
+
+_VALID_DESC_TYPES = frozenset(_MOL_DESC_REGISTRY) | {'all'}
+
+
+def _resolve_mol_desc_pattern(key: str, is3d: bool):
+    pattern_tmpl, schema_key_tmpl, _dims = _MOL_DESC_REGISTRY[key]
+    dim     = '3' if is3d else '2'
+    dim_int = 3   if is3d else 2
+    fp      = 'E3FP' if is3d else 'ECFP6'
+    pattern    = pattern_tmpl.format(dim=dim, dim_int=dim_int, fp=fp)
+    schema_key = (
+        schema_key_tmpl.format(dim=dim, dim_int=dim_int, fp=fp)
+        if schema_key_tmpl is not None else None
+    )
+    return pattern, schema_key
+
+
+def _read_one_mol_descriptor(
+    key: str,
+    is3d: bool,
+    desc_dir: str | Path,
+    schemas: dict,
+    lazy: bool,
+    ids: list[str] | None,
+    id_col: str,
+) -> DataOrChunks:
+    pattern, schema_key = _resolve_mol_desc_pattern(key, is3d)
+    files  = locate_file(desc_dir, pattern)
+    schema = schemas.get(schema_key) if schema_key is not None else None
+    read_kw: dict = dict(separator='\t')
+    if schema:
+        read_kw['schema_overrides'] = schema
+    picked = _prefer_parquet(files)
+    data: pl.LazyFrame = _scan_tabular(picked, **read_kw)
+    if ids is not None:
+        data = data.filter(pl.col(id_col).is_in(ids))
+    return data if lazy else data.collect()
+
+
+# ---------------------------------------------------------------------------
+# Public readers
+# ---------------------------------------------------------------------------
+
+def read_papyrus(
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    plusplus: bool = True,
+    chunksize: int | None = None,
+    source_path: str | Path | None = None,
+) -> DataOrChunks:
+    """Read the Papyrus bioactivity dataset.
+
+    :param is3d: load the stereochemistry-aware (3D) variant (default: False)
+    :param version: dataset version to read
+    :param plusplus: load the high-quality Papyrus++ subset (default: True)
+    :param chunksize: when not ``None``, return a lazy :class:`~polars.LazyFrame`
+        instead of loading everything into memory.  The numeric value is no
+        longer used as a row count — any non-``None`` value enables lazy mode.
+    :param source_path: root directory for Papyrus data
+    :raises ValueError: if the 3D Papyrus++ combination is requested
+    """
     if is3d and plusplus:
         raise ValueError('Papyrus++ is only available without stereochemistry.')
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Load data types
-    dtype_file = source_path.join(name='data_types.json').as_posix()
-    with open(dtype_file, 'r') as jsonfile:
-        dtypes = json.load(jsonfile, cls=TypeDecoder)['papyrus']
-    # Find the file
-    filenames = locate_file(source_path.base.as_posix(),
-                            r'\d+\.\d+' + (r'\+\+' if plusplus else '') + '_combined_set_'
-                            f'with{"out" if not is3d else ""}' + r'_stereochemistry\.tsv.*')
-    return pd.read_csv(filenames[0], sep='\t', chunksize=chunksize, dtype=dtypes, low_memory=True)
+
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+    schema     = load_data_type_schemas(source_mod).get('papyrus', {})
+
+    stereo_tag = 'with' if is3d else 'without'
+    pp_tag     = r'\+\+' if plusplus else ''
+    pattern    = rf'\d+\.\d+{pp_tag}_combined_set_{stereo_tag}_stereochemistry\.tsv.*'
+
+    filenames = locate_file(source_mod.base, pattern)
+    picked    = _prefer_parquet(filenames)
+    data      = _scan_tabular(picked, separator='\t', schema_overrides=schema)
+    return data if chunksize is not None else data.collect()
 
 
-def read_protein_set(source_path: Optional[str] = None, version: str | PapyrusVersion = 'latest') -> pd.DataFrame:
-    """Read the protein targets of the Papyrus dataset.
+def read_protein_set(
+    source_path: str | Path | None = None,
+    version: VersionArg = 'latest',
+) -> pl.DataFrame:
+    """Read the protein-target table of the Papyrus dataset.
 
-        :param source_path: folder containing the molecular descriptor datasets
-        :param version: version of the dataset to be read
-        :return: the set of protein targets in the Papyrus dataset
-        """
-    version = process_data_version(version=version, root_folder=source_path)
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Find the file
-    filenames = locate_file(source_path.base.as_posix(), r'\d+\.\d+_combined_set_protein_targets\.tsv.*')
-    return pd.read_csv(filenames[0], sep='\t', keep_default_na=False)
-
-
-def read_molecular_descriptors(desc_type: str = 'mold2', is3d: bool = False,
-                               version: str | PapyrusVersion = 'latest', chunksize: Optional[int] = None,
-                               source_path: Optional[str] = None,
-                               ids: Optional[List[str]] = None, verbose: bool = True):
-    """Get molecular descriptors
-
-    :param desc_type: type of descriptor {'mold2', 'mordred', 'cddd', 'fingerprint', 'moe', 'all'}
-    :param is3d: whether to load descriptors of the dataset containing stereochemistry
-    :param version: version of the dataset to be read
-    :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
-    :param ids: identifiers of the molecules which descriptors should be loaded
-                if is3d=True, then identifiers are InChIKeys, otherwise connectivities
-    :param verbose: whether to show progress
-    :return: the dataframe of molecular descriptors
+    :param source_path: root directory for Papyrus data
+    :param version: dataset version to read
     """
-    if desc_type not in ['mold2', 'mordred', 'cddd', 'fingerprint', 'moe', 'all']:
-        raise ValueError("descriptor type not supported")
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Load data types
-    dtype_file = source_path.join(name='data_types.json').as_posix()
-    with open(dtype_file, 'r') as jsonfile:
-        dtypes = json.load(jsonfile, cls=TypeDecoder)
-    # Find the files
-    if desc_type in ['mold2', 'all']:
-        mold2_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_mold2\.tsv.*')
-    elif desc_type in ['mordred', 'all']:
-        mordd_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_mordred{3 if is3d else 2}D\.tsv.*')
-    elif desc_type in ['cddd', 'all']:
-        cddds_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_CDDDs.tsv.*')
-    elif desc_type in ['fingerprint', 'all']:
-        molfp_files = locate_file(source_path.join('descriptors').as_posix(),
-                                  rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_{"E3FP" if is3d else "ECFP6"}\.tsv.*')
-    elif desc_type in ['moe', 'all']:
-        moe_files = locate_file(source_path.join('descriptors').as_posix(),
-                                rf'\d+\.\d+_combined_{3 if is3d else 2}D_moldescs_MOE\.tsv.*')
-    if verbose:
-        pbar = partial(tqdm, desc='Loading molecular descriptors')
-    else:
-        pbar = partial(iter)
-    if desc_type == 'mold2':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(mold2_files[0], sep='\t',
-                                                              dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'mordred':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(mordd_files[0], sep='\t',
-                                                              dtype=dtypes[f'mordred_{3 if is3d else 2}D'], low_memory=True,
-                                                              chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'cddd':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(cddds_files[0], sep='\t',
-                                                              dtype=dtypes['CDDD'], low_memory=True, chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'fingerprint':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(molfp_files[0], sep='\t',
-                                                              dtype=dtypes[f'{"E3FP" if is3d else "ECFP6"}'],
-                                                              low_memory=True, chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'moe':
-        return _filter_molecular_descriptors(pbar(pd.read_csv(moe_files[0], sep='\t',
-                                                              low_memory=True, chunksize=chunksize)),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
-    elif desc_type == 'all':
-        mold2 = _filter_molecular_descriptors(pd.read_csv(mold2_files[0], sep='\t',
-                                                          dtype=dtypes['mold2'], low_memory=True, chunksize=chunksize),
-                                              ids, 'InChIKey' if is3d else 'connectivity')
-        mordd = _filter_molecular_descriptors(pd.read_csv(mordd_files[0], sep='\t',
-                                                          dtype=dtypes[f'mordred_{3 if is3d else 2}D'],
-                                                          low_memory=True, chunksize=chunksize),
-                                              ids, 'InChIKey' if is3d else 'connectivity')
-        cddds = _filter_molecular_descriptors(pd.read_csv(cddds_files[0], sep='\t', dtype=dtypes['CDDD'],
-                                                          low_memory=True, chunksize=chunksize),
-                                              ids, 'InChIKey' if is3d else 'connectivity')
-        molfp = _filter_molecular_descriptors(pd.read_csv(molfp_files[0], sep='\t',
-                                                          dtype=dtypes[f'{"E3FP" if is3d else "ECFP6"}'],
-                                                          low_memory=True, chunksize=chunksize),
-                                              ids, 'InChIKey' if is3d else 'connectivity')
-        moe = _filter_molecular_descriptors(pd.read_csv(moe_files[0], sep='\t', low_memory=True, chunksize=chunksize),
-                                            ids, 'InChIKey' if is3d else 'connectivity')
-        if chunksize is None:
-            mold2.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            mordd.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            molfp.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            cddds.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            moe.set_index('InChIKey' if is3d else 'connectivity', inplace=True)
-            data = pd.concat([mold2, mordd, cddds, molfp, moe], axis=1)
-            del mold2, mordd, cddds, molfp, moe
-            data.reset_index(inplace=True)
-            return data
-        return _filter_molecular_descriptors(pbar(_join_molecular_descriptors(mold2, mordd, molfp, cddds, moe,
-                                                                              on='InChIKey' if is3d else 'connectivity')),
-                                                  ids, 'InChIKey' if is3d else 'connectivity')
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+
+    filenames = locate_file(
+        source_mod.base,
+        r'\d+\.\d+_combined_set_protein_targets\.tsv.*',
+    )
+    picked = _prefer_parquet(filenames)
+    # null_values=[] keeps empty strings as empty strings (no implicit NA) -
+    # only takes effect on the .xz/.gz fallback path; the Parquet file (when
+    # present) was already written with the same null_values by download_papyrus.
+    return _scan_tabular(picked, separator='\t', null_values=[]).collect()
 
 
-def _join_molecular_descriptors(*descriptors: Iterator, on: str = 'connectivity') -> Iterator:
-    """Concatenate multiple types of molecular descriptors on the same identifier.
+def read_molecular_descriptors(
+    desc_type: str = 'mold2',
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    chunksize: int | None = None,
+    source_path: str | Path | None = None,
+    ids: list[str] | None = None,
+    verbose: bool = True,
+) -> DataOrChunks:
+    """Read pre-computed molecular descriptors.
 
-    :param descriptors: the different iterators of descriptors to be joined
-    :param on: identifier to join the descriptors on
+    :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
+        ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
+    :param is3d: load descriptors for the stereochemistry-aware variant
+    :param version: dataset version to read
+    :param chunksize: when not ``None``, return a lazy :class:`~polars.LazyFrame`.
+        The numeric value is no longer used — any non-``None`` value enables
+        lazy mode.
+    :param source_path: root directory for Papyrus data
+    :param ids: molecule identifiers to retain; ``None`` keeps all
+    :param verbose: unused; kept for API compatibility
+    :raises ValueError: if *desc_type* is not recognised
     """
-    try:
-        while True:
-            values = [next(descriptor).set_index(on) for descriptor in descriptors]
-            data = pd.concat(values, axis=1)
-            data.reset_index(inplace=True)
-            yield data
-    except StopIteration:
-        raise StopIteration
+    if desc_type not in _VALID_DESC_TYPES:
+        raise ValueError(
+            f'desc_type must be one of {sorted(_VALID_DESC_TYPES)}, '
+            f'got {desc_type!r}',
+        )
+
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+    schemas    = load_data_type_schemas(source_mod)
+    desc_dir   = source_mod.join('descriptors')
+    id_col     = 'InChIKey' if is3d else 'connectivity'
+    lazy       = chunksize is not None
+
+    if desc_type != 'all':
+        return _read_one_mol_descriptor(desc_type, is3d, desc_dir, schemas, lazy, ids, id_col)
+
+    available = [k for k, (_, _, dims) in _MOL_DESC_REGISTRY.items() if is3d in dims]
+    all_keys  = [k for k in available if k != 'moe'] + [k for k in available if k == 'moe']
+    frames    = [
+        _read_one_mol_descriptor(k, is3d, desc_dir, schemas, lazy, ids, id_col)
+        for k in all_keys
+    ]
+    # Join all descriptor frames on the common identifier column. Every frame
+    # shares the same concrete type (driven by the single `lazy` flag above),
+    # a guarantee polars' overloaded join() can't express for a plain
+    # DataFrame | LazyFrame union.
+    return reduce(lambda a, b: a.join(b, on=id_col, how='inner'), frames)  # type: ignore[arg-type]
 
 
-def _filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
-                                  ids: Optional[List[str]], id_name: str):
-    if isinstance(data, pd.DataFrame):
-        if ids is None:
-            return _iterate_filter_descriptors(data, None, None)
-        return data[data[id_name].isin(ids)]
-    else:
-        return _iterate_filter_descriptors(data, ids, id_name)
+def read_protein_descriptors(
+    desc_type: str | Descriptor | Transform = 'unirep',
+    version: VersionArg = 'latest',
+    chunksize: int | None = None,
+    source_path: str | Path | None = None,
+    ids: list[str] | None = None,
+    verbose: bool = True,
+    **kwargs,
+) -> pl.DataFrame:
+    """Read protein descriptors.
 
-
-def _iterate_filter_descriptors(data: Iterator, ids: Optional[List[str]], id_name: Optional[str]):
-    for chunk in data:
-        if ids is None:
-            yield chunk
-        else:
-            yield chunk[chunk[id_name].isin(ids)]
-
-
-def read_protein_descriptors(desc_type: Union[str, Descriptor, Transform] = 'unirep',
-                             version: str | PapyrusVersion = 'latest', chunksize: Optional[int] = None,
-                             source_path: Optional[str] = None,
-                             ids: Optional[List[str]] = None, verbose: bool = True,
-                             **kwargs):
-    """Get protein descriptors
-
-   :param desc_type: type of descriptor {'unirep'} or a prodec instance of a Descriptor or Transform
-   :param version: version of the dataset to be read
-   :param chunksize: number of lines per chunk. To read without chunks, set to None
-   :param source_path: If desc_type is 'unirep', folder containing the protein descriptor datasets.
-   If desc_type is 'custom', the file path to a tab-separated dataframe containing target_id
-   as its first column and custom descriptors in the following ones.
-   If desc_type is a ProDEC Descriptor or Transform instance, folder containing the bioactivity dataset
-   (default: pystow's home folder)
-   :param ids: identifiers of the sequences which descriptors should be loaded (e.g. P30542_WT)
-   :param verbose: whether to show progress
-   :param kwargs: keyword arguments passed to the `pandas` method of the ProDEC Descriptor or Transform instance
-                  (is ignored if `desc_type` is not a ProDEC Descriptor or Transform instance)
-   :return: the dataframe of protein descriptors
+    :param desc_type: ``'unirep'``, ``'custom'``, or a ProDEC
+        :class:`~prodec.Descriptor` / :class:`~prodec.Transform`
+    :param version: dataset version to read (ignored for ``'custom'``)
+    :param chunksize: currently has no effect; the returned DataFrame is
+        always fully materialised. Kept for API stability.
+    :param source_path: for ``'unirep'``/ProDEC: root directory for Papyrus
+        data.  For ``'custom'``: path to a TSV file.
+    :param ids: target identifiers to retain; ``None`` keeps all
+    :param verbose: unused; kept for API compatibility
+    :param kwargs: extra keyword arguments forwarded to ProDEC ``pandas_get``
     """
-    if desc_type not in ['unirep', 'custom'] and not isinstance(desc_type, (Descriptor, Transform)):
-        raise ValueError("descriptor type not supported")
-    if desc_type != 'custom':
-        # Determine default paths
-        if source_path is not None:
-            os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-        version = process_data_version(version=version, root_folder=source_path)
-        source_path = pystow.module('papyrus', version.version_old_fmt)
-        if not isinstance(desc_type, (Descriptor, Transform)):
-            # Load data types
-            dtype_file = source_path.join(name='data_types.json').as_posix()
-            with open(dtype_file, 'r') as jsonfile:
-                dtypes = json.load(jsonfile, cls=TypeDecoder)
-            # Set verbose level
-            if verbose:
-                pbar = partial(tqdm, desc='Loading protein descriptors')
-            else:
-                pbar = partial(iter)
-            if desc_type == 'unirep':
-                unirep_files = locate_file(source_path.join('descriptors').as_posix(), r'(?:\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*)|(?:\d+\.\d+_combined_protdescs_unirep\.tsv.*)')
-                if len(unirep_files) == 0:
-                    raise ValueError('Could not find unirep descriptor file')
-                if desc_type == 'unirep':
-                    if chunksize is None and ids is None:
-                        return pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
-                    elif chunksize is None and ids is not None:
-                        descriptors = pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'], low_memory=True)
-                        if 'target_id' in descriptors.columns:
-                            return descriptors[descriptors['target_id'].isin(ids)]
-                        return descriptors[descriptors['TARGET_NAME'].isin(ids)].rename(columns={'TARGET_NAME': 'target_id'})
-                    elif chunksize is not None and ids is None:
-                        return pd.concat([chunk
-                                          for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
-                                                                        low_memory=True, chunksize=chunksize))
-                                          ]).rename(columns={'TARGET_NAME': 'target_id'})
-                    return pd.concat([chunk[chunk['target_id'].isin(ids)]
-                                      if 'target_id' in chunk.columns
-                                      else chunk[chunk['TARGET_NAME'].isin(ids)]
-                                      for chunk in pbar(pd.read_csv(unirep_files[0], sep='\t', dtype=dtypes['unirep'],
-                                                               low_memory=True, chunksize=chunksize))
-                                      ]).rename(columns={'TARGET_NAME': 'target_id'})
-        else:
-            # Calculate protein descriptors
-            protein_data = read_protein_set(pystow.module('').base.as_posix(), version=version)
-            protein_data.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
-            # Keep only selected proteins
-            if ids is not None:
-                protein_data = protein_data[protein_data['target_id'].isin(ids)]
-            # Filter out non-natural amino-acids
-            protein_data = protein_data.loc[protein_data['Sequence'].map(desc_type.Descriptor.is_sequence_valid), :]
-            # Obtain descriptors
-            descriptors = desc_type.pandas_get(protein_data['Sequence'].tolist(), protein_data['target_id'].tolist(),
-                                               **kwargs)
-            descriptors.rename(columns={'ID': 'target_id'}, inplace=True)
-            return descriptors
-    elif desc_type == 'custom':
-        # Check path exists
-        if not os.path.isfile(source_path):
-            raise ValueError('source_path must point to an existing file if using a custom descriptor type')
-        # No chunksier, no filtering
-        if chunksize is None and ids is None:
-            return pd.read_csv(source_path, sep='\t', low_memory=True).rename(columns={'TARGET_NAME': 'target_id'})
-        # No chunksize but filtering
-        elif chunksize is None and ids is not None:
-            descriptors = pd.read_csv(source_path, sep='\t', low_memory=True)
-            descriptors.rename(columns={'TARGET_NAME': 'target_id'}, inplace=True)
-            return descriptors[descriptors['target_id'].isin(ids)]
-        else:
-            # Set verbose level
-            if verbose:
-                pbar = partial(tqdm, desc='Loading custom protein descriptors')
-            else:
-                pbar = partial(iter)
-            # Chunksize but no filtering
-            if chunksize is not None and ids is None:
-                return pd.concat([chunk
-                                  for chunk in pbar(pd.read_csv(source_path, sep='\t',
-                                                                low_memory=True, chunksize=chunksize))
-                                  ]).rename(columns={'TARGET_NAME': 'target_id'})
-            # Both chunksize and filtering
-            return pd.concat([chunk[chunk['target_id'].isin(ids)]
-                              if 'target_id' in chunk.columns
-                              else chunk[chunk['TARGET_NAME'].isin(ids)]
-                              for chunk in pbar(pd.read_csv(source_path,
-                                                            sep='\t', low_memory=True, chunksize=chunksize))
-                              ]).rename(columns={'TARGET_NAME': 'target_id'})
+    if desc_type == 'custom':
+        if source_path is None or not Path(source_path).is_file():
+            raise ValueError(
+                'source_path must point to an existing file when desc_type="custom"',
+            )
+        return _read_custom_protein_descriptors(source_path, ids)
+
+    if isinstance(desc_type, (Descriptor, Transform)):
+        pv           = _resolve_version(version, source_path)
+        # read_protein_set expects the pystow-home-equivalent root (matching
+        # every other call site in this module) - not a version-specific
+        # subdirectory, which get_downloaded_versions can't resolve against.
+        # read_protein_set already returns a 'target_id' column - no rename needed.
+        protein_data = read_protein_set(source_path=source_path, version=pv)
+        if ids is not None:
+            protein_data = protein_data.filter(pl.col('target_id').is_in(ids))
+        protein_data = protein_data.filter(
+            pl.col('Sequence').map_elements(
+                desc_type.Descriptor.is_sequence_valid, return_dtype=pl.Boolean,
+            ),
+        )
+        # ProDEC returns a pandas DataFrame; convert to polars.
+        import pandas as _pd
+        descriptors: _pd.DataFrame = desc_type.pandas_get(
+            protein_data['Sequence'].to_list(),
+            protein_data['target_id'].to_list(),
+            **kwargs,
+        )
+        return pl.from_pandas(descriptors.rename(columns={'ID': 'target_id'}))
+
+    if desc_type == 'unirep':
+        pv         = _resolve_version(version, source_path)
+        source_mod = papyrus_version_module(pv, root_folder=source_path)
+        schemas    = load_data_type_schemas(source_mod)
+        unirep_files = locate_file(
+            source_mod.join('descriptors'),
+            r'(?:\d+\.\d+_combined_prot_embeddings_unirep\.tsv.*)'
+            r'|(?:\d+\.\d+_combined_protdescs_unirep\.tsv.*)',
+        )
+        return _read_unirep(
+            _prefer_parquet(unirep_files),
+            schema=schemas.get('unirep', {}),
+            ids=ids,
+        )
+
+    raise ValueError(
+        f'desc_type must be "unirep", "custom", or a ProDEC Descriptor/Transform, '
+        f'got {desc_type!r}',
+    )
 
 
-def read_molecular_structures(is3d: bool = False, version: str | PapyrusVersion = 'latest',
-                              chunksize: Optional[int] = None, source_path: Optional[str] = None,
-                              ids: Optional[List[str]] = None, verbose: bool = True):
-    """Get molecular structures
+def read_molecular_structures(
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    chunksize: int | None = None,
+    source_path: str | Path | None = None,
+    ids: list[str] | None = None,
+    verbose: bool = True,
+) -> pl.DataFrame | Generator[pl.DataFrame]:
+    """Read molecular structures from the Papyrus SD files.
 
-    :param is3d: whether to load descriptors of the dataset containing stereochemistry
-    :param version: version of the dataset to be read
-    :param chunksize: number of lines per chunk. To read without chunks, set to None
-    :param source_path: folder containing the bioactivity dataset (default: pystow's home folder)
-    :param ids: identifiers of the molecules which descriptors should be loaded
-                if is3d=True, then identifiers are InChIKeys, otherwise connectivities
-    :param verbose: whether to show progress
-    :return: the dataframe of molecular structures
+    Returns a :class:`~polars.DataFrame` (``chunksize=None``) or a generator
+    of DataFrames (``chunksize`` set).  The ``'mol'`` column holds RDKit
+    :class:`~rdkit.Chem.rdchem.Mol` objects stored as a Polars ``Object``
+    series.
+
+    :param is3d: load the stereochemistry-aware (3D) SD file
+    :param version: dataset version to read
+    :param chunksize: molecules per chunk; ``None`` loads all at once
+    :param source_path: root directory for Papyrus data
+    :param ids: molecule identifiers to retain; ``None`` keeps all
+    :param verbose: show a progress bar
     """
-    # Determine default paths
-    if source_path is not None:
-        os.environ['PYSTOW_HOME'] = os.path.abspath(source_path)
-    version = process_data_version(version=version, root_folder=source_path)
-    source_path = pystow.module('papyrus', version.version_old_fmt)
-    # Find the files
-    sd_files = locate_file(source_path.join('structures').as_posix(),
-                              rf'\d+\.\d+_combined_{3 if is3d else 2}D_set_with{"" if is3d else "out"}_stereochemistry.sd.*')
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+
+    stereo_tag = '' if is3d else 'out'
+    dim_tag    = 3  if is3d else 2
+    pattern    = rf'\d+\.\d+_combined_{dim_tag}D_set_with{stereo_tag}_stereochemistry\.sd.*'
+
+    sd_files = locate_file(source_mod.join('structures'), pattern)
+    sd_file  = _prefer_parquet(sd_files)
+    id_col   = 'InChIKey' if is3d else 'connectivity'
+
     if chunksize is None:
-        data = []
-        # Iterate through the file
-        with MolSupplier(sd_files[0], show_progress=True) as f_handle:
-            for _, mol in f_handle:
-                # Obtain SD molecular properties
-                props = mol.GetPropsAsDict()
-                # If IDs given and not in the list, skip
-                if ids is not None and props['InChIKey' if is3d else 'connectivity'] not in ids:
-                    continue
-                # Else add structure to the dict
-                # and add the dict to data
-                props['mol'] = mol
-                data.append(props)
-        # Return the list of dicts as a pandas DataFrame
-        return pd.DataFrame(data)
-    else:
-        # Process the data through an iterator
-        structure_iterator = _structures_iterator(sd_files[0], chunksize, ids, is3d, verbose)
-        return structure_iterator
+        return _read_structures_full(sd_file, ids, id_col, verbose)
+    return _read_structures_chunked(sd_file, chunksize, ids, id_col, verbose)
 
 
-def _structures_iterator(sd_file: str, chunksize: int,
-                         ids: Optional[List[str]] = None,
-                         is3d: bool = False, verbose: bool = True) -> Iterator[pd.DataFrame]:
-    if not isinstance(chunksize, int) or chunksize < 1:
-        raise ValueError('Chunksize must be a non-null positive integer.')
-    if verbose:
-        pbar = tqdm(desc='Loading molecular structures')
-    data = []
-    # Iterate through the file
-    with MolSupplier(sd_file) as f_handle:
-        for _, mol in f_handle:
-            # Obtain SD molecular properties
+# ---------------------------------------------------------------------------
+# Local availability checks
+# ---------------------------------------------------------------------------
+#
+# Cheap, network-free, read-free checks of whether the file(s) a reader
+# above would need are already on disk - used by oop.py's _PapyrusSource to
+# decide whether a download is needed at all before committing to one
+# combined download_papyrus() call for everything a filter chain ends up
+# requesting (bioactivity/proteins plus any descriptors/structures), instead
+# of one download cycle per file type as each is first touched.
+
+def molecular_descriptors_available(
+    desc_type: str,
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    source_path: str | Path | None = None,
+) -> bool:
+    """Return whether every needed descriptor file already exists locally.
+
+    Checks presence only, without reading any of the files that
+    :func:`read_molecular_descriptors` would need for *desc_type*.
+
+    :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
+        ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
+    :param is3d: check for the stereochemistry-aware variant
+    :param version: dataset version to check
+    :param source_path: root directory for Papyrus data
+    :raises ValueError: if *desc_type* is not recognised
+    """
+    if desc_type not in _VALID_DESC_TYPES:
+        raise ValueError(
+            f'desc_type must be one of {sorted(_VALID_DESC_TYPES)}, '
+            f'got {desc_type!r}',
+        )
+
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+    desc_dir   = source_mod.join('descriptors')
+
+    keys = (
+        [k for k, (_, _, dims) in _MOL_DESC_REGISTRY.items() if is3d in dims]
+        if desc_type == 'all' else [desc_type]
+    )
+    for key in keys:
+        pattern, _ = _resolve_mol_desc_pattern(key, is3d)
+        try:
+            locate_file(desc_dir, pattern)
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+    return True
+
+
+def molecular_structures_available(
+    is3d: bool = False,
+    version: VersionArg = 'latest',
+    source_path: str | Path | None = None,
+) -> bool:
+    """Return whether the needed structures file already exists locally.
+
+    Checks presence only, without reading the file that
+    :func:`read_molecular_structures` would need.
+
+    :param is3d: check for the stereochemistry-aware (3D) SD file
+    :param version: dataset version to check
+    :param source_path: root directory for Papyrus data
+    """
+    pv         = _resolve_version(version, source_path)
+    source_mod = papyrus_version_module(pv, root_folder=source_path)
+
+    stereo_tag = '' if is3d else 'out'
+    dim_tag    = 3  if is3d else 2
+    pattern    = rf'\d+\.\d+_combined_{dim_tag}D_set_with{stereo_tag}_stereochemistry\.sd.*'
+
+    try:
+        locate_file(source_mod.join('structures'), pattern)
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Internal structure readers
+# ---------------------------------------------------------------------------
+
+def _read_structures_full(
+    sd_file: str | Path,
+    ids: list[str] | None,
+    id_col: str,
+    verbose: bool,
+) -> pl.DataFrame:
+    rows: list = []
+    with MolSupplier(sd_file, show_progress=verbose) as supplier:
+        for _, mol in supplier:
             props = mol.GetPropsAsDict()
-            # If IDs given and not in the list, skip
-            id_ = props['InChIKey' if is3d else 'connectivity']
-            if (ids is not None) and (id_ not in ids):
+            if ids is not None and props[id_col] not in ids:
                 continue
             props['mol'] = mol
-            data.append(props)
-            # Chunk is complete
-            if len(data) == chunksize:
-                if verbose:
-                    pbar.update()
-                yield pd.DataFrame(data)
-                data = []
-        if verbose:
-            pbar.update()
-        yield pd.DataFrame(data)
+            rows.append(props)
+    if not rows:
+        return pl.DataFrame()
+    return pl.from_dicts(rows, schema_overrides={'mol': pl.Object})
+
+
+def _read_structures_chunked(
+    sd_file: str | Path,
+    chunksize: int,
+    ids: list[str] | None,
+    id_col: str,
+    verbose: bool,
+) -> Generator[pl.DataFrame]:
+    if not isinstance(chunksize, int) or chunksize < 1:
+        raise ValueError('chunksize must be a positive integer.')
+
+    pbar = tqdm(desc='Loading molecular structures') if verbose else None
+    rows: list = []
+    try:
+        with MolSupplier(sd_file) as supplier:
+            for _, mol in supplier:
+                props = mol.GetPropsAsDict()
+                if ids is not None and props[id_col] not in ids:
+                    continue
+                props['mol'] = mol
+                rows.append(props)
+                if len(rows) == chunksize:
+                    if pbar is not None:
+                        pbar.update()
+                    yield pl.from_dicts(rows, schema_overrides={'mol': pl.Object})
+                    rows = []
+            if pbar is not None:
+                pbar.update()
+            if rows:
+                yield pl.from_dicts(rows, schema_overrides={'mol': pl.Object})
+    finally:
+        if pbar is not None:
+            pbar.close()
+
+
+# ---------------------------------------------------------------------------
+# Internal protein-descriptor readers
+# ---------------------------------------------------------------------------
+
+def _read_unirep(
+    filepath: str | Path,
+    schema: dict,
+    ids: list[str] | None,
+) -> pl.DataFrame:
+    df = _scan_tabular(Path(filepath), separator='\t', schema_overrides=schema).collect()
+    if 'TARGET_NAME' in df.columns:
+        df = df.rename({'TARGET_NAME': 'target_id'})
+    if ids is not None:
+        df = df.filter(pl.col('target_id').is_in(ids))
+    return df
+
+
+def _read_custom_protein_descriptors(
+    filepath: str | Path,
+    ids: list[str] | None,
+) -> pl.DataFrame:
+    df = _scan_tabular(Path(filepath), separator='\t').collect()
+    if 'TARGET_NAME' in df.columns:
+        df = df.rename({'TARGET_NAME': 'target_id'})
+    if ids is not None:
+        df = df.filter(pl.col('target_id').is_in(ids))
+    return df

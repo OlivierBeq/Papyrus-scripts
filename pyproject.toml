@@ -1,0 +1,172 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "papyrus_scripts"
+dynamic = ["version"]
+description = "A collection of scripts to handle the Papyrus bioactivity dataset"
+requires-python = ">=3.11"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { file = "LICENSE" }
+authors = [
+    { name = "Olivier J. M. Béquignon", email = "olivier.bequignon.maintainer@gmail.com" },
+    { name = "Brandon J. Bongers"},
+    { name = "Willem Jespers"},
+
+]
+maintainers = [
+    { name = "Olivier J. M. Béquignon", email = "olivier.bequignon.maintainer@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+keywords = [
+    "bioactivity data",
+    "QSAR",
+    "proteochemometrics",
+    "cheminformatics",
+    "modelling",
+    "machine learning",
+]
+dependencies = [
+    "click",
+    "numpy>=2.0.0",
+    "pandas",
+    "polars",
+    "pyarrow",
+    "rdkit",
+    "requests",
+    "fake-useragent",
+    "tqdm",
+    "ipywidgets",
+    "colorama; platform_system == 'Windows'",
+    "mordred",
+    "scikit-learn",
+    "xgboost",
+    "pystow",
+    "prodec",
+    "defusedxml",
+]
+
+[project.urls]
+Homepage = "https://github.com/OlivierBeq/Papyrus-scripts"
+
+[project.scripts]
+papyrus = "papyrus_scripts.cli:main"
+
+[project.optional-dependencies]
+testing = [
+    "pytest",
+    "parameterized",
+]
+dnn = [
+    "torch",
+    "skorch",
+]
+subsim = [
+    "tables",
+    "FPSim2",
+]
+gpu = [
+    "cupy-cuda12x",
+]
+simgpu = [
+    "papyrus_scripts[subsim,gpu]"
+]
+all = [
+    "papyrus_scripts[dnn,simgpu]"
+]
+
+[tool.coverage.run]
+source = ["src/papyrus_scripts"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 95
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "papyrus_scripts.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors (flake8)
+    "W",    # pycodestyle warnings (flake8)
+    "F",    # pyflakes (flake8)
+    "I",    # import sorting (isort, flake8-isort)
+    "N",    # naming conventions (pep8-naming)
+    "D",    # docstring conventions (pydocstyle, flake8-docstrings)
+    "UP",   # pyupgrade
+    "B",    # bugbear (flake8-bugbear)
+    "A",    # shadowed builtins (flake8-builtins)
+    "COM",  # trailing commas (flake8-commas)
+    "C4",   # comprehensions (flake8-comprehensions)
+    "T20",  # print statements (flake8-print)
+    "S",    # security (flake8-bandit)
+]
+ignore = [
+    "S310",  # URL open with a variable scheme (blanket-ignored under flake8 too)
+    "UP009", # UTF-8 coding declaration: kept deliberately in every file, do not strip
+    "N999",  # module naming: renaming existing public modules (IO.py, matchRCSB.py, ...) would break imports
+    "N802",  # function/method naming: mirrors external APIs (torch.autograd.Variable,
+             # RDKit's GetMatches, unittest's assertX convention), not a mistake
+    "N803",  # argument naming: mirrors sklearn/RDKit conventions (X, y, nBits, isQuery, is3D, ...)
+    "N806",  # in-function variable naming: CHUNKSIZE/_ROOT_FTYPES-style caps used for local constants
+    "N812",  # import aliasing: torch's own convention (`import torch as T`, `functional as F`)
+    "T201",  # print(): this is a CLI tool and training loop that deliberately prints progress/output
+    "A001",  # builtin-shadowing variables: descriptive local names (format, input, id) used harmlessly
+    "A002",  # same, for function arguments
+    "C408",  # dict(...) calls: used deliberately for readability when building keyword-style dicts
+    "E701",  # multiple statements on one line: used for compact optional-dependency stub classes
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101",  # assert usage is expected in tests
+    "D",     # tests are not held to docstring conventions
+]
+"src/papyrus_scripts/__init__.py" = [
+    "F401",  # this is a barrel file: imports are re-exports of the public API, not unused
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["papyrus_scripts", "tests"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.mypy]
+python_version = "3.11"
+exclude = ["tests/fixtures", "build", "dist"]
+
+[[tool.mypy.overrides]]
+module = ["rdkit", "rdkit.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pandas.*", "requests.*", "tqdm.*", "sklearn.*", "prodec.*", "skorch.*",
+    "defusedxml.*", "scipy.*", "mordred.*", "xgboost.*", "pystow.*",
+    "fake_useragent.*", "FPSim2.*", "cupy.*", "tables.*", "openbabel.*",
+]
+ignore_missing_imports = true

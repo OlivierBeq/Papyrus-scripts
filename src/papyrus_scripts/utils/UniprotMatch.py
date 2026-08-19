@@ -2,23 +2,27 @@
 
 """Functions to interact with UniProt."""
 
-import re
 import json
+import re
 import time
 import zlib
-from typing import List, Union
+from collections.abc import Generator
+from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse
 from xml.etree import ElementTree
-from urllib.parse import urlparse, parse_qs, urlencode
 
 import pandas as pd
 import requests
+from defusedxml import ElementTree as SafeElementTree
 from requests.adapters import HTTPAdapter, Retry
 
+from .IO import get_user_agent, new_session
 
-def uniprot_mappings(query: Union[str, List[str]],
+
+def uniprot_mappings(query: str | list[str],
                      map_from: str = 'ID',
                      map_to: str = 'PDB_ID',
-                     taxon: str = None
+                     taxon: str | None = None,
                      ) -> pd.DataFrame:
     """Map identifiers using the UniProt identifier mapping tool.
 
@@ -39,7 +43,7 @@ def uniprot_mappings(query: Union[str, List[str]],
     if map_from in ['PDB', 'PDB_ID'] and map_to in ['UniProtKB_AC-ID', 'ACC']:
         # Obtain mappings from SIFTS
         data = pd.read_csv('ftp://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/tsv/uniprot_pdb.tsv.gz',
-                           sep='\t', skiprows=[0]
+                           sep='\t', skiprows=[0],
                  ).rename(columns={'SP_PRIMARY': map_to, 'PDB': map_from})
         # Reorganize columns
         data = data[[map_from, map_to]]
@@ -61,10 +65,12 @@ def uniprot_mappings(query: Union[str, List[str]],
 
 
 class UniprotMatch:
+    """Submits and polls UniProt ID-mapping jobs, then fetches the paginated results."""
+
     def __init__(self,
                  polling_interval: int = 3,
                  api_url: str = 'https://rest.uniprot.org',
-                 retry: Retry = None):
+                 retry: Retry | None = None) -> None:
         """Instantiate a class to match UniProt identifiers.
 
         Based on: https://www.uniprot.org/help/id_mapping#submitting-an-id-mapping-job
@@ -72,37 +78,47 @@ class UniprotMatch:
         self._api_url = api_url
         self._polling_interval = polling_interval
         if retry is None:
-            self._retries = Retry(total=5, backoff_factor=0.25, status_forcelist=[500, 502, 503, 504])
+            self._session = new_session()
         else:
-            self._retries = retry
-        self._session = requests.Session()
-        self._session.mount("https://", HTTPAdapter(max_retries=self._retries))
+            self._session = requests.Session()
+            self._session.headers.update({'User-Agent': get_user_agent()})
+            self._session.mount("https://", HTTPAdapter(max_retries=retry))
 
-
-    def _submit_id_mapping(self, from_db, to_db, ids, taxon=None):
+    def _submit_id_mapping(
+            self,
+            from_db: str,
+            to_db: str | None,
+            ids: list[str],
+            taxon: str | None = None,
+    ) -> str:
         if from_db == 'Gene_Name' and taxon is None:
             raise ValueError('Taxon must be provided when mapping from gene names.')
         if taxon is None:
-            request = requests.post(
+            request = self._session.post(
                 f"{self._api_url}/idmapping/run",
                 data={"from": from_db, "to": to_db, "ids": ",".join(ids)},
             )
         else:
-            request = requests.post(
+            request = self._session.post(
                 f"{self._api_url}/idmapping/run",
-                data={"from": from_db, "to": to_db, "ids": ",".join(ids), "taxId": taxon}
+                data={"from": from_db, "to": to_db, "ids": ",".join(ids), "taxId": taxon},
             )
         request.raise_for_status()
         return request.json()["jobId"]
 
-    def _get_next_link(self, headers):
-        re_next_link = re.compile(r'<(.+)>; rel="next"')
+    def _get_next_link(self, headers: Any) -> str | None:
+        # [^>]+ (not greedy .+) stops at the URL's own '>' - a Link header
+        # can legally hold several comma-separated relations (RFC 8288),
+        # and a bare .+ would swallow past the first '>' hunting for a
+        # later rel="next".
+        re_next_link = re.compile(r'<([^>]+)>; rel="next"')
         if "Link" in headers:
-            match = re_next_link.match(headers["Link"])
+            match = re_next_link.search(headers["Link"])
             if match:
                 return match.group(1)
+        return None
 
-    def _check_id_mapping_results_ready(self, job_id, verbose):
+    def _check_id_mapping_results_ready(self, job_id: str, verbose: bool) -> bool:
         while True:
             request = self._session.get(f"{self._api_url}/idmapping/status/{job_id}")
             request.raise_for_status()
@@ -113,11 +129,11 @@ class UniprotMatch:
                         print(f"Retrying in {self._polling_interval}s")
                     time.sleep(self._polling_interval)
                 else:
-                    raise Exception(request["jobStatus"])
+                    raise Exception(j["jobStatus"])
             else:
                 return bool(j["results"] or j["failedIds"])
 
-    def _get_batch(self, batch_response, file_format, compressed):
+    def _get_batch(self, batch_response: requests.Response, file_format: str, compressed: bool) -> Generator[Any]:
         batch_url = self._get_next_link(batch_response.headers)
         while batch_url:
             batch_response = self._session.get(batch_url)
@@ -125,7 +141,7 @@ class UniprotMatch:
             yield self._decode_results(batch_response, file_format, compressed)
             batch_url = self._get_next_link(batch_response.headers)
 
-    def _combine_batches(self, all_results, batch_results, file_format):
+    def _combine_batches(self, all_results: Any, batch_results: Any, file_format: str) -> Any:
         if file_format == "json":
             for key in ("results", "failedIds"):
                 if key in batch_results and batch_results[key]:
@@ -136,13 +152,13 @@ class UniprotMatch:
             return all_results + batch_results
         return all_results
 
-    def _get_id_mapping_results_link(self, job_id):
+    def _get_id_mapping_results_link(self, job_id: str) -> str:
         url = f"{self._api_url}/idmapping/details/{job_id}"
         request = self._session.get(url)
         request.raise_for_status()
         return request.json()["redirectURL"]
 
-    def _decode_results(self, response, file_format, compressed):
+    def _decode_results(self, response: requests.Response, file_format: str, compressed: bool) -> Any:
         if compressed:
             decompressed = zlib.decompress(response.content, 16 + zlib.MAX_WBITS)
             if file_format == "json":
@@ -166,24 +182,24 @@ class UniprotMatch:
             return [response.text]
         return response.text
 
-    def _get_xml_namespace(self, element):
+    def _get_xml_namespace(self, element: ElementTree.Element) -> str:
         m = re.match(r"\{(.*)\}", element.tag)
         return m.groups()[0] if m else ""
 
-    def _merge_xml_results(self, xml_results):
-        merged_root = ElementTree.fromstring(xml_results[0])
+    def _merge_xml_results(self, xml_results: list[str]) -> bytes:
+        merged_root = SafeElementTree.fromstring(xml_results[0])
         for result in xml_results[1:]:
-            root = ElementTree.fromstring(result)
+            root = SafeElementTree.fromstring(result)
             for child in root.findall("{http://uniprot.org/uniprot}entry"):
                 merged_root.insert(-1, child)
         ElementTree.register_namespace("", self._get_xml_namespace(merged_root[0]))
         return ElementTree.tostring(merged_root, encoding="utf-8", xml_declaration=True)
 
-    def _print_progress_batches(self, batch_index, size, total):
+    def _print_progress_batches(self, batch_index: int, size: int, total: int) -> None:
         n_fetched = min((batch_index + 1) * size, total)
         print(f"Fetched: {n_fetched} / {total}")
 
-    def _get_id_mapping_results_search(self, url, verbose: bool = False):
+    def _get_id_mapping_results_search(self, url: str, verbose: bool = False) -> Any:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
         file_format = query["format"][0] if "format" in query else "json"
@@ -191,7 +207,7 @@ class UniprotMatch:
             size = int(query["size"][0])
         else:
             size = 500
-            query["size"] = size
+            query["size"] = [str(size)]
         compressed = (
             query["compressed"][0].lower() == "true" if "compressed" in query else False
         )
@@ -211,7 +227,7 @@ class UniprotMatch:
             return self._merge_xml_results(results)
         return results
 
-    def _get_id_mapping_results_stream(self, url):
+    def _get_id_mapping_results_stream(self, url: str) -> Any:
         if "/stream/" not in url:
             url = url.replace("/results/", "/stream/")
         request = self._session.get(url)
@@ -225,13 +241,13 @@ class UniprotMatch:
         return self._decode_results(request, file_format, compressed)
 
     def uniprot_id_mapping(self,
-            ids: list, from_db: str = "UniProtKB_AC-ID", to_db: str = None,
-            taxon: str = None, verbose: bool = True
-    ) -> dict:
+            ids: list[str], from_db: str = "UniProtKB_AC-ID", to_db: str | None = None,
+            taxon: str | None = None, verbose: bool = True,
+    ) -> dict[str, str] | None:
         """
         Map Uniprot identifiers into other databases.
 
-		For a list of the available identifiers, check the
+        For a list of the available identifiers, check the
         `To database` list on https://www.uniprot.org/id-mapping
 
         :param ids: IDs to be mapped from
@@ -257,3 +273,4 @@ class UniprotMatch:
                 elif isinstance(subset_df["to"].tolist()[0], dict):
                     query_to_newIDs[id] = " ".join(set(subset_df["to"].apply(lambda row: row['primaryAccession'])))
             return query_to_newIDs
+        return None

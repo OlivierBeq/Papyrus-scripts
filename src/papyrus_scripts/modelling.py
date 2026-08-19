@@ -2,81 +2,110 @@
 
 """Modelling capacities of the Papyrus-scripts from the Papyrus dataset."""
 
-from copy import deepcopy
 import warnings
-from itertools import chain, combinations
 from collections import Counter
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
+from collections.abc import Iterable
+from copy import deepcopy
+from itertools import chain, combinations
+from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import (pearsonr as pearsonR,
-                         spearmanr as spearmanR,
-                         kendalltau as kendallTau)
-
-from tqdm.auto import tqdm
-
+import polars as pl
 import xgboost
-from sklearn.base import RegressorMixin, ClassifierMixin, ClusterMixin, TransformerMixin
-from sklearn.model_selection import train_test_split, BaseCrossValidator, KFold, StratifiedKFold
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import (r2_score as R2,
-                             mean_squared_error as MSE,
-                             roc_auc_score as ROCAUC,
-                             confusion_matrix,
-                             multilabel_confusion_matrix,
-                             matthews_corrcoef as MCC,
-                             explained_variance_score as eVar,
-                             max_error as maxE,
-                             mean_absolute_error as MAE,
-                             mean_squared_log_error as MSLE,
-                             mean_poisson_deviance as MPD,
-                             mean_gamma_deviance as MGD,
-                             )
-
 from prodec.Descriptor import Descriptor
 from prodec.Transform import Transform
+from scipy.stats import kendalltau as kendallTau
+from scipy.stats import pearsonr as pearsonR
+from scipy.stats import spearmanr as spearmanR
+from sklearn.base import ClassifierMixin, ClusterMixin, RegressorMixin, TransformerMixin
+from sklearn.metrics import (
+    confusion_matrix,
+    multilabel_confusion_matrix,
+)
+from sklearn.metrics import (
+    explained_variance_score as eVar,
+)
+from sklearn.metrics import (
+    matthews_corrcoef as MCC,
+)
+from sklearn.metrics import (
+    max_error as maxE,
+)
+from sklearn.metrics import (
+    mean_absolute_error as MAE,
+)
+from sklearn.metrics import (
+    mean_gamma_deviance as MGD,
+)
+from sklearn.metrics import (
+    mean_poisson_deviance as MPD,
+)
+from sklearn.metrics import (
+    mean_squared_error as MSE,
+)
+from sklearn.metrics import (
+    mean_squared_log_error as MSLE,
+)
+from sklearn.metrics import (
+    r2_score as R2,
+)
+from sklearn.metrics import (
+    roc_auc_score as ROCAUC,
+)
+from sklearn.model_selection import (
+    BaseCrossValidator,
+    GroupKFold,
+    GroupShuffleSplit,
+    KFold,
+    LeaveOneGroupOut,
+    LeavePGroupsOut,
+    StratifiedGroupKFold,
+    StratifiedKFold,
+    train_test_split,
+)
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from tqdm.auto import tqdm
 
-from .reader import read_molecular_descriptors, read_protein_descriptors
+from .neuralnet import MultiTaskNNClassifier, MultiTaskNNRegressor, SingleTaskNNClassifier, SingleTaskNNRegressor
 from .preprocess import yscrambling
-from .neuralnet import (BaseNN,
-                        SingleTaskNNClassifier,
-                        SingleTaskNNRegressor,
-                        MultiTaskNNRegressor,
-                        MultiTaskNNClassifier
-                        )
+from .reader import read_molecular_descriptors, read_protein_descriptors
 
-pd.set_option('mode.chained_assignment', None)
+#: Splitters whose .split() uses groups - passing it to any other splitter
+#: (e.g. KFold) just triggers sklearn's ignored-groups warning.
+_GROUP_AWARE_SPLITTERS = (
+    GroupKFold, GroupShuffleSplit, LeaveOneGroupOut, LeavePGroupsOut, StratifiedGroupKFold,
+)
 
 
-def filter_molecular_descriptors(data: Union[pd.DataFrame, Iterator],
+def filter_molecular_descriptors(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
                                  column_name: str,
                                  keep_values: Iterable,
                                  progress: bool = True,
-                                 total: Optional[int] = None) -> pd.DataFrame:
+                                 total: int | None = None) -> pd.DataFrame:
     """Filter the data so that the desired column contains only the desired data.
 
-    :param data: data to be filtered, either a dataframe or an iterator of chunks
+    :param data: data to be filtered - pandas/polars DataFrame or polars
+        LazyFrame
     :param column_name: name of the column to apply the filter on
     :param keep_values: allowed values
-    :param progress: show progress bar
-    :param total: number of chunks in data if data is an Iterator
+    :param progress: unused - kept for API stability
+    :param total: unused - kept for API stability
     :return: a pandas dataframe
     """
     if isinstance(data, pd.DataFrame):
         return data[data[column_name].isin(keep_values)]
-    elif progress:
-        return pd.concat([chunk[chunk[column_name].isin(keep_values)]
-                          for chunk in tqdm(data, total=total, desc='Loading molecular descriptors')],
-                         axis=0)
-    else:
-        return pd.concat([chunk[chunk[column_name].isin(keep_values)]
-                          for chunk in data],
-                         axis=0)
+    # Filter before collecting a LazyFrame so polars pushes the predicate down.
+    filtered = data.filter(pl.col(column_name).is_in(list(keep_values)))
+    if isinstance(filtered, pl.LazyFrame):
+        filtered = filtered.collect()
+    return filtered.to_pandas()
 
 
-def model_metrics(model, y_true, x_test) -> dict:
-    """Determine performance metrics of a model
+def model_metrics(model: RegressorMixin | ClassifierMixin,
+                  y_true: pd.Series | np.ndarray,
+                  x_test: pd.DataFrame) -> dict[str, Any]:
+    """Determine performance metrics of a model.
 
     Beware R2 = 1 - (Residual sum of squares) / (Total sum of squares) != (Pearson r)²
 
@@ -96,17 +125,22 @@ def model_metrics(model, y_true, x_test) -> dict:
     y_pred = model.predict(x_test)
     # Regression metrics
     if isinstance(model, (RegressorMixin, SingleTaskNNRegressor, MultiTaskNNRegressor)):
+        y_true = np.asarray(y_true)
+        y_pred = np.asarray(y_pred)
         # Slope of predicted vs observed
-        k = sum(xi * yi for xi, yi in zip(y_true, y_pred)) / sum(xi ** 2 for xi in y_true)
+        k = np.dot(y_true, y_pred) / np.sum(y_true ** 2)
         # Slope of observed vs predicted
-        k_prime = sum(xi * yi for xi, yi in zip(y_true, y_pred)) / sum(yi ** 2 for yi in y_pred)
+        k_prime = np.dot(y_true, y_pred) / np.sum(y_pred ** 2)
         # Mean averages
         y_true_mean = y_true.mean()
         y_pred_mean = y_pred.mean()
+        # Pearson/Spearman r and R2_0/R'2_0 are undefined (and warn) when
+        # y_true or y_pred is constant, e.g. a degenerate tiny test fold.
+        has_variance = len(y_pred) >= 2 and y_true.std() > 0 and y_pred.std() > 0
         return {'number': y_true.size,
                 'R2': R2(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'MSE': MSE(y_true, y_pred, squared=True) if len(y_pred) >= 2 else 0,
-                'RMSE': MSE(y_true, y_pred, squared=False) if len(y_pred) >= 2 else 0,
+                'MSE': MSE(y_true, y_pred) if len(y_pred) >= 2 else 0,
+                'RMSE': MSE(y_true, y_pred) ** 0.5 if len(y_pred) >= 2 else 0,
                 'MSLE': MSLE(y_true, y_pred) if len(y_pred) >= 2 else 0,
                 'RMSLE': np.sqrt(MSLE(y_true, y_pred)) if len(y_pred) >= 2 else 0,
                 'MAE': MAE(y_true, y_pred) if len(y_pred) >= 2 else 0,
@@ -114,31 +148,29 @@ def model_metrics(model, y_true, x_test) -> dict:
                 'Max Error': maxE(y_true, y_pred) if len(y_pred) >= 2 else 0,
                 'Mean Poisson Distrib': MPD(y_true, y_pred) if len(y_pred) >= 2 else 0,
                 'Mean Gamma Distrib': MGD(y_true, y_pred) if len(y_pred) >= 2 else 0,
-                'Pearson r': pearsonR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
-                'Spearman r': spearmanR(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
+                'Pearson r': pearsonR(y_true, y_pred)[0] if has_variance else 0,
+                'Spearman r': spearmanR(y_true, y_pred)[0] if has_variance else 0,
                 'Kendall tau': kendallTau(y_true, y_pred)[0] if len(y_pred) >= 2 else 0,
-                'R2_0 (pred. vs. obs.)': 1 - (sum((xi - k_prime * yi) ** 2
-                                                  for xi, yi in zip(y_true, y_pred)) /
-                                              sum((xi - y_true_mean) ** 2
-                                                  for xi in y_true)) if len(y_pred) >= 2 else 0,
-                'R\'2_0 (obs. vs. pred.)': 1 - (sum((yi - k * xi) ** 2
-                                                    for xi, yi in zip(y_true, y_pred)) /
-                                                sum((yi - y_pred_mean) ** 2
-                                                    for yi in y_pred)) if len(y_pred) >= 2 else 0,
+                'R2_0 (pred. vs. obs.)': 1 - (np.sum((y_true - k_prime * y_pred) ** 2) /
+                                              np.sum((y_true - y_true_mean) ** 2)) if has_variance else 0,
+                'R\'2_0 (obs. vs. pred.)': 1 - (np.sum((y_pred - k * y_true) ** 2) /
+                                                np.sum((y_pred - y_pred_mean) ** 2)) if has_variance else 0,
                 'k slope (pred. vs obs.)': k,
                 'k\' slope (obs. vs pred.)': k_prime,
                 }
     # Classification
     elif isinstance(model, (ClassifierMixin, SingleTaskNNClassifier, MultiTaskNNClassifier)):
+        # ROC AUC is undefined when y_true holds a single class; sklearn now
+        # warns rather than raising, so check upfront instead of catching it.
+        single_class = len(set(y_true)) < 2
+        if single_class:
+            warnings.warn('Only one class present in y_true. ROC AUC score is not defined in that case. '
+                          'Stratify your folds to avoid such warning.', stacklevel=2)
         # Binary classification
         if len(model.classes_) == 2:
             tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=model.classes_).ravel()
             values = {}
-            try:
-                mcc = MCC(y_true, y_pred)
-                values['MCC'] = mcc
-            except RuntimeWarning:
-                pass
+            values['MCC'] = MCC(y_true, y_pred)
             values[':'.join(str(x) for x in model.classes_)] = ':'.join([str(int(sum(y_true == class_)))
                                                                          for class_ in model.classes_])
             values['ACC'] = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) != 0 else 0
@@ -154,89 +186,90 @@ def model_metrics(model, y_true, x_test) -> dict:
                 y_probas = model.predict_proba(x_test)
                 if y_probas.shape[1] == 1:
                     y_proba = y_probas.ravel()
-                    values['AUC 1'] = ROCAUC(y_true, y_proba)
+                    values['AUC 1'] = np.nan if single_class else ROCAUC(y_true, y_proba)
                 else:
                     for i in range(len(model.classes_)):
                         y_proba = y_probas[:, i].ravel()
-                        try:
-                            values['AUC %s' % model.classes_[i]] = ROCAUC(y_true, y_proba)
-                        except ValueError:
-                            warnings.warn('Only one class present in y_true. '
-                                          'ROC AUC score is not defined in that case. '
-                                          'Stratify your folds to avoid such warning.')
-                            values['AUC %s' % model.classes_[i]] = np.nan
+                        values[f'AUC {model.classes_[i]}'] = np.nan if single_class else ROCAUC(y_true, y_proba)
         # Multiclasses
         else:
             i = 0
             values = {}
             for contingency_matrix in multilabel_confusion_matrix(y_true, y_pred):
                 tn, fp, fn, tp = contingency_matrix.ravel()
-                try:
-                    mcc = MCC(y_true, y_pred)
-                    values['%s|MCC' % model.classes_[i]] = mcc
-                except RuntimeWarning:
-                    pass
-                values['%s|number' % model.classes_[i]] = int(sum(y_true == model.classes_[i]))
-                values['%s|ACC' % model.classes_[i]] = (tp + tn) / (tp + tn + fp + fn) \
+                values[f'{model.classes_[i]}|MCC'] = MCC(y_true, y_pred)
+                values[f'{model.classes_[i]}|number'] = int(sum(y_true == model.classes_[i]))
+                values[f'{model.classes_[i]}|ACC'] = (tp + tn) / (tp + tn + fp + fn) \
                     if (tp + tn + fp + fn) != 0\
                     else 0
-                values['%s|BACC' % model.classes_[i]] = (tp / (tp + fn) + tn / (tn + fp)) / 2
-                values['%s|Sensitivity' % model.classes_[i]] = tp / (tp + fn) if tp + fn != 0 else 0
-                values['%s|Specificity' % model.classes_[i]] = tn / (tn + fp) if tn + fp != 0 else 0
-                values['%s|PPV' % model.classes_[i]] = tp / (tp + fp) if tp + fp != 0 else 0
-                values['%s|NPV' % model.classes_[i]] = tn / (tn + fn) if tn + fn != 0 else 0
-                values['%s|F1' % model.classes_[i]] = \
-                    2 * values['%s|Sensitivity' % model.classes_[i]] * values['%s|PPV' % model.classes_[i]] / \
-                    (values['%s|Sensitivity' % model.classes_[i]] + values['%s|PPV' % model.classes_[i]]) \
-                     if (values['%s|Sensitivity' % model.classes_[i]] + values['%s|PPV' % model.classes_[i]]) != 0 \
+                values[f'{model.classes_[i]}|BACC'] = (tp / (tp + fn) + tn / (tn + fp)) / 2
+                values[f'{model.classes_[i]}|Sensitivity'] = tp / (tp + fn) if tp + fn != 0 else 0
+                values[f'{model.classes_[i]}|Specificity'] = tn / (tn + fp) if tn + fp != 0 else 0
+                values[f'{model.classes_[i]}|PPV'] = tp / (tp + fp) if tp + fp != 0 else 0
+                values[f'{model.classes_[i]}|NPV'] = tn / (tn + fn) if tn + fn != 0 else 0
+                values[f'{model.classes_[i]}|F1'] = \
+                    2 * values[f'{model.classes_[i]}|Sensitivity'] * values[f'{model.classes_[i]}|PPV'] / \
+                    (values[f'{model.classes_[i]}|Sensitivity'] + values[f'{model.classes_[i]}|PPV']) \
+                     if (values[f'{model.classes_[i]}|Sensitivity'] + values[f'{model.classes_[i]}|PPV']) != 0 \
                      else 0
                 i += 1
             if hasattr(model, "predict_proba"): # able to predict probability
                 y_probas = model.predict_proba(x_test)
-                try:
-                    values['AUC 1 vs 1'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovo")
-                    values['AUC 1 vs All'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovr")
-                except ValueError:
-                    warnings.warn('Only one class present in y_true. ROC AUC score is not defined in that case. '
-                                  'Stratify your folds to avoid such warning.')
+                if single_class:
                     values['AUC 1 vs 1'] = np.nan
                     values['AUC 1 vs All'] = np.nan
+                else:
+                    values['AUC 1 vs 1'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovo")
+                    values['AUC 1 vs All'] = ROCAUC(y_true, y_probas, average="macro", multi_class="ovr")
         return values
     else:
         raise ValueError('model can only be classifier or regressor.')
 
 
 def crossvalidate_model(data: pd.DataFrame,
-                        model: Union[RegressorMixin, ClassifierMixin],
+                        model: RegressorMixin | ClassifierMixin,
                         folds: BaseCrossValidator,
-                        groups: List[int] = None,
-                        verbose: bool = False
-                        ) -> Tuple[pd.DataFrame, Dict[str, Union[RegressorMixin, ClassifierMixin]]]:
-    """Create a machine learning model predicting values in the first column
+                        groups: list[int] | pd.Series | None = None,
+                        scale_method: TransformerMixin | None = None,
+                        verbose: bool = False,
+                        ) -> tuple[pd.DataFrame, dict[str, RegressorMixin | ClassifierMixin]]:
+    """Create a machine learning model predicting values in the first column.
 
-   :param data: data containing the dependent vairable (in the first column) and other features
-   :param model: estimator (either classifier or regressor) to use for model building
-   :param folds: cross-validator
-   :param groups: groups to split the labels according to
-   :param verbose: whether to show fold progression
-   :return: cross-validated performance and model trained on the entire dataset
+    :param data: data containing the dependent vairable (in the first column) and other features
+    :param model: estimator (either classifier or regressor) to use for model building
+    :param folds: cross-validator
+    :param groups: groups to split the labels according to
+    :param scale_method: if given, fit anew on each fold's training split
+       only (never on its held-out split) to avoid leaking test-fold
+       statistics into the scaling; also fit once on the entire dataset for
+       the final "Full model" - left fitted on that full-dataset call when
+       this function returns, so a caller can reuse it as-is
+    :param verbose: whether to show fold progression
+    :return: cross-validated performance and model trained on the entire dataset
     """
     X, y = data.iloc[:, 1:], data.iloc[:, 0].values.ravel()
-    performance = []
+    fold_metrics: list[dict[str, Any]] = []
     if verbose:
         pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1)
-    models = {}
+    models: dict[str, RegressorMixin | ClassifierMixin] = {}
+    split_groups = groups if isinstance(folds, _GROUP_AWARE_SPLITTERS) else None
     # Perform cross-validation
-    for i, (train, test) in enumerate(folds.split(X, y, groups)):
+    for i, (train, test) in enumerate(folds.split(X, y, split_groups)):
         if verbose:
             pbar.set_description(f'Fitting model on fold {i + 1}', refresh=True)
-        model.fit(X.iloc[train, :], y[train])
+        X_train, X_test = X.iloc[train, :], X.iloc[test, :]
+        if scale_method is not None:
+            X_train = pd.DataFrame(scale_method.fit_transform(X_train),
+                                   index=X_train.index, columns=X_train.columns)
+            X_test = pd.DataFrame(scale_method.transform(X_test),
+                                  index=X_test.index, columns=X_test.columns)
+        model.fit(X_train, y[train])
         models[f'Fold {i + 1}'] = deepcopy(model)
-        performance.append(model_metrics(model, y[test], X.iloc[test, :]))
+        fold_metrics.append(model_metrics(model, y[test], X_test))
         if verbose:
             pbar.update()
     # Organize result in a dataframe
-    performance = pd.DataFrame(performance)
+    performance = pd.DataFrame(fold_metrics)
     performance.index = [f'Fold {i + 1}' for i in range(folds.n_splits)]
     # Add average and sd of performance
     performance.loc['Mean'] = [np.mean(performance[col]) if ':' not in col else '-' for col in performance]
@@ -244,6 +277,8 @@ def crossvalidate_model(data: pd.DataFrame,
     # Fit model on the entire dataset
     if verbose:
         pbar.set_description('Fitting model on entire training set', refresh=True)
+    if scale_method is not None:
+        X = pd.DataFrame(scale_method.fit_transform(X), index=X.index, columns=X.columns)
     model.fit(X, y)
     models['Full model'] = deepcopy(model)
     if verbose:
@@ -252,17 +287,17 @@ def crossvalidate_model(data: pd.DataFrame,
 
 
 def train_test_proportional_group_split(data: pd.DataFrame,
-                                        groups: List[int],
+                                        groups: list[int] | np.ndarray,
                                         test_size: float = 0.30,
-                                        verbose: bool = False
-                                        ) -> Tuple[pd.DataFrame, pd.DataFrame, List[int], List[int]]:
-    """Split the data into training and test sets according to the groups that respect most test_size (based on MSE)
+                                        verbose: bool = False,
+                                        ) -> tuple[pd.DataFrame, pd.DataFrame, list[int], tuple[int, ...]]:
+    """Split the data into training and test sets according to the groups that respect most test_size (based on MSE).
 
-   :param data: the data to be split up into training and test sets
-   :param groups: groups to split the data according to
-   :param test_size: approximate proportion of the input dataset to determine the test set
-   :param verbose: whether to log to stdout or not
-   :return: training and test sets and training and test groups
+    :param data: the data to be split up into training and test sets
+    :param groups: groups to split the data according to
+    :param test_size: approximate proportion of the input dataset to determine the test set
+    :param verbose: whether to log to stdout or not
+    :return: training and test sets and training and test groups
     """
     counts = Counter(groups)
     size = sum(counts.values())
@@ -271,47 +306,209 @@ def train_test_proportional_group_split(data: pd.DataFrame,
     # Get proportion of each permutation
     proportions = [sum(counts[x] for x in p) / size for p in permutations]
     # Get permutation minimizing difference to test_size
-    best, proportion = min(zip(permutations, proportions), key=lambda x: (x[1] - test_size) ** 2)
+    best, proportion = min(zip(permutations, proportions, strict=True), key=lambda x: (x[1] - test_size) ** 2)
     del counts, permutations, proportions
     if verbose:
         print(f'Best group permutation corresponds to {proportion:.2%} of the data')
     # Get test set assignment
-    assignment = np.where(group in best for group in groups)
+    assignment = np.array([group in best for group in groups])
     opposite = np.logical_not(assignment)
     # Get training groups
     t_groups = [x for x in groups if x not in best]
     return data[opposite], data[assignment], t_groups, best
 
 
-def qsar(data: pd.DataFrame,
+class _InsufficientDataError(Exception):
+    """Raised by _fit_and_evaluate when a split/class-balance check fails.
+
+    Caught and logged by qsar() (per target, loop continues), re-raised as
+    a ValueError by pcm() (single combined model, nothing to continue to).
+    """
+
+
+def _fit_and_evaluate(data: pd.DataFrame,
+                      endpoint: str,
+                      model_type: str,
+                      model: RegressorMixin | ClassifierMixin,
+                      merge_on: str,
+                      merge_on_values: pd.DataFrame,
+                      split_by: str,
+                      split_year: int,
+                      test_set_size: float,
+                      cluster_method: ClusterMixin | None,
+                      custom_groups: pd.DataFrame | None,
+                      features_to_ignore: list[str],
+                      drop_columns: list[str],
+                      scale: bool,
+                      scale_method: TransformerMixin,
+                      yscramble: bool,
+                      stratify: bool,
+                      folds: int,
+                      random_state: int,
+                      verbose: bool,
+                      strict_split_checks: bool,
+                      ) -> tuple[pd.DataFrame, dict[str, Any], dict[str, RegressorMixin | ClassifierMixin]]:
+    """Split *data*, fit *model* via cross-validation, and evaluate on the held-out test set.
+
+    Shared by qsar() (once per target) and pcm() (once on the whole dataset).
+
+    :param drop_columns: columns to drop before splitting into X/y - qsar()
+        also drops 'target_id' here (loops per target); pcm() already
+        dropped it after merging protein descriptors
+    :param strict_split_checks: qsar() also requires >= *folds* training
+        rows and balanced test-set classes; pcm() checks neither
+    :raises _InsufficientDataError: if a split/class-balance check fails
+    :returns: (performance, return_val, cv_models) - return_val holds the
+        scaler/label_encoder/data_splitter (as applicable); cv_models is
+        crossvalidate_model's per-fold-plus-"Full model" dict
+    """
+    if split_by.lower() == 'year':
+        test_set = data[data['Year'] >= split_year]
+        if test_set.empty:
+            raise _InsufficientDataError(f'No test data for temporal split at {split_year}')
+        training_set = data[~data.index.isin(test_set.index)]
+        if training_set.empty or (strict_split_checks and training_set.shape[0] < folds):
+            raise _InsufficientDataError(f'Not enough training data for temporal split at {split_year}')
+        if model_type == 'classifier':
+            train_data_classes = Counter(training_set[endpoint])
+            if len(train_data_classes) < 2:
+                raise _InsufficientDataError(
+                    f'Only one activity class in the training set for temporal split at {split_year}')
+            if strict_split_checks:
+                test_data_classes = Counter(test_set[endpoint])
+                if len(test_data_classes) < 2:
+                    raise _InsufficientDataError(
+                        f'Only one activity class in the test set for temporal split at {split_year}')
+        training_groups = training_set['Year']
+    elif split_by.lower() == 'random':
+        training_groups = None
+        training_set, test_set = train_test_split(data, test_size=test_set_size, random_state=random_state)
+    elif split_by.lower() == 'cluster':
+        if cluster_method is None:
+            raise RuntimeError('cluster_method missing despite qsar()/pcm() validating it upfront')
+        groups = cluster_method.fit_predict(data.drop(columns=features_to_ignore))
+        training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
+                                                                                         test_set_size,
+                                                                                         verbose=verbose)
+    elif split_by.lower() == 'custom-cluster':
+        # Merge from custom split DataFrame
+        groups = merge_on_values.merge(custom_groups, on=merge_on).iloc[:, 1].tolist()
+        training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
+                                                                                         test_set_size,
+                                                                                         verbose=verbose)
+    elif split_by.lower() == 'custom':
+        # Merge from custom split DataFrame
+        groups = merge_on_values.merge(custom_groups, on=merge_on)
+        training_set = data[merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'training'][merge_on])]
+        test_set = data[merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'test'][merge_on])]
+        training_groups = None
+    # Drop columns not used for training
+    training_set = training_set.drop(columns=drop_columns)
+    test_set = test_set.drop(columns=drop_columns)
+    X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
+    X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
+    # Scaling itself happens inside crossvalidate_model, fold-by-fold, to
+    # avoid leaking a fold's held-out rows into its own scaling statistics.
+    # Encode labels
+    lblenc = None
+    if model_type == 'classifier':
+        lblenc = LabelEncoder()
+        y_train = pd.Series(data=lblenc.fit_transform(y_train),
+                            index=y_train.index, dtype=y_train.dtype,
+                            name=y_train.name)
+        y_test = pd.Series(data=lblenc.transform(y_test),
+                           index=y_test.index, dtype=y_test.dtype,
+                           name=y_test.name)
+        y_train = y_train.astype(np.int32)
+        y_test = y_test.astype(np.int32)
+    # Reorganize data
+    training_set = pd.concat([y_train, X_train], axis=1)
+    test_set = pd.concat([y_test, X_test], axis=1)
+    del X_train, y_train, X_test, y_test
+    # Y-scrambling - yscrambling() is polars-only, so round-trip through it
+    # and restore the pandas index it doesn't carry.
+    if yscramble:
+        training_index, test_index = training_set.index, test_set.index
+        training_set = yscrambling(pl.from_pandas(training_set), y_var=endpoint,
+                                   random_state=random_state).to_pandas()
+        training_set.index = training_index
+        test_set = yscrambling(pl.from_pandas(test_set), y_var=endpoint,
+                               random_state=random_state).to_pandas()
+        test_set.index = test_index
+    # Make sure enough data
+    if model_type == 'classifier':
+        train_data_classes = Counter(training_set[endpoint])
+        if not np.all(np.array(list(train_data_classes.values())) > folds):
+            raise _InsufficientDataError(
+                f'Not enough data in minority class of the training set for all {folds} folds')
+        if strict_split_checks:
+            test_data_classes = Counter(test_set[endpoint])
+            if not np.all(np.array(list(test_data_classes.values())) > folds):
+                raise _InsufficientDataError(
+                    f'Not enough data in minority class of the test set for all {folds} folds')
+    # Define folding scheme for cross validation
+    if stratify and model_type == 'classifier':
+        kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
+    else:
+        kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
+    performance, cv_models = crossvalidate_model(
+        training_set, model, kfold, training_groups,
+        scale_method=scale_method if scale else None, verbose=verbose,
+    )
+    full_model = cv_models['Full model']
+    X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
+    if scale:
+        # scale_method was last fit inside crossvalidate_model on the whole
+        # training set (for the "Full model") - reuse that fit here so
+        # X_test is scaled consistently with full_model.
+        X_test = pd.DataFrame(scale_method.transform(X_test), index=X_test.index, columns=X_test.columns)
+    performance.loc['Test set'] = model_metrics(full_model, y_test, X_test)
+    # Formatting return values
+    return_val: dict[str, Any] = {}
+    if scale:
+        return_val['scaler'] = deepcopy(scale_method)
+    if model_type == 'classifier':
+        return_val['label_encoder'] = deepcopy(lblenc)
+        if stratify:
+            return_val['data_splitter'] = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
+    else:
+        return_val['data_splitter'] = KFold(n_splits=folds, shuffle=True, random_state=random_state)
+    return performance, return_val, cv_models
+
+
+def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
          endpoint: str = 'pchembl_value_Mean',
          num_points: int = 30,
          delta_activity: float = 2,
          version: str = 'latest',
          descriptors: str = 'mold2',
-         descriptor_path: Optional[str] = None,
-         descriptor_chunksize: Optional[int] = 50000,
+         descriptor_path: str | None = None,
+         descriptor_chunksize: int | None = 50000,
          activity_threshold: float = 6.5,
-         model: Union[RegressorMixin, ClassifierMixin] = xgboost.XGBRegressor(verbosity=0),
+         model: RegressorMixin | ClassifierMixin | None = None,
          folds: int = 5,
          stratify: bool = False,
          split_by: str = 'Year',
          split_year: int = 2013,
          test_set_size: float = 0.30,
-         cluster_method: ClusterMixin = None,
-         custom_groups: pd.DataFrame = None,
+         cluster_method: ClusterMixin | None = None,
+         custom_groups: pd.DataFrame | None = None,
          scale: bool = False,
-         scale_method: TransformerMixin = StandardScaler(),
+         scale_method: TransformerMixin | None = None,
          yscramble: bool = False,
          random_state: int = 1234,
-         verbose: bool = True
-         ) -> Tuple[pd.DataFrame, Dict[str,
-                                       Optional[Union[TransformerMixin, LabelEncoder,
-                                                      BaseCrossValidator, Dict[str, ClassifierMixin]]]]]:
-    """Create QSAR models for as many targets with selected data source(s),
-    data quality, minimum number of datapoints and minimum activity amplitude.
+         verbose: bool = True,
+         ) -> tuple[pd.DataFrame, dict[str,
+                                       None | (TransformerMixin | LabelEncoder |
+                                                      BaseCrossValidator | dict[str, ClassifierMixin])]]:
+    """Create QSAR models for as many targets as meet the given thresholds.
 
-    :param data: Papyrus activity data
+    Targets are modelled only if they meet the selected data source(s),
+    data quality, minimum number of datapoints and minimum activity
+    amplitude requirements.
+
+    :param data: Papyrus activity data; a ``pl.DataFrame``/``pl.LazyFrame``
+        is materialised into a pandas DataFrame immediately (not lazily)
     :param endpoint: value to be predicted or to derive classes from
     :param num_points: minimum number of points for the activity of a target to be modelled
     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
@@ -352,9 +549,21 @@ def qsar(data: pd.DataFrame,
     the data splitter for cross-validation, and for each accession in the data:
     the fitted models on each cross-validation fold and the model fitted on the complete training set.
     """
+    if model is None:
+        model = xgboost.XGBRegressor(verbosity=0)
+    if scale_method is None:
+        scale_method = StandardScaler()
+    if isinstance(data, pl.LazyFrame):
+        data = data.collect()
+    if isinstance(data, pl.DataFrame):
+        data = data.to_pandas()
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster',"
                          "'custom-cluster', 'custom'}")
+    if split_by.lower() == 'cluster' and cluster_method is None:
+        raise ValueError("cluster_method must be given if split_by is 'cluster'")
+    if split_by.lower() in ('custom-cluster', 'custom') and custom_groups is None:
+        raise ValueError("custom_groups must be given if split_by is 'custom-cluster' or 'custom'")
     if not isinstance(model, (RegressorMixin, ClassifierMixin)):
         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -372,10 +581,10 @@ def qsar(data: pd.DataFrame,
         preserved = preserved.drop(
             columns=[col for col in preserved if col not in [merge_on, 'target_id', 'Activity_class', 'Year']])
         active = data[data['Activity_class'].isna() & (data[endpoint] > activity_threshold)]
-        active = active[~active['relation'].str.contains('<')][features_to_ignore]
+        active = active[~active['relation'].str.contains('<')][features_to_ignore].copy()
         active.loc[:, 'Activity_class'] = 'A'
         inactive = data[data['Activity_class'].isna() & (data[endpoint] <= activity_threshold)]
-        inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore]
+        inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore].copy()
         inactive.loc[:, 'Activity_class'] = 'N'
         data = pd.concat([preserved, active, inactive])
         # Change endpoint
@@ -390,7 +599,11 @@ def qsar(data: pd.DataFrame,
     data = data.drop(columns=[merge_on])
     del descs
     # Table of results
-    results, models = [], {}
+    fold_results: list[pd.DataFrame] = []
+    models: dict[str, dict[str, RegressorMixin | ClassifierMixin] | None] = {}
+    # Overwritten by each successfully-fitted target - the last success's
+    # value is what ends up in this function's returned return_val.
+    final_return_val: dict[str, Any] = {}
     targets = list(data['target_id'].unique())
     n_targets = len(targets)
     if verbose:
@@ -405,13 +618,13 @@ def qsar(data: pd.DataFrame,
         # Insufficient data points
         if tmp_data.shape[0] < num_points:
             if model_type == 'regressor':
-                results.append(pd.DataFrame([[targets[i_target],
+                fold_results.append(pd.DataFrame([[targets[i_target],
                                               tmp_data.shape[0],
                                               f'Number of points {tmp_data.shape[0]} < {num_points}']],
                                             columns=['target', 'number', 'error']))
             else:
                 data_classes = Counter(tmp_data[endpoint])
-                results.append(
+                fold_results.append(
                     pd.DataFrame([[targets[i_target],
                                    ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                    f'Number of points {tmp_data.shape[0]} < {num_points}']],
@@ -426,7 +639,7 @@ def qsar(data: pd.DataFrame,
             delta = max_activity - min_activity
             # Not enough activity amplitude
             if delta < delta_activity:
-                results.append(pd.DataFrame([[targets[i_target],
+                fold_results.append(pd.DataFrame([[targets[i_target],
                                               tmp_data.shape[0],
                                               f'Delta activity {delta} < {delta_activity}']],
                                             columns=['target', 'number', 'error']))
@@ -438,7 +651,7 @@ def qsar(data: pd.DataFrame,
             data_classes = Counter(tmp_data[endpoint])
             # Only one activity class
             if len(data_classes) == 1:
-                results.append(
+                fold_results.append(
                     pd.DataFrame([[targets[i_target],
                                    ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                    'Only one activity class']],
@@ -449,7 +662,7 @@ def qsar(data: pd.DataFrame,
                 continue
             # Not enough data in minority class for all folds
             elif not all(x >= folds for x in data_classes.values()):
-                results.append(
+                fold_results.append(
                     pd.DataFrame([[targets[i_target],
                                    ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
                                    f'Not enough data in minority class for all {folds} folds']],
@@ -458,210 +671,89 @@ def qsar(data: pd.DataFrame,
                     pbar.update()
                 models[targets[i_target]] = None
                 continue
-        # Set groups for fold enumerator and extract test set
-        if split_by.lower() == 'year':
-            groups = tmp_data['Year']
-            test_set = tmp_data[tmp_data['Year'] >= split_year]
-            if test_set.empty:
-                if model_type == 'regressor':
-                    results.append(pd.DataFrame([[targets[i_target],
-                                                  tmp_data.shape[0],
-                                                  f'No test data for temporal split at {split_year}']],
-                                                columns=['target', 'number', 'error']))
-                else:
-                    data_classes = Counter(tmp_data[endpoint])
-                    results.append(
-                        pd.DataFrame([[targets[i_target],
-                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                       f'No test data for temporal split at {split_year}']],
-                                     columns=['target', 'A:N', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-            training_set = tmp_data[~tmp_data.index.isin(test_set.index)]
-            if training_set.empty or training_set.shape[0] < folds:
-                if model_type == 'regressor':
-                    results.append(pd.DataFrame([[targets[i_target],
-                                                  tmp_data.shape[0],
-                                                  f'Not enough training data for temporal split at {split_year}']],
-                                                columns=['target', 'number', 'error']))
-                else:
-                    data_classes = Counter(tmp_data[endpoint])
-                    results.append(
-                        pd.DataFrame([[targets[i_target],
-                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                       f'Not enough training data for temporal split at {split_year}']],
-                                     columns=['target', 'A:N', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-            if model_type == 'classifier':
-                train_data_classes = Counter(training_set[endpoint])
-                test_data_classes = Counter(test_set[endpoint])
-                if len(train_data_classes) < 2:
-                    results.append(pd.DataFrame([[targets[i_target],
-                                                  ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
-                                                  'Only one activity class in traing set '
-                                                  f'for temporal split at {split_year}']],
-                                                columns=['target', 'A:N', 'error']))
-                    if verbose:
-                        pbar.update()
-                    continue
-                elif len(test_data_classes) < 2:
-                    results.append(pd.DataFrame([[targets[i_target],
-                                                  ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
-                                                  'Only one activity class in traing set '
-                                                  f'for temporal split at {split_year}']],
-                                                columns=['target', 'A:N', 'error']))
-                    if verbose:
-                        pbar.update()
-                    models[targets[i_target]] = None
-                    continue
-            training_groups = training_set['Year']
-        elif split_by.lower() == 'random':
-            training_groups = None
-            training_set, test_set = train_test_split(tmp_data, test_size=test_set_size, random_state=random_state)
-        elif split_by.lower() == 'cluster':
-            groups = cluster_method.fit_predict(tmp_data.drop(columns=features_to_ignore))
-            training_set, test_set, training_groups, _ = train_test_proportional_group_split(tmp_data, groups,
-                                                                                             test_set_size,
-                                                                                             verbose=verbose)
-        elif split_by.lower() == 'custom-cluster':
-            # Merge from custom split DataFrame
-            groups = tmp_merge_on_values.merge(custom_groups, on=merge_on).iloc[:, 1].tolist()
-            training_set, test_set, training_groups, _ = train_test_proportional_group_split(tmp_data, groups,
-                                                                                             test_set_size,
-                                                                                             verbose=verbose)
-        elif split_by.lower() == 'custom':
-            # Merge from custom split DataFrame
-            groups = tmp_merge_on_values.merge(custom_groups, on=merge_on)
-            training_set = tmp_data[tmp_merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'training'][merge_on])]
-            test_set = tmp_data[tmp_merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'test'][merge_on])]
-            training_groups = None
-        # Drop columns not used for training
-        training_set = training_set.drop(columns=['Year', 'target_id'])
-        test_set = test_set.drop(columns=['Year', 'target_id'])
-        X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
-        X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
-        # Scale data
-        if scale:
-            X_train.loc[X_train.index, X_train.columns] = scale_method.fit_transform(X_train)
-            X_test.loc[X_test.index, X_test.columns] = scale_method.transform(X_test)
-        # Encode labels
-        if model_type == 'classifier':
-            lblenc = LabelEncoder()
-            y_train = pd.Series(data=lblenc.fit_transform(y_train),
-                                index=y_train.index, dtype=y_train.dtype,
-                                name=y_train.name)
-            y_test = pd.Series(data=lblenc.transform(y_test),
-                               index=y_test.index, dtype=y_test.dtype,
-                               name=y_test.name)
-            y_train = y_train.astype(np.int32)
-            y_test = y_test.astype(np.int32)
-        # Reorganize data
-        training_set = pd.concat([y_train, X_train], axis=1)
-        test_set = pd.concat([y_test, X_test], axis=1)
-        del X_train, y_train, X_test, y_test
-        # Y-scrambling
-        if yscramble:
-            training_set = yscrambling(data=training_set, y_var=endpoint, random_state=random_state)
-            test_set = yscrambling(data=test_set, y_var=endpoint, random_state=random_state)
-        # Make sure enough data
-        if model_type == 'classifier':
-            train_data_classes = Counter(training_set['Activity_class'])
-            train_enough_data = np.all(np.array(list(train_data_classes.values())) > folds)
-            test_data_classes = Counter(test_set['Activity_class'])
-            test_enough_data = np.all(np.array(list(test_data_classes.values())) > folds)
-            if not train_enough_data:
-                results.append(pd.DataFrame([[targets[i_target],
-                                              ':'.join(str(train_data_classes.get(x, 0)) for x in ['A', 'N']),
-                                              'Not enough data in minority class of '
-                                              f'the training set for all {folds} folds']],
+        # Split, fit and evaluate this target - see _fit_and_evaluate's
+        # docstring for the pipeline shared with pcm().
+        try:
+            performance, final_return_val, cv_models = _fit_and_evaluate(
+                tmp_data, endpoint, model_type, model, merge_on, tmp_merge_on_values,
+                split_by, split_year, test_set_size, cluster_method, custom_groups,
+                features_to_ignore, ['Year', 'target_id'], scale, scale_method,
+                yscramble, stratify, folds, random_state, verbose,
+                strict_split_checks=True,
+            )
+        except _InsufficientDataError as exc:
+            if model_type == 'regressor':
+                fold_results.append(pd.DataFrame([[targets[i_target], tmp_data.shape[0], str(exc)]],
+                                            columns=['target', 'number', 'error']))
+            else:
+                data_classes = Counter(tmp_data[endpoint])
+                fold_results.append(pd.DataFrame([[targets[i_target],
+                                              ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                              str(exc)]],
                                             columns=['target', 'A:N', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-            elif not test_enough_data:
-                results.append(pd.DataFrame([[targets[i_target],
-                                              ':'.join(str(test_data_classes.get(x, 0)) for x in ['A', 'N']),
-                                              'Not enough data in minority class of '
-                                              f'the training set for all {folds} folds']],
-                                            columns=['target', 'A:N', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-        # Define folding scheme for cross validation
-        if stratify and model_type == 'classifier':
-            kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
-        else:
-            kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
-        performance, cv_models = crossvalidate_model(training_set, model, kfold, training_groups)
-        full_model = cv_models['Full model']
-        X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
-        performance.loc['Test set'] = model_metrics(full_model, y_test, X_test)
+            if verbose:
+                pbar.update()
+            models[targets[i_target]] = None
+            continue
         performance.loc[:, 'target'] = targets[i_target]
-        results.append(performance.reset_index())
+        fold_results.append(performance.reset_index())
         models[targets[i_target]] = cv_models
         if verbose:
             pbar.update()
     if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
-    # Formatting return values
-    return_val = {}
-    if scale:
-        return_val['scaler'] = deepcopy(scale_method)
-    if model_type == 'classifier':
-        return_val['label_encoder'] = deepcopy(lblenc)
-        if stratify:
-            return_val['data_splitter'] = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
-    else:
-        return_val['data_splitter'] = KFold(n_splits=folds, shuffle=True, random_state=random_state)
-    return_val = {**return_val, **models}
-    if len(results) is False:
+    return_val = {**final_return_val, **models}
+    if not fold_results:
         return pd.DataFrame(), return_val
-    results = pd.concat(results, axis=0).set_index(['target', 'index'])
+    results = pd.concat(fold_results, axis=0)
+    if 'index' not in results.columns:
+        # No target reached a real fit (every one was skipped/errored) - the
+        # 'index' column normally comes from performance.reset_index() on a
+        # successful fit, so it doesn't exist at all in that case.
+        results['index'] = 0
+    results = results.set_index(['target', 'index'])
     results.index.names = ['target', None]
     return results, return_val
 
 
-def pcm(data: pd.DataFrame,
+def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         endpoint: str = 'pchembl_value_Mean',
         num_points: int = 30,
         delta_activity: float = 2,
         version: str = 'latest',
         mol_descriptors: str = 'mold2',
-        mol_descriptor_path: Optional[str] = None,
-        mol_descriptor_chunksize: Optional[int] = 50000,
-        prot_sequences_path: Optional[str] = None,
-        prot_descriptors: Union[str, Descriptor, Transform] = 'unirep',
-        prot_descriptor_path: Optional[str] = None,
-        prot_descriptor_chunksize: Optional[int] = 50000,
+        mol_descriptor_path: str | None = None,
+        mol_descriptor_chunksize: int | None = 50000,
+        prot_sequences_path: str | None = None,
+        prot_descriptors: str | Descriptor | Transform = 'unirep',
+        prot_descriptor_path: str | None = None,
+        prot_descriptor_chunksize: int | None = 50000,
         activity_threshold: float = 6.5,
-        model: Union[RegressorMixin, ClassifierMixin] = xgboost.XGBRegressor(verbosity=0),
+        model: RegressorMixin | ClassifierMixin | None = None,
         folds: int = 5,
         stratify: bool = False,
         split_by: str = 'Year',
         split_year: int = 2013,
         test_set_size: float = 0.30,
-        cluster_method: ClusterMixin = None,
-        custom_groups: pd.DataFrame = None,
+        cluster_method: ClusterMixin | None = None,
+        custom_groups: pd.DataFrame | None = None,
         scale: bool = False,
-        scale_method: TransformerMixin = StandardScaler(),
+        scale_method: TransformerMixin | None = None,
         yscramble: bool = False,
         random_state: int = 1234,
-        verbose: bool = True
-        ) -> Tuple[pd.DataFrame, Dict[str,
-                                      Union[TransformerMixin, LabelEncoder,
-                                            BaseCrossValidator, RegressorMixin, ClassifierMixin]]]:
-    """Create PCM models for as many targets with selected data source(s),
-    data quality, minimum number of datapoints and minimum activity amplitude.
+        verbose: bool = True,
+        ) -> tuple[pd.DataFrame, dict[str,
+                                      (TransformerMixin | LabelEncoder |
+                                            BaseCrossValidator | RegressorMixin | ClassifierMixin)]]:
+    """Create a single PCM model covering all targets that meet the given thresholds.
 
-    :param data: Papyrus activity data
+    Data is filtered to the selected data source(s), data quality, minimum
+    number of datapoints and minimum activity amplitude requirements before
+    fitting.
+
+    :param data: Papyrus activity data; a ``pl.DataFrame``/``pl.LazyFrame``
+        is materialised into a pandas DataFrame immediately (not lazily)
     :param endpoint: value to be predicted or to derive classes from
     :param num_points: minimum number of points for the activity of a target to be modelled
     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
@@ -708,9 +800,21 @@ def pcm(data: pd.DataFrame,
     the data splitter for cross-validation, fitted models on each cross-validation fold,
     the model fitted on the complete training set.
     """
+    if model is None:
+        model = xgboost.XGBRegressor(verbosity=0)
+    if scale_method is None:
+        scale_method = StandardScaler()
+    if isinstance(data, pl.LazyFrame):
+        data = data.collect()
+    if isinstance(data, pl.DataFrame):
+        data = data.to_pandas()
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', "
                          "'custom-cluster', 'custom'}")
+    if split_by.lower() == 'cluster' and cluster_method is None:
+        raise ValueError("cluster_method must be given if split_by is 'cluster'")
+    if split_by.lower() in ('custom-cluster', 'custom') and custom_groups is None:
+        raise ValueError("custom_groups must be given if split_by is 'custom-cluster' or 'custom'")
     if not isinstance(model, (RegressorMixin, ClassifierMixin)):
         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -728,10 +832,10 @@ def pcm(data: pd.DataFrame,
         preserved = preserved.drop(
             columns=[col for col in preserved if col not in [merge_on, 'target_id', 'Activity_class', 'Year']])
         active = data[data['Activity_class'].isna() & (data[endpoint] > activity_threshold)]
-        active = active[~active['relation'].str.contains('<')][features_to_ignore]
+        active = active[~active['relation'].str.contains('<')][features_to_ignore].copy()
         active.loc[:, 'Activity_class'] = 'A'
         inactive = data[data['Activity_class'].isna() & (data[endpoint] <= activity_threshold)]
-        inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore]
+        inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore].copy()
         inactive.loc[:, 'Activity_class'] = 'N'
         data = pd.concat([preserved, active, inactive])
         # Change endpoint
@@ -749,6 +853,10 @@ def pcm(data: pd.DataFrame,
                                           prot_sequences_path if isinstance(prot_descriptors, (Descriptor, Transform))
                                           else prot_descriptor_path,
                                           data['target_id'].unique())
+    if isinstance(prot_descs, pl.LazyFrame):
+        prot_descs = prot_descs.collect()
+    if isinstance(prot_descs, pl.DataFrame):
+        prot_descs = prot_descs.to_pandas()
     data = data.merge(prot_descs, on='target_id')
     data = data.drop(columns=['target_id'])
     del prot_descs
@@ -763,312 +871,23 @@ def pcm(data: pd.DataFrame,
         # Not enough activity amplitude
         if delta < delta_activity:
             raise ValueError(f'amplitude of activity to narrow: {delta} while at least {delta_activity} expected')
-    # Set groups for fold enumerator and extract test set
-    if split_by.lower() == 'year':
-        groups = data['Year']
-        test_set = data[data['Year'] >= split_year]
-        if test_set.empty:
-            raise ValueError(f'no test data for temporal split at {split_year}')
-        training_set = data[~data.index.isin(test_set.index)]
-        if training_set.empty:
-            raise ValueError(f'no training data for temporal split at {split_year}')
-        training_groups = training_set['Year']
-    elif split_by.lower() == 'random':
-        training_groups = None
-        training_set, test_set = train_test_split(data, test_size=test_set_size, random_state=random_state)
-    elif split_by.lower() == 'cluster':
-        groups = cluster_method.fit_predict(data.drop(columns=features_to_ignore))
-        training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
-                                                                                         test_set_size,
-                                                                                         verbose=verbose)
-    elif split_by.lower() == 'custom-cluster':
-        # Merge from custom split DataFrame
-        groups = merge_on_values.merge(custom_groups, on=merge_on).iloc[:, 1].tolist()
-        training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
-                                                                                         test_set_size,
-                                                                                         verbose=verbose)
-    elif split_by.lower() == 'custom':
-        # groups = custom_groups.iloc[:, 1]
-        # training_set = data[merge_on_values.squeeze().isin(custom_groups[groups == 'training'][merge_on])]
-        # test_set = data[merge_on_values.squeeze().isin(custom_groups[groups == 'test'][merge_on])]
-        # Merge from custom split DataFrame
-        groups = merge_on_values.merge(custom_groups, on=merge_on)
-        training_set = data[merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'training'][merge_on])]
-        test_set = data[merge_on_values.squeeze().isin(groups[groups.iloc[:, 1] == 'test'][merge_on])]
-        training_groups = None
-    # Drop columns not used for training
-    training_set = training_set.drop(columns=['Year'])
-    test_set = test_set.drop(columns=['Year'])
-    # Scale data
-    X_train, y_train = training_set.drop(columns=[endpoint]), training_set.loc[:, endpoint]
-    X_test, y_test = test_set.drop(columns=[endpoint]), test_set.loc[:, endpoint]
-    if scale:
-        X_train.loc[X_train.index, X_train.columns] = scale_method.fit_transform(X_train)
-        X_test.loc[X_test.index, X_test.columns] = scale_method.transform(X_test)
-    # Encode labels
-    if model_type == 'classifier':
-        lblenc = LabelEncoder()
-        y_train = pd.Series(data=lblenc.fit_transform(y_train),
-                            index=y_train.index, dtype=y_train.dtype,
-                            name=y_train.name)
-        y_test = pd.Series(data=lblenc.transform(y_test),
-                           index=y_test.index, dtype=y_test.dtype,
-                           name=y_test.name)
-        y_train = y_train.astype(np.int32)
-        y_test = y_test.astype(np.int32)
-    # Reorganize data
-    training_set = pd.concat([y_train, X_train], axis=1)
-    test_set = pd.concat([y_test, X_test], axis=1)
-    del X_train, y_train, X_test, y_test
-    # Y-scrambling
-    if yscramble:
-        training_set = yscrambling(data=training_set, y_var=endpoint, random_state=random_state)
-        test_set = yscrambling(data=test_set, y_var=endpoint, random_state=random_state)
-    # Make sure enough data
-    if model_type == 'classifier':
-        enough_data = np.all(np.array(list(Counter(training_set['Activity_class']).values())) > folds)
-        if not enough_data:
-            raise ValueError(f'Too few data points for some classes: expected at least {folds} in total')
-    # Define folding scheme for cross validation
-    if stratify and model_type == 'classifier':
-        kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
-    else:
-        kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
-    performance, cv_models = crossvalidate_model(training_set, model, kfold, training_groups, verbose=True)
+    # Split, fit and evaluate - see _fit_and_evaluate's docstring for the
+    # pipeline shared with qsar()'s per-target loop.
+    try:
+        performance, return_val, cv_models = _fit_and_evaluate(
+            data, endpoint, model_type, model, merge_on, merge_on_values,
+            split_by, split_year, test_set_size, cluster_method, custom_groups,
+            features_to_ignore, ['Year'], scale, scale_method,
+            yscramble, stratify, folds, random_state, verbose,
+            strict_split_checks=False,
+        )
+    except _InsufficientDataError as exc:
+        raise ValueError(str(exc)) from None
     full_model = cv_models['Full model']
-    X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
-    performance.loc['Test set'] = model_metrics(full_model, y_test, X_test)
     # Set warnings back to default
     if isinstance(full_model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
-    # Formatting return values
-    return_val = {}
-    if scale:
-        return_val['scaler'] = deepcopy(scale_method)
-    if model_type == 'classifier':
-        return_val['label_encoder'] = deepcopy(lblenc)
-        if stratify:
-            return_val['data_splitter'] = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
-    else:
-        return_val['data_splitter'] = KFold(n_splits=folds, shuffle=True, random_state=random_state)
     return_val = {**return_val, **cv_models}
     return performance, return_val
 
-
-# def dnn(data: pd.DataFrame,
-#         endpoint: str = 'pchembl_value_Mean',
-#         pcm: bool = False,
-#         num_points: int = 30,
-#         delta_activity: float = 2,
-#         mol_descriptors: str = 'mold2',
-#         mol_descriptor_path: str = './',
-#         mol_descriptor_chunksize: Optional[int] = 50000,
-#         prot_sequences_path: str = './',
-#         prot_descriptors: Union[str, Descriptor, Transform] = 'unirep',
-#         prot_descriptor_path: str = './',
-#         prot_descriptor_chunksize: Optional[int] = 50000,
-#         activity_threshold: float = 6.5,
-#         model: Optional[BaseNN] = None,
-#         folds: int = 5,
-#         stratify: bool = False,
-#         split_by: str = 'Year',
-#         split_year: int = 2013,
-#         validation_set_size: float = 0.20,
-#         test_set_size: float = 0.30,
-#         cluster_method: ClusterMixin = None,
-#         custom_groups: pd.DataFrame = None,
-#         scale: bool = True,
-#         random_state: int = 1234,
-#         verbose: bool = True
-#         ) -> Tuple[pd.DataFrame, Union[RegressorMixin, ClassifierMixin]]:
-#     """Create PCM models for as many targets with selected data source(s),
-#     data quality, minimum number of datapoints and minimum activity amplitude.
-#
-#     :param data: Papyrus activity data
-#     :param endpoint: value to be predicted or to derive classes from
-#     :param pcm: should the DNN model be PCM model, otherwise QSAR
-#     :param num_points: minimum number of points for the activity of a target to be modelled
-#     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
-#     :param mol_descriptors: type of desriptors to be used for model training
-#     :param mol_descriptor_path: path to Papyrus descriptors
-#     :param mol_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded
-#     (None disables chunking)
-#     :param prot_sequences_path: path to Papyrus sequences
-#     :param prot_descriptors: type of desriptors to be used for model training
-#     :param prot_descriptor_path: path to Papyrus descriptors
-#     :param prot_descriptor_chunksize: chunk size of molecular descriptors to be iteratively loaded
-#     (None disables chunking)
-#     :param activity_threshold: threshold activity between acvtive and inactive compounds
-#     (ignored if using a regressor)
-#     :param model: DNN model to be fitted (default: None = SingleTaskNNClassifier
-#     :param folds: number of cross-validation folds to be performed
-#     :param stratify: whether to stratify folds for cross validation, ignored if model is RegressorMixin
-#     :param split_by: how should folds be determined {'random', 'Year', 'cluster', 'custom'}
-#     If 'random', exactly test_set_size is extracted for test set.
-#     If 'Year', the size of the test and training set are not looked at
-#     If 'cluster' or 'custom', the groups giving proportion closest to test_set_size
-#     will be used to defined the test set
-#     :param split_year: Year from which on the test set is extracted (ignored if split_by is not 'Year')
-#     :param test_set_size: proportion of the dataset to be used as test set
-#     :param cluster_method: clustering method to use to extract test set and cross-validation folds
-#     (ignored if split_by is not 'cluster')
-#     :param custom_groups: custom groups to use to extract test set and cross-validation fold
-#     (ignored if split_by is not 'custom').
-#     Groups must be a pandas DataFrame with only two Series. The first Series is either InChIKey or connectivity
-#     (depending on whether stereochemistry data are being use or not). The second Series must be the group assignment
-#     of each compound.
-#     :param scale: should to data be scaled to zero mean and unit variance
-#     :param random_state: seed to use for train/test splitting and KFold shuffling
-#     :param verbose: log details to stdout
-#     :return: both:
-#     - a dataframe of the cross-validation results where each line is a fold of PCM modelling
-#     - the model fitted on all folds for further use
-#     """
-#     if split_by.lower() not in ['year', 'random', 'cluster', 'custom']:
-#         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', 'custom'}")
-#     if not isinstance(model, (RegressorMixin, ClassifierMixin, SingleTaskNNClassifier,
-#                               SingleTaskNNRegressor, MultiTaskNNClassifier, MultiTaskNNRegressor)):
-#         raise ValueError('model type can only be a Scikit-Learn compliant regressor or classifier')
-#     warnings.filterwarnings("ignore", category=RuntimeWarning)
-#     if model is None:
-#         model = SingleTaskNNClassifier('./')
-#     model_type = 'regressor' if isinstance(model, (SingleTaskNNRegressor, MultiTaskNNRegressor)) else 'classifier'
-#     # Keep only required fields
-#     merge_on = 'connectivity' if 'connectivity' in data.columns else 'InChIKey'
-#     if model_type == 'regressor':
-#         features_to_ignore = [merge_on, 'target_id', endpoint, 'Year']
-#         data = data[data['relation'] == '='][features_to_ignore]
-#         old_endpoint = []
-#     else:
-#         features_to_ignore = [merge_on, 'target_id', 'Activity_class', 'Year']
-#         preserved = data[~data['Activity_class'].isna()]
-#         preserved = preserved.drop(
-#             columns=[col for col in preserved if col not in [merge_on, 'target_id', 'Activity_class', 'Year']])
-#         active = data[data['Activity_class'].isna() & (data[endpoint] > activity_threshold)]
-#         active = active[~active['relation'].str.contains('<')][features_to_ignore]
-#         active.loc[:, 'Activity_class'] = 'A'
-#         # active.drop(columns=[endpoint], inplace=True)
-#         inactive = data[data['Activity_class'].isna() & (data[endpoint] <= activity_threshold)]
-#         inactive = inactive[~inactive['relation'].str.contains('>')][features_to_ignore]
-#         inactive.loc[:, 'Activity_class'] = 'N'
-#         # inactive.drop(columns=[endpoint], inplace=True)
-#         data = pd.concat([preserved, active, inactive])
-#         # Change endpoint
-#         endpoint = 'Activity_class'
-#         del preserved, active, inactive
-#     # Get and merge molecular descriptors
-#     mol_descs = get_molecular_descriptors('connectivity' not in data.columns, mol_descriptors, mol_descriptor_path,
-#                                           mol_descriptor_chunksize)
-#     mol_descs = filter_molecular_descriptors(mol_descs, merge_on, data[merge_on].unique())
-#     data = data.merge(mol_descs, on=merge_on)
-#     data = data.drop(columns=[merge_on])
-#     if pcm:
-#         # Get and merge protein descriptors
-#         prot_descs = get_protein_descriptors(prot_descriptors,
-#                                              prot_sequences_path if isinstance(prot_descriptors,
-#                                                                                (Descriptor, Transform))
-#                                              else prot_descriptor_path,
-#                                              prot_descriptor_chunksize,
-#                                              data['target_id'].unique())
-#         data = data.merge(prot_descs, on='target_id')
-#         del prot_descs
-#     # Transform for multi-task model
-#     if isinstance(model, (MultiTaskNNRegressor, MultiTaskNNClassifier)):
-#         targets = data['target_id'].unique()
-#         data.loc[:, targets] = np.zeros((data.shape, len(targets)))
-#         for target in targets:
-#             mask = np.where(data.target_id == target)
-#             data.loc[mask, target] = data.loc[mask, endpoint]
-#         data = data.drop(columns=[endpoint])
-#         endpoint = targets
-#     data = data.drop(columns=['target_id'])
-#     # Build model for targets reaching criteria
-#     # Insufficient data points
-#     if data.shape[0] < num_points:
-#         raise ValueError('too few datapoints to build PCM model: '
-#                          f'{data.shape[0]} while at least {num_points} expected')
-#     if model_type == 'regressor':
-#         min_activity = data[endpoint].min()
-#         max_activity = data[endpoint].max()
-#         delta = max_activity - min_activity
-#         # Not enough activity amplitude
-#         if delta < delta_activity:
-#             raise ValueError(f'amplitude of activity to narrow: {delta} while at least {delta_activity} expected')
-#     # Set groups for fold enumerator and extract test set
-#     if split_by.lower() == 'year':
-#         groups = data['Year']
-#         test_set = data[data['Year'] >= split_year]
-#         if test_set.empty:
-#             raise ValueError(f'no test data for temporal split at {split_year}')
-#         training_set = data[~data.index.isin(test_set.index)]
-#         training_groups = training_set['Year']
-#     elif split_by.lower() == 'random':
-#         training_groups = None
-#         training_set, test_set = train_test_split(data,
-#                                                   test_size=test_set_size,
-#                                                   random_state=random_state)
-#     elif split_by.lower() == 'cluster':
-#         groups = cluster_method.fit_predict(data.drop(columns=features_to_ignore))
-#         training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
-#                                                                                          test_set_size,
-#                                                                                          verbose=verbose)
-#     elif split_by.lower() == 'custom':
-#         # Merge from custom split DataFrame
-#         groups = data[[merge_on]].merge(custom_groups, on=merge_on).iloc[:, 1].tolist()
-#         training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
-#                                                                                          test_set_size,
-#                                                                                          verbose=verbose)
-#     training_set, validation_set = train_test_split(training_set,
-#                                                     test_size=validation_set_size,
-#                                                     random_state=random_state)
-#     # Drop columns not used for training
-#     training_set = training_set.drop(columns=['Year'])
-#     validation_set = validation_set.drop(columns=['Year'])
-#     test_set = test_set.drop(columns=['Year'])
-#     # Scale data and reorganize
-#     X_train, y_train = training_set.drop(columns=[endpoint]), training_set[[endpoint]]
-#     X_validation, y_validation = validation_set.drop(columns=[endpoint]), validation_set[[endpoint]]
-#     X_test, y_test = test_set.drop(columns=[endpoint]), test_set[[endpoint]]
-#     if scale:
-#         scaler = StandardScaler()
-#         X_train.loc[X_train.index, X_train.columns] = scaler.fit_transform(X_train)
-#         X_validation.loc[X_validation.index, X_validation.columns] = scaler.transform(X_validation)
-#         X_test.loc[X_test.index, X_test.columns] = scaler.transform(X_test)
-#     # Make sure enough data
-#     if model_type == 'classifier':
-#         enough_data = np.all(np.array(list(Counter(training_set['Activity_class']).values())) > folds)
-#         if not enough_data:
-#             print(Counter(training_set['Activity_class']))
-#             raise ValueError(f'Too few data points for some classes: expected at least {folds} in total')
-#     # Encode labels if not integers
-#     lblenc = LabelEncoder()
-#     y_train = lblenc.fit_transform(y_train.values.ravel())
-#     y_test = lblenc.transform(y_test.values.ravel())
-#     y_validation = lblenc.transform(y_validation.values.ravel())
-#     y_test = y_test.astype(np.int32)
-#     y_validation = y_validation.astype(np.int32)
-#     # Combine sets
-#     training_set = pd.concat([pd.Series(y_train), X_train], axis=1)
-#     test_set = pd.concat([pd.Series(y_test), X_test], axis=1)
-#     del y_train, X_test, y_test
-#     # Define folding scheme for cross validation
-#     if stratify and model_type == 'classifier':
-#         kfold = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
-#     else:
-#         kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
-#     # Set validation set
-#     model.set_validation(X_validation, y_validation)
-#     # Set architecture
-#     if isinstance(model, SingleTaskNNRegressor):
-#         model.set_architecture(X_train.shape[1])
-#     elif isinstance(model, SingleTaskNNClassifier):
-#         model.set_architecture(X_train.shape[1], 1)
-#     else:
-#         model.set_architecture(X_train.shape[1], len(endpoint))
-#     del X_train
-#     performance, model = crossvalidate_model(training_set, model, kfold, verbose=True)
-#     X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
-#     performance.loc['Test set'] = model_metrics(model, y_test, X_test)
-#     warnings.filterwarnings("default", category=RuntimeWarning)
-#     return performance, model

@@ -133,3 +133,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Downloaded/cached test fixtures (see tests/test_modelling_real_data.py)
+tests/fixtures/*.txt.xz

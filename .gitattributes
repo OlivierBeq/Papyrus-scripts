@@ -1,0 +1,15 @@
+# Normalize all text files to LF, both in the repository and on checkout
+# (eol=lf, not just text=auto), regardless of a contributor's OS/editor or
+# core.autocrlf setting. This is what keeps GitHub's diff view (and git
+# diff locally) from ever showing a file as fully rewritten just because
+# its line-ending convention changed.
+* text=auto eol=lf
+
+# Known binary types: never let Git attempt any text/line-ending conversion.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.ipynb binary

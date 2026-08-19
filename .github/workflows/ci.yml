@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master, refactor]
+  pull_request:
+    branches: [master]
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install ruff
+      - run: ruff check src tests
+
+  pyroma:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install pyroma
+      - run: pyroma .
+
+  tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - if: runner.os == 'macOS'
+        run: brew install libomp
+      - run: pip install -e ".[testing,dnn]" pytest-cov
+      - run: pytest tests/ --ignore=tests/test_oop.py --cov=src/papyrus_scripts --cov-report=term-missing -x
+        env:
+          KMP_DUPLICATE_LIB_OK: "TRUE"
+          OMP_NUM_THREADS: "1"
+          VECLIB_MAXIMUM_THREADS: "1"

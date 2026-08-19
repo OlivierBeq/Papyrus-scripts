@@ -10,8 +10,7 @@ Few *tox* environments are defined for easier linting, testing and documentation
 We enforce strict coding rules. :
  - To make sure you comply with coding rules use the following command:
 ```bash
-    tox -e isort
-    tox -e flake8
+    tox -e ruff
 ```
  - Pyroma checks if the installation information is sufficient 
  ```bash
