@@ -12,6 +12,7 @@ these must pass regardless of what's actually installed.
 
 import itertools
 import queue
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, call, patch
@@ -792,6 +793,78 @@ class TestWorkerProcess(unittest.TestCase):
         self.assertIsInstance(lib_bytes, bytes)
 
 
+class TestParquetShardWorkerProcess(unittest.TestCase):
+    """Each worker reads its own shard's rows directly from the Parquet file."""
+
+    class _FakeFp:
+        def __init__(self, **params):
+            pass
+
+        def __repr__(self):
+            return 'FakeFp_1bits_0x0'
+
+        def get(self, mol):
+            return [0, 1]
+
+    def _write_parquet(self, path, n_mols):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        mol = Chem.MolFromSmiles('CCO')
+        ctab = Chem.MolToMolBlock(mol)
+        table = pa.table({
+            'ctab': [ctab] * n_mols,
+            'InChIKey': [f'KEY{i}' for i in range(n_mols)],
+        })
+        pq.write_table(table, path)
+
+    def test_only_own_shard_rows_are_parsed_and_added(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / 'mols.parquet'
+            self._write_parquet(path, n_mols=5)  # mol_ids 1..5
+
+            fp_output_queue = MagicMock()
+            shard_result_queue = MagicMock()
+            fp_specs = [(self._FakeFp, {})]
+
+            # n_shards=2: shard 0 -> mol_ids [2, 4] (mol_id % 2 == 0); shard 1 -> [1, 3, 5]
+            ss._parquet_shard_worker_process(
+                0, fp_specs, 2048, str(path), 2, fp_output_queue, shard_result_queue,
+            )
+
+        fp_output_queue.put.assert_called_once()
+        kind, mappings_batch, fps_batch = fp_output_queue.put.call_args.args[0]
+        self.assertEqual(kind, 'rows')
+        self.assertEqual([m[0] for m in mappings_batch], [2, 4])
+        self.assertIn('FakeFp_1bits_0x0', fps_batch)
+
+        shard_result_queue.put.assert_called_once()
+        shard_idx, lib_bytes, padding, mol_ids = shard_result_queue.put.call_args.args[0]
+        self.assertEqual(shard_idx, 0)
+        self.assertEqual(mol_ids, [2, 4])
+        self.assertIsInstance(lib_bytes, bytes)
+
+    def test_unparseable_ctab_is_skipped_and_warned(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / 'mols.parquet'
+            table = pa.table({'ctab': [None], 'InChIKey': ['KEY0']})
+            pq.write_table(table, path)
+
+            fp_output_queue = MagicMock()
+            shard_result_queue = MagicMock()
+
+            with self.assertWarns(UserWarning):
+                ss._parquet_shard_worker_process(
+                    0, [], 2048, str(path), 1, fp_output_queue, shard_result_queue,
+                )
+
+        fp_output_queue.put.assert_not_called()
+        shard_result_queue.put.assert_called_once()
+        _, _, _, mol_ids = shard_result_queue.put.call_args.args[0]
+        self.assertEqual(mol_ids, [])
+
+
 class TestFpWriterProcess(unittest.TestCase):
 
     def test_flushes_on_stop_and_sets_done_event(self):
@@ -1481,6 +1554,44 @@ class TestParallelCreateCleanup(unittest.TestCase):
         for proc in process_instances:
             proc.terminate.assert_called_once()
         mock_sort.assert_not_called()
+
+
+class TestParallelCreateParquetTopology(unittest.TestCase):
+    """A .parquet sd_file skips the reader process; workers read it directly."""
+
+    def test_no_reader_process_and_workers_read_parquet_directly(self):
+        engine = make_engine()
+        engine.sd_file = 'fake_sd_file.parquet'
+        process_instances: list = []
+        targets: list = []
+
+        def fake_process(target=None, args=None, **kwargs):
+            proc = MagicMock()
+            proc.is_alive = MagicMock(return_value=False)
+            proc.join = MagicMock()
+            targets.append(target)
+            process_instances.append(proc)
+            return proc
+
+        with (
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.cpu_count', return_value=4),
+            patch(
+                'src.papyrus_scripts.subsim_search.multiprocessing.Process',
+                side_effect=fake_process,
+            ),
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.Queue', side_effect=lambda *a, **kw: MagicMock()),
+            patch('src.papyrus_scripts.subsim_search.sort_db_file') as mock_sort,
+        ):
+            engine._parallel_create(
+                njobs=2, fingerprint=[], progress=False, total=None,
+                n_shards=2, pattern_holder_bits=2048,
+            )
+
+        # 2 workers + fp_writer + subst_writer - no reader.
+        self.assertEqual(len(process_instances), 4)
+        self.assertNotIn(ss._reader_process, targets)
+        self.assertEqual(targets.count(ss._parquet_shard_worker_process), 2)
+        mock_sort.assert_called_once()
 
 
 class TestParallelCreateProgressReporting(unittest.TestCase):

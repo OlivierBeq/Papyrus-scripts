@@ -20,6 +20,7 @@ from typing import Literal, cast
 
 import numpy as np
 import polars as pl
+import pyarrow.parquet as pq
 import pystow
 import rdkit
 from rdkit import Chem
@@ -666,13 +667,18 @@ class FPSubSim2:
     ) -> None:
         """Populate similarity and substructure tables using multiple processes.
 
-        Topology: a reader routes molecules to per-shard input queues; each
-        worker owns one substructure shard (built in-process) and pushes
-        batched rows to ``fp_output_queue``. ``fp_writer`` writes the
-        similarity/mapping tables; ``subst_writer`` writes the substructure
-        shards, but only after ``fp_writer`` has closed the file
+        Topology: each worker owns one substructure shard (built in-process)
+        and pushes batched rows to ``fp_output_queue``. ``fp_writer`` writes
+        the similarity/mapping tables; ``subst_writer`` writes the
+        substructure shards, but only after ``fp_writer`` has closed the file
         (``fp_writer_done`` - sequencing, since concurrent HDF5 writes
         aren't safe).
+
+        For a Parquet *sd_file* there is no reader process: each worker reads
+        the file directly and parses only its own shard's rows (see
+        ``_parquet_shard_worker_process``), so parsing isn't bottlenecked on
+        one serial reader. Other formats still use the reader + per-shard
+        input queues, since row boundaries need sequential parsing to find.
 
         The progress bar is owned by this (main) process and updated from
         counts ``fp_writer`` reports over ``progress_queue``.
@@ -685,11 +691,20 @@ class FPSubSim2:
         table_paths = {repr(fp): _fp_table_path(fp) for fp in fingerprint}
 
         n_workers = n_shards  # one shard per worker, built in-process (see docstring)
+        use_parquet_workers = str(self.sd_file).endswith('.parquet')
 
-        # Bounded so put() blocks naturally - Queue.qsize() isn't portable.
-        input_queues: list[multiprocessing.Queue] = [
-            multiprocessing.Queue(maxsize=INPUT_QUEUE_MAXSIZE_BATCHES) for _ in range(n_shards)
-        ]
+        input_queues: list[multiprocessing.Queue] = []
+        reader: multiprocessing.Process | None = None
+        if not use_parquet_workers:
+            # Bounded so put() blocks naturally - Queue.qsize() isn't portable.
+            input_queues = [
+                multiprocessing.Queue(maxsize=INPUT_QUEUE_MAXSIZE_BATCHES) for _ in range(n_shards)
+            ]
+            reader = multiprocessing.Process(
+                target=_reader_process,
+                args=(self.sd_file, n_shards, total, False, input_queues),
+            )
+
         fp_output_queue: multiprocessing.Queue = multiprocessing.Queue(
             maxsize=OUTPUT_QUEUE_MAXSIZE_BATCHES_PER_WORKER * n_workers,
         )
@@ -698,10 +713,6 @@ class FPSubSim2:
         progress_queue: multiprocessing.Queue | None = multiprocessing.Queue() if progress else None
         fp_writer_done = multiprocessing.Event()
 
-        reader = multiprocessing.Process(
-            target=_reader_process,
-            args=(self.sd_file, n_shards, total, False, input_queues),
-        )
         fp_writer = multiprocessing.Process(
             target=_fp_writer_process,
             args=(self.h5_filename, fp_output_queue, table_paths, progress_queue, fp_writer_done),
@@ -710,21 +721,35 @@ class FPSubSim2:
             target=_subst_writer_process,
             args=(self.h5_filename, shard_result_queue, n_shards, fp_writer_done),
         )
-        workers = [
-            multiprocessing.Process(
-                target=_worker_process,
-                args=(
-                    shard_idx, fp_specs, pattern_holder_bits,
-                    input_queues[shard_idx], fp_output_queue, shard_result_queue,
-                ),
-            )
-            for shard_idx in range(n_workers)
-        ]
+        if use_parquet_workers:
+            workers = [
+                multiprocessing.Process(
+                    target=_parquet_shard_worker_process,
+                    args=(
+                        shard_idx, fp_specs, pattern_holder_bits,
+                        self.sd_file, n_shards, fp_output_queue, shard_result_queue,
+                    ),
+                )
+                for shard_idx in range(n_workers)
+            ]
+        else:
+            workers = [
+                multiprocessing.Process(
+                    target=_worker_process,
+                    args=(
+                        shard_idx, fp_specs, pattern_holder_bits,
+                        input_queues[shard_idx], fp_output_queue, shard_result_queue,
+                    ),
+                )
+                for shard_idx in range(n_workers)
+            ]
 
-        procs = [reader, fp_writer, subst_writer, *workers]
+        procs = [p for p in (reader, fp_writer, subst_writer, *workers) if p is not None]
+        wait_first = [p for p in (reader, *workers) if p is not None]
         pbar = tqdm(total=total, smoothing=0.0, desc='🔍 Building FPSubSim2 database') if progress else None
         try:
-            reader.start()
+            if reader is not None:
+                reader.start()
             fp_writer.start()
             subst_writer.start()
             for w in workers:
@@ -732,11 +757,11 @@ class FPSubSim2:
 
             if progress_queue is not None:
                 # Poll instead of blocking join() so the bar updates live.
-                remaining = [reader, *workers]
+                remaining = list(wait_first)
                 while remaining:
                     _pump_progress_queue(progress_queue, pbar)
                     remaining = [p for p in remaining if p.is_alive()]
-            for p in [reader, *workers]:
+            for p in wait_first:
                 p.join()
 
             fp_output_queue.put('STOP')
@@ -1121,6 +1146,89 @@ def _worker_process(
             if len(mappings_batch) >= WORKER_IPC_BATCH_SIZE:
                 _flush()
     _flush()
+
+    lib_bytes = _serialize_substruct_lib(lib)
+    padding = _padding_for(lib_bytes)
+    lib_bytes = _pad_to_int64(lib_bytes)
+    shard_result_queue.put((shard_idx, lib_bytes, padding, mol_ids))
+
+
+def _parquet_shard_worker_process(
+        shard_idx: int,
+        fp_specs: list[tuple[type, dict]],
+        pattern_holder_bits: int,
+        parquet_path: str | Path,
+        n_shards: int,
+        fp_output_queue: multiprocessing.Queue,
+        shard_result_queue: multiprocessing.Queue,
+) -> None:
+    """Build one substructure shard by reading *parquet_path* directly.
+
+    Opens its own ``pq.ParquetFile`` handle and parses only the rows whose
+    ``mol_id`` belongs to *shard_idx* - unlike :func:`_worker_process`, no
+    reader process feeds it.
+    """
+    lib = SubstructLibrary(CachedSmilesMolHolder(), PatternHolder(pattern_holder_bits))
+    fpers = [fp_cls(**fp_params) for fp_cls, fp_params in fp_specs]
+    mol_ids: list[int] = []  # mol_ids[k] = true idnumber of the k-th AddMol()
+    failed_ids: list[int] = []
+
+    mappings_batch: list[tuple] = []
+    fps_batch: defaultdict[str, list] = defaultdict(list)
+
+    def _flush() -> None:
+        nonlocal mappings_batch, fps_batch
+        if mappings_batch:
+            fp_output_queue.put(('rows', mappings_batch, dict(fps_batch)))
+        mappings_batch = []
+        fps_batch = defaultdict(list)
+
+    parquet_file = pq.ParquetFile(parquet_path)
+    prop_cols = [name for name in parquet_file.schema_arrow.names if name != 'ctab']
+
+    row_id = 1  # start_id, matching MolSupplier's default
+    for batch in parquet_file.iter_batches():
+        n_rows = batch.num_rows
+        shard_positions = [
+            i for i in range(n_rows) if _shard_for_mol_id(row_id + i, n_shards) == shard_idx
+        ]
+        if shard_positions:
+            ctab_col = batch.column('ctab')
+            prop_col_arrays = {name: batch.column(name) for name in prop_cols}
+            for i in shard_positions:
+                mol_id = row_id + i
+                ctab = ctab_col[i].as_py()
+                if ctab is None:
+                    failed_ids.append(mol_id)
+                    continue
+                rdmol = Chem.MolFromMolBlock(ctab)
+                if rdmol is None:
+                    failed_ids.append(mol_id)
+                    continue
+                for name in prop_cols:
+                    value = prop_col_arrays[name][i].as_py()
+                    if value is not None:
+                        rdmol.SetProp(name, str(value))
+
+                lib.AddMol(rdmol)
+                mol_ids.append(mol_id)
+                connectivity, inchikey = _derive_connectivity(rdmol.GetPropsAsDict(), rdmol)
+                mappings_batch.append((mol_id, connectivity, inchikey))
+                for fper in fpers:
+                    fps_batch[repr(fper)].append((mol_id, *fper.get(rdmol)))
+                if len(mappings_batch) >= WORKER_IPC_BATCH_SIZE:
+                    _flush()
+        row_id += n_rows
+    _flush()
+
+    if failed_ids:
+        preview = ', '.join(map(str, failed_ids[:10]))
+        more = f', +{len(failed_ids) - 10} more' if len(failed_ids) > 10 else ''
+        warnings.warn(
+            f'{len(failed_ids)} molecule(s) could not be parsed and were skipped '
+            f'(indices: {preview}{more}).',
+            stacklevel=2,
+        )
 
     lib_bytes = _serialize_substruct_lib(lib)
     padding = _padding_for(lib_bytes)
