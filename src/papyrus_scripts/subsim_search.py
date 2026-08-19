@@ -608,6 +608,7 @@ class FPSubSim2:
 
             with MolSupplier(source=self.sd_file, total=total,
                              show_progress=progress, start_id=1,
+                             desc='🔍 Building FPSubSim2 database',
                              ) as supplier:
                 for mol_id, rdmol in supplier:
                     shard_idx = _shard_for_mol_id(mol_id, n_shards)
