@@ -31,7 +31,12 @@ def _data_sizes(source_mod) -> dict:
     return cast(dict, read_jsonfile(source_mod.join(name='data_size.json')))
 
 
-def _scan_tabular(filepath: Path, total: int | None = None, **read_kw) -> pl.LazyFrame:
+def _scan_tabular(
+    filepath: Path,
+    total: int | None = None,
+    keep_original_files: bool = True,
+    **read_kw,
+) -> pl.LazyFrame:
     """Return a lazy scan of a Papyrus tabular file.
 
     Scans a pre-converted ``.parquet`` file directly (dtypes are embedded,
@@ -50,6 +55,8 @@ def _scan_tabular(filepath: Path, total: int | None = None, **read_kw) -> pl.Laz
         :func:`~papyrus_scripts.utils.IO.convert_xz_to_parquet`'s progress
         bar - without it tqdm.notebook shows a placeholder bar stuck at
         "full" while conversion is still running.
+    :param keep_original_files: if ``False``, delete the ``.xz`` once its
+        ``.parquet`` counterpart is confirmed present
     """
     if filepath.suffix == '.parquet':
         return pl.scan_parquet(filepath)
@@ -64,6 +71,8 @@ def _scan_tabular(filepath: Path, total: int | None = None, **read_kw) -> pl.Laz
                 progress=True,
                 total=total,
             )
+        if not keep_original_files:
+            filepath.unlink(missing_ok=True)
         return pl.scan_parquet(parquet_path)
     # Default quoting (quote_char='"') is deliberately left enabled - some
     # Papyrus columns (InChI_AuxInfo, doc_id/citation fields) legitimately
@@ -143,6 +152,7 @@ def _read_one_mol_descriptor(
     lazy: bool,
     ids: list[str] | None,
     id_col: str,
+    keep_original_files: bool = True,
 ) -> DataOrChunks:
     pattern, schema_key = _resolve_mol_desc_pattern(key, is3d)
     files  = locate_file(desc_dir, pattern)
@@ -154,7 +164,7 @@ def _read_one_mol_descriptor(
     # schema_key doubles as the data_size.json key (see download.py's
     # _SIZE_KEY_BY_FTYPE/_SCHEMA_KEY_BY_FTYPE).
     total = sizes.get(schema_key) if schema_key is not None else None
-    data: pl.LazyFrame = _scan_tabular(picked, total=total, **read_kw)
+    data: pl.LazyFrame = _scan_tabular(picked, total=total, keep_original_files=keep_original_files, **read_kw)
     if ids is not None:
         data = data.filter(pl.col(id_col).is_in(ids))
     return data if lazy else data.collect()
@@ -170,6 +180,7 @@ def read_papyrus(
     plusplus: bool = True,
     chunksize: int | None = None,
     source_path: str | Path | None = None,
+    keep_original_files: bool = True,
 ) -> DataOrChunks:
     """Read the Papyrus bioactivity dataset.
 
@@ -180,6 +191,7 @@ def read_papyrus(
         instead of loading everything into memory.  The numeric value is no
         longer used as a row count — any non-``None`` value enables lazy mode.
     :param source_path: root directory for Papyrus data
+    :param keep_original_files: keep the ``.tsv.xz`` original after conversion
     :raises ValueError: if the 3D Papyrus++ combination is requested
     """
     if is3d and plusplus:
@@ -197,18 +209,23 @@ def read_papyrus(
     filenames = locate_file(source_mod.base, pattern)
     picked    = _prefer_parquet(filenames)
     total     = _data_sizes(source_mod).get(size_key)
-    data      = _scan_tabular(picked, total=total, separator='\t', schema_overrides=schema)
+    data      = _scan_tabular(
+        picked, total=total, keep_original_files=keep_original_files,
+        separator='\t', schema_overrides=schema,
+    )
     return data if chunksize is not None else data.collect()
 
 
 def read_protein_set(
     source_path: str | Path | None = None,
     version: VersionArg = 'latest',
+    keep_original_files: bool = True,
 ) -> pl.DataFrame:
     """Read the protein-target table of the Papyrus dataset.
 
     :param source_path: root directory for Papyrus data
     :param version: dataset version to read
+    :param keep_original_files: keep the ``.tsv.xz`` original after conversion
     """
     pv         = _resolve_version(version, source_path)
     source_mod = papyrus_version_module(pv, root_folder=source_path)
@@ -222,7 +239,10 @@ def read_protein_set(
     # null_values=[] keeps empty strings as empty strings (no implicit NA) -
     # only takes effect on the .xz/.gz fallback path; the Parquet file (when
     # present) was already written with the same null_values by download_papyrus.
-    return _scan_tabular(picked, total=total, separator='\t', null_values=[]).collect()
+    return _scan_tabular(
+        picked, total=total, keep_original_files=keep_original_files,
+        separator='\t', null_values=[],
+    ).collect()
 
 
 def read_molecular_descriptors(
@@ -233,6 +253,7 @@ def read_molecular_descriptors(
     source_path: str | Path | None = None,
     ids: list[str] | None = None,
     verbose: bool = True,
+    keep_original_files: bool = True,
 ) -> DataOrChunks:
     """Read pre-computed molecular descriptors.
 
@@ -246,6 +267,7 @@ def read_molecular_descriptors(
     :param source_path: root directory for Papyrus data
     :param ids: molecule identifiers to retain; ``None`` keeps all
     :param verbose: unused; kept for API compatibility
+    :param keep_original_files: keep each ``.tsv.xz`` original after conversion
     :raises ValueError: if *desc_type* is not recognised
     """
     if desc_type not in _VALID_DESC_TYPES:
@@ -263,12 +285,18 @@ def read_molecular_descriptors(
     lazy       = chunksize is not None
 
     if desc_type != 'all':
-        return _read_one_mol_descriptor(desc_type, is3d, desc_dir, schemas, sizes, lazy, ids, id_col)
+        return _read_one_mol_descriptor(
+            desc_type, is3d, desc_dir, schemas, sizes, lazy, ids, id_col,
+            keep_original_files=keep_original_files,
+        )
 
     available = [k for k, (_, _, dims) in _MOL_DESC_REGISTRY.items() if is3d in dims]
     all_keys  = [k for k in available if k != 'moe'] + [k for k in available if k == 'moe']
     frames    = [
-        _read_one_mol_descriptor(k, is3d, desc_dir, schemas, sizes, lazy, ids, id_col)
+        _read_one_mol_descriptor(
+            k, is3d, desc_dir, schemas, sizes, lazy, ids, id_col,
+            keep_original_files=keep_original_files,
+        )
         for k in all_keys
     ]
     # Join all descriptor frames on the common identifier column. Every frame
@@ -285,6 +313,7 @@ def read_protein_descriptors(
     source_path: str | Path | None = None,
     ids: list[str] | None = None,
     verbose: bool = True,
+    keep_original_files: bool = True,
     **kwargs,
 ) -> pl.DataFrame:
     """Read protein descriptors.
@@ -298,6 +327,8 @@ def read_protein_descriptors(
         data.  For ``'custom'``: path to a TSV file.
     :param ids: target identifiers to retain; ``None`` keeps all
     :param verbose: unused; kept for API compatibility
+    :param keep_original_files: keep ``.tsv.xz`` original(s) after conversion;
+        ignored for ``desc_type='custom'``
     :param kwargs: extra keyword arguments forwarded to ProDEC ``pandas_get``
     """
     if desc_type == 'custom':
@@ -313,7 +344,9 @@ def read_protein_descriptors(
         # every other call site in this module) - not a version-specific
         # subdirectory, which get_downloaded_versions can't resolve against.
         # read_protein_set already returns a 'target_id' column - no rename needed.
-        protein_data = read_protein_set(source_path=source_path, version=pv)
+        protein_data = read_protein_set(
+            source_path=source_path, version=pv, keep_original_files=keep_original_files,
+        )
         if ids is not None:
             protein_data = protein_data.filter(pl.col('target_id').is_in(ids))
         protein_data = protein_data.filter(
@@ -344,6 +377,7 @@ def read_protein_descriptors(
             schema=schemas.get('unirep', {}),
             ids=ids,
             total=_data_sizes(source_mod).get('unirep'),
+            keep_original_files=keep_original_files,
         )
 
     raise ValueError(
@@ -538,8 +572,12 @@ def _read_unirep(
     schema: dict,
     ids: list[str] | None,
     total: int | None = None,
+    keep_original_files: bool = True,
 ) -> pl.DataFrame:
-    df = _scan_tabular(Path(filepath), total=total, separator='\t', schema_overrides=schema).collect()
+    df = _scan_tabular(
+        Path(filepath), total=total, keep_original_files=keep_original_files,
+        separator='\t', schema_overrides=schema,
+    ).collect()
     if 'TARGET_NAME' in df.columns:
         df = df.rename({'TARGET_NAME': 'target_id'})
     if ids is not None:

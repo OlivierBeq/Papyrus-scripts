@@ -226,9 +226,11 @@ class _PapyrusSource:
         bioactivity_data = reader.read_papyrus(
             is3d=self._is3d, version=self._pv, plusplus=self._plusplus,
             chunksize=self._chunksize, source_path=self._source_path,
+            keep_original_files=self._keep_original_files,
         )
         protein_data = reader.read_protein_set(
             source_path=self._source_path, version=self._pv,
+            keep_original_files=self._keep_original_files,
         )
         return num_rows, bioactivity_data, protein_data
 
@@ -1560,6 +1562,7 @@ class PapyrusDescriptorSet:
             source_path=self.papyrus_params['source_path'],
             ids=ids,
             verbose=progress,
+            keep_original_files=self.papyrus_params['keep_original_files'],
         )
         try:
             self.data = reader.read_molecular_descriptors(**read_kwargs)
@@ -1668,6 +1671,7 @@ class ProteinSet(ABC):
                 source_path=self.papyrus_params['source_path'],
                 ids=ids,
                 verbose=progress,
+                keep_original_files=self.papyrus_params['keep_original_files'],
             )
         except _NOT_AVAILABLE_LOCALLY:
             download.download_papyrus(
