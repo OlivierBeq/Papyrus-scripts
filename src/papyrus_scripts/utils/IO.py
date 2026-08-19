@@ -348,8 +348,9 @@ def get_papyrus_links(offline: bool = False) -> dict:
         try:
             response = new_session().get(url, verify=True)
             response.raise_for_status()
-            with open(local_file, 'w') as fh:
-                fh.write(response.text)
+            tmp_file = local_file.with_name(local_file.name + '.tmp')
+            tmp_file.write_text(response.text)
+            tmp_file.replace(local_file)
         except requests.exceptions.RequestException:
             pass  # fall through to the cached copy
     with open(local_file) as fh:
@@ -370,8 +371,9 @@ def get_papyrus_aliases(offline: bool = False) -> pd.DataFrame:
         try:
             response = new_session().get(url, verify=True)
             response.raise_for_status()
-            with open(local_file, 'w') as oh:
-                oh.write(response.text)
+            tmp_file = local_file.with_name(local_file.name + '.tmp')
+            tmp_file.write_text(response.text)
+            tmp_file.replace(local_file)
         except requests.exceptions.RequestException:
             pass  # fall through to the cached copy
     return pd.read_json(
@@ -975,28 +977,36 @@ def convert_xz_to_gz(
     """
     if compression_level is None:
         compression_level = 9
+    output_file = Path(output_file)
+    tmp_file = output_file.with_name(f'{output_file.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.converting')
+    for stale in output_file.parent.glob(f'{output_file.name}.*.converting'):
+        stale.unlink(missing_ok=True)
     chunksize = 10 * 1_048_576  # 10 MB
-    with (
-        lzma.open(input_file, 'rb') as fh,
-        gzip.open(output_file, 'wb', compresslevel=compression_level) as oh,
-    ):
-        if progress:
-            pbar = tqdm(desc='Determining size', unit='B', unit_scale=True)
-            widen_indeterminate_notebook_bar(pbar)
-            size = fh.seek(0, 2)
-            fh.seek(0, 0)
-            pbar.set_description('Converting')
-            # reset() syncs the widget's max too, unlike plain `pbar.total =`.
-            pbar.reset(total=size)
-        while True:
-            chunk = fh.read(chunksize)
-            if not chunk:
-                if progress:
-                    pbar.close()
-                break
-            written = oh.write(chunk)
+    try:
+        with (
+            lzma.open(input_file, 'rb') as fh,
+            gzip.open(tmp_file, 'wb', compresslevel=compression_level) as oh,
+        ):
             if progress:
-                pbar.update(written)
+                pbar = tqdm(desc='Determining size', unit='B', unit_scale=True)
+                widen_indeterminate_notebook_bar(pbar)
+                size = fh.seek(0, 2)
+                fh.seek(0, 0)
+                pbar.set_description('Converting')
+                # reset() syncs the widget's max too, unlike plain `pbar.total =`.
+                pbar.reset(total=size)
+            while True:
+                chunk = fh.read(chunksize)
+                if not chunk:
+                    if progress:
+                        pbar.close()
+                    break
+                written = oh.write(chunk)
+                if progress:
+                    pbar.update(written)
+        tmp_file.replace(output_file)
+    finally:
+        tmp_file.unlink(missing_ok=True)
 
 
 #: Maps a polars dtype (as used in schema_overrides) to the pandas dtype
@@ -1526,25 +1536,33 @@ def convert_gz_to_xz(
     if compression_level is None:
         compression_level = lzma.PRESET_DEFAULT
     preset = compression_level | lzma.PRESET_EXTREME if extreme else compression_level
+    output_file = Path(output_file)
+    tmp_file = output_file.with_name(f'{output_file.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.converting')
+    for stale in output_file.parent.glob(f'{output_file.name}.*.converting'):
+        stale.unlink(missing_ok=True)
     chunksize = 10 * 1_048_576  # 10 MB
-    with (
-        gzip.open(input_file, 'rb') as fh,
-        lzma.open(output_file, 'wb', preset=preset) as oh,
-    ):
-        if progress:
-            pbar = tqdm(desc='Determining size', unit='B', unit_scale=True)
-            widen_indeterminate_notebook_bar(pbar)
-            size = fh.seek(0, 2)
-            fh.seek(0, 0)
-            pbar.set_description('Converting')
-            # reset() syncs the widget's max too, unlike plain `pbar.total =`.
-            pbar.reset(total=size)
-        while True:
-            chunk = fh.read(chunksize)
-            if not chunk:
-                if progress:
-                    pbar.close()
-                break
-            written = oh.write(chunk)
+    try:
+        with (
+            gzip.open(input_file, 'rb') as fh,
+            lzma.open(tmp_file, 'wb', preset=preset) as oh,
+        ):
             if progress:
-                pbar.update(written)
+                pbar = tqdm(desc='Determining size', unit='B', unit_scale=True)
+                widen_indeterminate_notebook_bar(pbar)
+                size = fh.seek(0, 2)
+                fh.seek(0, 0)
+                pbar.set_description('Converting')
+                # reset() syncs the widget's max too, unlike plain `pbar.total =`.
+                pbar.reset(total=size)
+            while True:
+                chunk = fh.read(chunksize)
+                if not chunk:
+                    if progress:
+                        pbar.close()
+                    break
+                written = oh.write(chunk)
+                if progress:
+                    pbar.update(written)
+        tmp_file.replace(output_file)
+    finally:
+        tmp_file.unlink(missing_ok=True)
