@@ -59,11 +59,6 @@ Homepage = "https://github.com/OlivierBeq/Papyrus-scripts"
 papyrus = "papyrus_scripts.cli:main"
 
 [project.optional-dependencies]
-docs = [
-    "sphinx",
-    "sphinx-rtd-theme",
-    "sphinx-autodoc-typehints",
-]
 testing = [
     "pytest",
     "parameterized",
