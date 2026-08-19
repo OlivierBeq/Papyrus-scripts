@@ -281,6 +281,13 @@ class TestUpdateRcsbData(unittest.TestCase):
         self.assertEqual(result['UniProt_accession'].tolist(), ['P1'])
         self.assertTrue(self.output_path.is_file())
 
+    def test_write_failure_leaves_no_file_at_output_path(self):
+        with patch('src.papyrus_scripts.matchRCSB.pd.DataFrame.to_csv', side_effect=OSError('boom')):
+            with self.assertRaises(OSError):
+                self._run(['LIG1'], verbose=False)
+        self.assertFalse(self.output_path.is_file())
+        self.assertEqual(list(Path(self._tmpdir.name).glob('*.tmp')), [])
+
     def test_verbose_progress_bar_path(self):
         result = self._run(['LIG1'], verbose=True)
         self.assertEqual(len(result), 1)

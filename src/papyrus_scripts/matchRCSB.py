@@ -2,7 +2,9 @@
 
 """Match data of the Papyrus dataset with that of the Protein Data Bank."""
 
+import os
 import time
+import uuid
 from collections.abc import Generator, Iterator
 from pathlib import Path
 
@@ -199,7 +201,15 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     # Write to disk and return
     if verbose:
         print('Writing results to disk')
-    pdb_data.to_csv(output_path, sep='\t', index=False)
+    tmp_path = output_path.with_name(f'{output_path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp')
+    for stale in output_path.parent.glob(f'{output_path.name}.*.tmp'):
+        stale.unlink(missing_ok=True)
+    try:
+        # explicit compression: tmp_path's name doesn't end in '.xz'
+        pdb_data.to_csv(tmp_path, sep='\t', index=False, compression='xz')
+        tmp_path.replace(output_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return pdb_data
 
 
