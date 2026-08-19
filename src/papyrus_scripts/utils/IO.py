@@ -986,7 +986,8 @@ def convert_xz_to_gz(
             size = fh.seek(0, 2)
             fh.seek(0, 0)
             pbar.set_description('Converting')
-            pbar.total = size
+            # reset() syncs the widget's max too, unlike plain `pbar.total =`.
+            pbar.reset(total=size)
         while True:
             chunk = fh.read(chunksize)
             if not chunk:
@@ -1519,7 +1520,8 @@ def convert_gz_to_xz(
             size = fh.seek(0, 2)
             fh.seek(0, 0)
             pbar.set_description('Converting')
-            pbar.total = size
+            # reset() syncs the widget's max too, unlike plain `pbar.total =`.
+            pbar.reset(total=size)
         while True:
             chunk = fh.read(chunksize)
             if not chunk:
