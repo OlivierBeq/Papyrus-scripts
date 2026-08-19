@@ -259,11 +259,8 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
     similarity searches. The operation rewrites the file via a temporary copy.
 
     :param filename: path to the ``.h5`` FPSubSim2 database
-    :param verbose: print progress messages and per-table progress bars
+    :param verbose: show a progress bar
     """
-    if verbose:
-        print('Optimizing FPSubSim2 file.')
-
     filename = Path(filename)
     tmp_filename = filename.with_name(filename.name + '_tmp')
     if tmp_filename.is_file():
@@ -278,23 +275,20 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
             siminfo_group = dst.create_group(
                 dst.root, 'similarity_info', 'Infos for similarity search',
             )
-            simfp_groups = list(src.walk_groups('/similarity_info/'))
+            simfp_groups = [g for g in src.walk_groups('/similarity_info/') if g._v_name]
+            group_tables = [
+                (simfp_group, list(src.iter_nodes(simfp_group, classname='Table')))
+                for simfp_group in simfp_groups
+            ]
+            total = sum(len(tables) for _, tables in group_tables) + 1
 
-            for i, simfp_group in enumerate(simfp_groups):
-                if not simfp_group._v_name:
-                    continue
+            pbar = tqdm(total=total, desc='Optimizing FPSubSim2 file', disable=not verbose)
+            for simfp_group, fp_tables in group_tables:
                 dst_group = simfp_group._f_copy(
                     siminfo_group, recursive=False, filters=filters, stats=stats,
                 )
-                fp_tables = list(src.iter_nodes(simfp_group, classname='Table'))
-                table_iter = (
-                    tqdm(fp_tables,
-                         desc=f'Optimizing tables of group ({i}/{len(simfp_groups)})',
-                         leave=False,
-                         )
-                    if verbose else fp_tables
-                )
-                for fp_table in table_iter:
+                pbar.set_description(f'Optimizing {simfp_group._v_name}')
+                for fp_table in fp_tables:
                     dst_fp_table = fp_table.copy(
                         dst_group,
                         fp_table.name,
@@ -309,15 +303,19 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
                         propindexes=True,
                     )
                     popcnt_bins = calc_popcnt_bins_pytables(dst_fp_table, fp_table.attrs.length)
+                    dst_fp_table.close()
                     popcounts = dst.create_vlarray(
                         dst_group, 'popcounts', tb.ObjectAtom(),
                         f'Popcounts of {dst_group._v_name}',
                     )
                     for x in popcnt_bins:
                         popcounts.append(x)
+                    popcounts.close()
+                    pbar.update(1)
+                dst_group._f_close()
+            siminfo_group._f_close()
 
-            if verbose:
-                print('Optimizing remaining groups and arrays.')
+            pbar.set_description('Optimizing remaining groups and arrays')
             for node in src.iter_nodes(src.root):
                 if isinstance(node, tb.group.Group):
                     if isinstance(node, tb.group.RootGroup) or 'similarity_info' in str(node):
@@ -329,9 +327,9 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
                     )
                 else:
                     node.copy(dst.root, node._v_name, overwrite=True, stats=stats)
+            pbar.update(1)
+            pbar.close()
 
-    if verbose:
-        print('Cleaning up temporary files.')
     tmp_filename.unlink()
 
 
