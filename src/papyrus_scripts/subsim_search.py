@@ -8,6 +8,7 @@ import importlib.util
 import json
 import multiprocessing
 import multiprocessing.synchronize
+import queue
 import warnings
 from abc import ABC
 from collections import defaultdict
@@ -119,6 +120,29 @@ def _check_optional_deps() -> None:
         raise ImportError(
             'Some required dependencies are missing:\n\t' + ', '.join(missing),
         )
+
+
+def _pump_progress_queue(
+        progress_queue: multiprocessing.Queue | None,
+        pbar: tqdm | None,
+        timeout: float = 0.1,
+) -> None:
+    """Update *pbar* from counts on *progress_queue*; no-op if ``None``.
+
+    Blocks up to *timeout* for the first count, then drains the rest
+    without blocking.
+    """
+    if progress_queue is None:
+        return
+    try:
+        pbar.update(progress_queue.get(timeout=timeout))
+    except queue.Empty:
+        return
+    while True:
+        try:
+            pbar.update(progress_queue.get_nowait())
+        except queue.Empty:
+            return
 
 
 def _ensure_cupy() -> ModuleType:
@@ -649,6 +673,9 @@ class FPSubSim2:
         shards, but only after ``fp_writer`` has closed the file
         (``fp_writer_done`` - sequencing, since concurrent HDF5 writes
         aren't safe).
+
+        The progress bar is owned by this (main) process and updated from
+        counts ``fp_writer`` reports over ``progress_queue``.
         """
         if self.h5_filename is None:
             raise RuntimeError('h5_filename not set before _parallel_create()')
@@ -667,6 +694,8 @@ class FPSubSim2:
             maxsize=OUTPUT_QUEUE_MAXSIZE_BATCHES_PER_WORKER * n_workers,
         )
         shard_result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=n_shards)
+        # Unbounded: holds only small ints; must not block the writer.
+        progress_queue: multiprocessing.Queue | None = multiprocessing.Queue() if progress else None
         fp_writer_done = multiprocessing.Event()
 
         reader = multiprocessing.Process(
@@ -675,7 +704,7 @@ class FPSubSim2:
         )
         fp_writer = multiprocessing.Process(
             target=_fp_writer_process,
-            args=(self.h5_filename, fp_output_queue, table_paths, total, progress, fp_writer_done),
+            args=(self.h5_filename, fp_output_queue, table_paths, progress_queue, fp_writer_done),
         )
         subst_writer = multiprocessing.Process(
             target=_subst_writer_process,
@@ -693,6 +722,7 @@ class FPSubSim2:
         ]
 
         procs = [reader, fp_writer, subst_writer, *workers]
+        pbar = tqdm(total=total, smoothing=0.0, desc='🔍 Building FPSubSim2 database') if progress else None
         try:
             reader.start()
             fp_writer.start()
@@ -700,11 +730,23 @@ class FPSubSim2:
             for w in workers:
                 w.start()
 
+            if progress_queue is not None:
+                # Poll instead of blocking join() so the bar updates live.
+                remaining = [reader, *workers]
+                while remaining:
+                    _pump_progress_queue(progress_queue, pbar)
+                    remaining = [p for p in remaining if p.is_alive()]
             for p in [reader, *workers]:
                 p.join()
 
             fp_output_queue.put('STOP')
+
+            if progress_queue is not None:
+                while fp_writer.is_alive():
+                    _pump_progress_queue(progress_queue, pbar)
             fp_writer.join()
+            if progress_queue is not None:
+                _pump_progress_queue(progress_queue, pbar, timeout=0.0)  # catch any late-arriving count
             subst_writer.join()
         finally:
             # No-op on the happy path; on exception, terminates whatever's
@@ -716,6 +758,11 @@ class FPSubSim2:
             for q in [*input_queues, fp_output_queue, shard_result_queue]:
                 q.close()
                 q.join_thread()
+            if progress_queue is not None:
+                progress_queue.close()
+                progress_queue.join_thread()
+            if pbar is not None:
+                pbar.close()
 
         sort_db_file(self.h5_filename, verbose=progress)
 
@@ -1085,17 +1132,17 @@ def _fp_writer_process(
         h5_filename: str | Path,
         fp_output_queue: multiprocessing.Queue,
         table_paths: dict,
-        total: int | None,
-        progress: bool,
+        progress_queue: multiprocessing.Queue | None,
         fp_writer_done: multiprocessing.synchronize.Event,
 ) -> None:
     """Consume fingerprint/mapping row batches from workers and write them to the HDF5 file.
 
     Sets *fp_writer_done* in a ``finally`` so an exception still releases
     the waiting ``_subst_writer_process``.
-    """
-    pbar = tqdm(total=total, smoothing=0.0) if progress else None
 
+    Reports progress by count over *progress_queue* rather than owning a
+    ``tqdm`` bar (unsafe in a forked child - see ``_parallel_create``).
+    """
     mappings_insert: list[tuple] = []
     similarity_insert: defaultdict[str, list] = defaultdict(list)
 
@@ -1118,8 +1165,8 @@ def _fp_writer_process(
 
                 _, mappings_batch, fps_batch = data
                 mappings_insert.extend(mappings_batch)
-                if pbar is not None:
-                    pbar.update(len(mappings_batch))
+                if progress_queue is not None:
+                    progress_queue.put(len(mappings_batch))
                 for fp_id, fp_rows in fps_batch.items():
                     similarity_insert[fp_id].extend(fp_rows)
 
@@ -1134,9 +1181,6 @@ def _fp_writer_process(
                         node.append(fp_rows)
                         node.flush()
                     similarity_insert = defaultdict(list)
-
-        if pbar is not None:
-            pbar.close()
 
         with tb.open_file(h5_filename, mode='r+') as h5file:
             h5file.root.mol_mappings.cols.idnumber.reindex()

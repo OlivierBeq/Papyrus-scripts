@@ -10,9 +10,11 @@ explicitly patch its HAS_* flag rather than rely on ambient absence, since
 these must pass regardless of what's actually installed.
 """
 
+import itertools
+import queue
 import unittest
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import numpy as np
 import polars as pl
@@ -804,7 +806,7 @@ class TestFpWriterProcess(unittest.TestCase):
             mock_tb.open_file.return_value.__enter__.return_value = h5file
             ss._fp_writer_process(
                 'fake.h5', fp_output_queue, table_paths={'sig1': '/similarity_info/sig1/fps'},
-                total=1, progress=False, fp_writer_done=fp_writer_done,
+                progress_queue=None, fp_writer_done=fp_writer_done,
             )
         h5file.root.mol_mappings.append.assert_called()
         h5file.get_node.return_value.append.assert_called()
@@ -819,6 +821,7 @@ class TestFpWriterProcess(unittest.TestCase):
         fp_output_queue.get.side_effect = messages
         h5file = MagicMock()
         fp_writer_done = MagicMock()
+        progress_queue = MagicMock()
         with (
             patch.object(ss, 'tb', create=True) as mock_tb,
             patch.object(ss, 'BATCH_WRITE_SIZE', 2, create=True),
@@ -826,10 +829,11 @@ class TestFpWriterProcess(unittest.TestCase):
             mock_tb.open_file.return_value.__enter__.return_value = h5file
             ss._fp_writer_process(
                 'fake.h5', fp_output_queue, table_paths={'sig1': '/similarity_info/sig1/fps'},
-                total=None, progress=True, fp_writer_done=fp_writer_done,
+                progress_queue=progress_queue, fp_writer_done=fp_writer_done,
             )
         self.assertGreaterEqual(h5file.root.mol_mappings.append.call_count, 1)
         self.assertGreaterEqual(h5file.get_node.return_value.append.call_count, 1)
+        progress_queue.put.assert_called_once_with(3)
         fp_writer_done.set.assert_called_once()
 
     def test_sets_done_event_even_on_exception(self):
@@ -841,7 +845,7 @@ class TestFpWriterProcess(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ss._fp_writer_process(
                     'fake.h5', fp_output_queue, table_paths={},
-                    total=None, progress=False, fp_writer_done=fp_writer_done,
+                    progress_queue=None, fp_writer_done=fp_writer_done,
                 )
         fp_writer_done.set.assert_called_once()
 
@@ -1477,6 +1481,75 @@ class TestParallelCreateCleanup(unittest.TestCase):
         for proc in process_instances:
             proc.terminate.assert_called_once()
         mock_sort.assert_not_called()
+
+
+class TestParallelCreateProgressReporting(unittest.TestCase):
+    """pbar lives in the main process, driven by counts from progress_queue
+    (not owned by the forked fp_writer child - not fork-safe there)."""
+
+    def test_pbar_receives_counts_reported_by_fp_writer_and_terminates(self):
+        engine = make_engine()
+        process_instances: list = []
+
+        # Same sequence feeds both .get(timeout=) and .get_nowait().
+        items = iter([5, 3, 2])
+
+        def _get(*_args, **_kwargs):
+            try:
+                return next(items)
+            except StopIteration:
+                raise queue.Empty
+        progress_queue_mock = MagicMock()
+        progress_queue_mock.get.side_effect = _get
+        progress_queue_mock.get_nowait.side_effect = _get
+
+        def fake_process_factory(target=None, args=None, **kwargs):
+            proc = MagicMock()
+            if target is ss._subst_writer_process:
+                # Only .join()ed directly in real code - already finished
+                # by the time `finally` checks it here.
+                proc.is_alive = MagicMock(return_value=False)
+            else:
+                # True once (still running), then False - finally checks
+                # again, so a fixed-length side_effect list would StopIteration.
+                call_count = itertools.count()
+                proc.is_alive = MagicMock(side_effect=lambda: next(call_count) == 0)
+            process_instances.append(proc)
+            return proc
+
+        # Queue() order: input_queues (1 here), fp_output_queue,
+        # shard_result_queue, progress_queue.
+        queue_calls: list = []
+
+        def fake_queue_factory(*args, **kwargs):
+            queue_calls.append(None)
+            return progress_queue_mock if len(queue_calls) == 4 else MagicMock()
+
+        pbar = MagicMock()
+        with (
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.cpu_count', return_value=4),
+            patch(
+                'src.papyrus_scripts.subsim_search.multiprocessing.Process',
+                side_effect=fake_process_factory,
+            ),
+            patch(
+                'src.papyrus_scripts.subsim_search.multiprocessing.Queue',
+                side_effect=fake_queue_factory,
+            ),
+            patch('src.papyrus_scripts.subsim_search.tqdm', return_value=pbar) as mock_tqdm,
+            patch('src.papyrus_scripts.subsim_search.sort_db_file') as mock_sort,
+        ):
+            engine._parallel_create(
+                njobs=2, fingerprint=[], progress=True, total=10,
+                n_shards=1, pattern_holder_bits=2048,
+            )
+
+        mock_tqdm.assert_called_once_with(total=10, smoothing=0.0, desc=ANY)
+        pbar.update.assert_has_calls([call(5), call(3), call(2)])
+        pbar.close.assert_called_once()
+        for proc in process_instances:
+            proc.terminate.assert_not_called()
+        mock_sort.assert_called_once()
 
 
 if __name__ == '__main__':
