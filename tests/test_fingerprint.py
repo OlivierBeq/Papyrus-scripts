@@ -19,6 +19,20 @@ from src.papyrus_scripts import fingerprint as fp
 FPSIM2_AVAILABLE = fp.HAS_FPSIM2
 PYBEL_AVAILABLE = fp.HAS_PYBEL
 
+# RDKit-based fingerprints (no openbabel).
+RDKIT_FP_CLASSES = [
+    fp.MACCSKeysFingerprint,
+    fp.AvalonFingerprint,
+    fp.MorganFingerprint,
+    fp.TopologicalTorsionFingerprint,
+    fp.AtomPairFingerprint,
+    fp.RDKitTopologicalFingerprint,
+    fp.RDKPatternFingerprint,
+]
+
+# OpenBabel-based fingerprints.
+OB_FP_CLASSES = [fp.FP2Fingerprint, fp.FP3Fingerprint, fp.FP4Fingerprint]
+
 
 class TestFingerprintConstruction(unittest.TestCase):
 
@@ -56,6 +70,35 @@ class TestFingerprintConstruction(unittest.TestCase):
         f1 = fp.MorganFingerprint()
         f2 = fp.AvalonFingerprint()
         self.assertNotEqual(f1._hash, f2._hash)
+
+
+class TestAllFingerprintsConstruct(unittest.TestCase):
+    """Every fingerprint constructs with defaults and reprs sanely."""
+
+    def test_construct_and_repr(self):
+        for cls in RDKIT_FP_CLASSES:
+            with self.subTest(fingerprint=cls.__name__):
+                f = cls()
+                self.assertGreater(f.length, 0)
+                self.assertIn(f.name, repr(f))
+                self.assertIn(f._hash, repr(f))
+
+    @unittest.skipUnless(PYBEL_AVAILABLE and FPSIM2_AVAILABLE, 'requires openbabel and FPSim2')
+    def test_construct_and_repr_openbabel(self):
+        for cls in OB_FP_CLASSES:
+            with self.subTest(fingerprint=cls.__name__):
+                f = cls()
+                self.assertGreater(f.length, 0)
+                self.assertIn(f.name, repr(f))
+                self.assertIn(f._hash, repr(f))
+
+    @unittest.skipIf(PYBEL_AVAILABLE and FPSIM2_AVAILABLE,
+                      'requires openbabel and/or FPSim2 to be missing')
+    def test_openbabel_fingerprints_raise_import_error_when_deps_missing(self):
+        for cls in OB_FP_CLASSES:
+            with self.subTest(fingerprint=cls.__name__):
+                with self.assertRaises(ImportError):
+                    cls()
 
 
 class TestFingerprintLengthLookupByName(unittest.TestCase):
@@ -149,30 +192,41 @@ class TestFingerprintGetWithFPSim2(unittest.TestCase):
         expected_words = len(fp.BitStrToIntList('0' * f.length))
         self.assertEqual(len(result), expected_words + 1)
 
+    def test_get_returns_bits_and_popcount_for_every_rdkit_fingerprint(self):
+        mol = Chem.MolFromSmiles('c1ccccc1O')  # phenol
+        for cls in RDKIT_FP_CLASSES:
+            with self.subTest(fingerprint=cls.__name__):
+                f = cls()
+                result = f.get(mol)
+                expected_words = len(fp.BitStrToIntList('0' * f.length))
+                self.assertEqual(len(result), expected_words + 1)
+                popcount = result[-1]
+                self.assertGreaterEqual(popcount, 0)
+                self.assertLessEqual(popcount, f.length)
+
 
 @unittest.skipUnless(FPSIM2_AVAILABLE and PYBEL_AVAILABLE, 'requires FPSim2 and openbabel')
 class TestFingerprintGetWithOpenBabel(unittest.TestCase):
     """OBFingerprint.get() (FP2/FP3/FP4) - a real computation, not just length/name lookups."""
 
-    def _check(self, cls, expected_length):
+    EXPECTED_LENGTHS = {
+        fp.FP2Fingerprint: 1024,
+        fp.FP3Fingerprint: 55,
+        fp.FP4Fingerprint: 307,
+    }
+
+    def test_get_returns_bits_and_popcount_for_every_openbabel_fingerprint(self):
         mol = Chem.MolFromSmiles('c1ccccc1O')  # phenol
-        f = cls()
-        self.assertEqual(f.length, expected_length)
-        result = f.get(mol)
-        expected_words = len(fp.BitStrToIntList('0' * f.length))
-        self.assertEqual(len(result), expected_words + 1)
-        popcount = result[-1]
-        self.assertGreater(popcount, 0)
-        self.assertLessEqual(popcount, f.length)
-
-    def test_fp2_get_returns_bits_and_popcount(self):
-        self._check(fp.FP2Fingerprint, 1024)
-
-    def test_fp3_get_returns_bits_and_popcount(self):
-        self._check(fp.FP3Fingerprint, 55)
-
-    def test_fp4_get_returns_bits_and_popcount(self):
-        self._check(fp.FP4Fingerprint, 307)
+        for cls in OB_FP_CLASSES:
+            with self.subTest(fingerprint=cls.__name__):
+                f = cls()
+                self.assertEqual(f.length, self.EXPECTED_LENGTHS[cls])
+                result = f.get(mol)
+                expected_words = len(fp.BitStrToIntList('0' * f.length))
+                self.assertEqual(len(result), expected_words + 1)
+                popcount = result[-1]
+                self.assertGreater(popcount, 0)
+                self.assertLessEqual(popcount, f.length)
 
 
 @unittest.skipIf(FPSIM2_AVAILABLE, 'documents behaviour when FPSim2 is missing')
