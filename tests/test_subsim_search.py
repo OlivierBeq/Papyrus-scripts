@@ -1609,7 +1609,7 @@ class TestParallelCreateProgressReporting(unittest.TestCase):
             try:
                 return next(items)
             except StopIteration:
-                raise queue.Empty
+                raise queue.Empty from None
         progress_queue_mock = MagicMock()
         progress_queue_mock.get.side_effect = _get
         progress_queue_mock.get_nowait.side_effect = _get
