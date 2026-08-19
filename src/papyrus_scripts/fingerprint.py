@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 from rdkit import Chem, DataStructs
 from rdkit.Avalon import pyAvalonTools
-from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdFingerprintGenerator, rdMolDescriptors
 
 try:
     from openbabel import pybel
@@ -25,6 +25,42 @@ try:
     HAS_FPSIM2 = True  # pragma: no cover - only taken when FPSim2 is installed
 except ImportError:
     HAS_FPSIM2 = False
+
+
+def _morgan_fp(mol: Chem.Mol, radius: int = 2, nBits: int = 2048, invariants: list | None = None,
+               fromAtoms: list | None = None, useChirality: bool = False, useBondTypes: bool = True,
+               useFeatures: bool = False) -> DataStructs.ExplicitBitVect:
+    """Compute a Morgan fingerprint via MorganGenerator."""
+    atom_invariants_generator = rdFingerprintGenerator.GetMorganFeatureAtomInvGen() if useFeatures else None
+    generator = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=nBits,
+                                                           includeChirality=useChirality,
+                                                           useBondTypes=useBondTypes,
+                                                           atomInvariantsGenerator=atom_invariants_generator)
+    return generator.GetFingerprint(mol, fromAtoms=fromAtoms or [], customAtomInvariants=invariants or [])
+
+
+def _atom_pair_fp(mol: Chem.Mol, nBits: int = 2048, minLength: int = 1, maxLength: int = 30,
+                   fromAtoms: list | int = 0, ignoreAtoms: list | int = 0, atomInvariants: list | int = 0,
+                   nBitsPerEntry: int = 4, includeChirality: bool = False, use2D: bool = True,
+                   confId: int = -1) -> DataStructs.ExplicitBitVect:
+    """Compute an atom-pair fingerprint via AtomPairGenerator."""
+    generator = rdFingerprintGenerator.GetAtomPairGenerator(minDistance=minLength, maxDistance=maxLength,
+                                                              includeChirality=includeChirality, use2D=use2D,
+                                                              countSimulation=False, fpSize=nBits)
+    return generator.GetFingerprint(mol, fromAtoms=fromAtoms or [], ignoreAtoms=ignoreAtoms or [],
+                                     confId=confId, customAtomInvariants=atomInvariants or [])
+
+
+def _topological_torsion_fp(mol: Chem.Mol, nBits: int = 2048, targetSize: int = 4,
+                             fromAtoms: list | int = 0, ignoreAtoms: list | int = 0,
+                             atomInvariants: list | int = 0,
+                             includeChirality: bool = False) -> DataStructs.ExplicitBitVect:
+    """Compute a topological-torsion fingerprint via TopologicalTorsionGenerator."""
+    generator = rdFingerprintGenerator.GetTopologicalTorsionGenerator(includeChirality=includeChirality,
+                                                                       torsionAtomCount=targetSize,
+                                                                       countSimulation=False, fpSize=nBits)
+    return generator.GetFingerprint(mol, fromAtoms=fromAtoms or [], ignoreAtoms=ignoreAtoms or [],
+                                     customAtomInvariants=atomInvariants or [])
 
 
 class Fingerprint(ABC):
@@ -143,7 +179,7 @@ class MorganFingerprint(RDKitFingerprint):
                                                  'useChirality': useChirality,
                                                  'useBondTypes': useBondTypes,
                                                  'useFeatures': useFeatures},
-                                                rdMolDescriptors.GetMorganFingerprintAsBitVect)
+                                                _morgan_fp)
 
 
 class TopologicalTorsionFingerprint(RDKitFingerprint):
@@ -160,7 +196,7 @@ class TopologicalTorsionFingerprint(RDKitFingerprint):
                           "ignoreAtoms": ignoreAtoms,
                           "atomInvariants": atomInvariants,
                           "includeChirality": includeChirality },
-                         rdMolDescriptors.GetHashedTopologicalTorsionFingerprintAsBitVect)
+                         _topological_torsion_fp)
 
 
 class AtomPairFingerprint(RDKitFingerprint):
@@ -182,7 +218,7 @@ class AtomPairFingerprint(RDKitFingerprint):
                                                    "includeChirality": includeChirality,
                                                    "use2D": use2D,
                                                    "confId": confId},
-                                                  rdMolDescriptors.GetHashedAtomPairFingerprintAsBitVect)
+                                                  _atom_pair_fp)
 
 
 class RDKitTopologicalFingerprint(RDKitFingerprint):
