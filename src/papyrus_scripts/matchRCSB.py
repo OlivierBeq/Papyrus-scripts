@@ -160,6 +160,8 @@ def update_rcsb_data(root_folder: str | Path | None = None,
                                         break
                         if smiles_stereo:
                             mol = Chem.MolFromSmiles(smiles_stereo)
+                            if mol is None:
+                                continue
                             mol_2D = Chem.Mol(mol)
                             Chem.RemoveStereochemistry(mol_2D)
                             results.append({
