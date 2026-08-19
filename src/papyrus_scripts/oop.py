@@ -862,6 +862,66 @@ class PapyrusDataset:
             self.papyrus_protein_data = _Deferred(loader=source.get_proteins)
         return self._can_reset
 
+    def download(
+            self,
+            include_nostereo: bool = True,
+            include_stereo: bool = False,
+            include_structures: bool = False,
+            include_mold2: bool = True,
+            include_cddd: bool = True,
+            include_mordred: bool = True,
+            include_fingerprint: bool = True,
+            include_unirep: bool = True,
+            include_prodec: bool = True,
+            include_all: bool = False,
+    ) -> None:
+        """Download (and convert) Papyrus data for this dataset's version.
+
+        Wraps :func:`~download.download_papyrus`; version/outdir/progress/
+        disk_margin/keep_xz come from this dataset. ``only_pp=False`` always.
+
+        :param include_nostereo: download 2D data
+        :param include_stereo: download 3D data
+        :param include_structures: download molecule structures
+        :param include_mold2: download 2D Mold2 descriptors
+        :param include_cddd: download 2D CDDD descriptors
+        :param include_mordred: download Mordred descriptors
+        :param include_fingerprint: download fingerprint descriptors
+        :param include_unirep: download UniRep protein descriptors
+        :param include_prodec: download ProDEC protein descriptors
+        :param include_all: override all other ``include_*`` flags to True
+        """
+        if include_all:
+            include_nostereo = include_stereo = include_structures = True
+            include_mold2 = include_cddd = include_mordred = include_fingerprint = True
+            include_unirep = include_prodec = True
+        descriptors = []
+        if include_mold2:
+            descriptors.append('mold2')
+        if include_cddd:
+            descriptors.append('cddd')
+        if include_mordred:
+            descriptors.append('mordred')
+        if include_fingerprint:
+            descriptors.append('fingerprint')
+        if include_unirep:
+            descriptors.append('unirep')
+        if include_prodec:
+            descriptors.append('prodec')
+        pv = self.papyrus_params['version']
+        download.download_papyrus(
+            outdir=self.papyrus_params['source_path'],
+            version=pv.pystow_path_key,
+            nostereo=include_nostereo,
+            stereo=include_stereo,
+            only_pp=False,
+            structures=include_structures,
+            descriptors=descriptors,
+            progress=self.papyrus_params['download_progress'],
+            disk_margin=self.papyrus_params['disk_margin'],
+            keep_xz=self.papyrus_params['keep_original_files'],
+        )
+
     @staticmethod
     def remove(
             version: str | IO.PapyrusVersion,
