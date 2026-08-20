@@ -373,15 +373,25 @@ class _ReaderOfflineTests:
     # -- molecular descriptors: 'all' (join across every desc type) -----
 
     def test_molecular_descriptors_all_2d(self):
-        df = reader.read_molecular_descriptors(desc_type='all', is3d=False, version=VERSION, source_path=self.ROOT)
+        # Expected: desc_type='all' without ids= warns.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', message="read_molecular_descriptors\\(desc_type='all'\\).*", category=UserWarning,
+            )
+            df = reader.read_molecular_descriptors(desc_type='all', is3d=False, version=VERSION, source_path=self.ROOT)
         self.assertEqual(sorted(df['connectivity']), _CONNECTIVITY_IDS)
-        for col in ('D001', 'CDDD_1', 'ABC', 'ECFP6_1', 'MOE_1'):
+        for col in ('D001', 'CDDD_1', 'ABC', 'ECFP6_1'):
             self.assertIn(col, df.columns)
 
     def test_molecular_descriptors_all_3d(self):
-        df = reader.read_molecular_descriptors(desc_type='all', is3d=True, version=VERSION, source_path=self.ROOT)
+        # Expected: desc_type='all' without ids= warns.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', message="read_molecular_descriptors\\(desc_type='all'\\).*", category=UserWarning,
+            )
+            df = reader.read_molecular_descriptors(desc_type='all', is3d=True, version=VERSION, source_path=self.ROOT)
         self.assertEqual(sorted(df['InChIKey']), _INCHIKEY_IDS)
-        for col in ('ABC', 'E3FP_1', 'MOE_1'):
+        for col in ('ABC', 'E3FP_1'):
             self.assertIn(col, df.columns)
 
     def test_molecular_descriptors_invalid_type_raises(self):

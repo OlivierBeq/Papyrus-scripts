@@ -608,9 +608,11 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         # Change endpoint
         endpoint = 'Activity_class'
         del preserved, active, inactive
-    # Get and merge molecular descriptors
+    # Get and merge molecular descriptors. ids= bounds the read itself instead
+    # of filtering after reading the full file(s).
     descs = read_molecular_descriptors(descriptors, 'connectivity' not in data.columns,
-                                       version, descriptor_chunksize, descriptor_path)
+                                       version, descriptor_chunksize, descriptor_path,
+                                       ids=data[merge_on].unique().tolist())
     descs = filter_molecular_descriptors(descs, merge_on, data[merge_on].unique())
     data = data.merge(descs, on=merge_on)
     merge_on_values = data[[merge_on]]
@@ -868,9 +870,11 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         # Change endpoint
         endpoint = 'Activity_class'
         del preserved, active, inactive
-    # Get and merge molecular descriptors
+    # Get and merge molecular descriptors. ids= bounds the read itself instead
+    # of filtering after reading the full file(s).
     mol_descs = read_molecular_descriptors(mol_descriptors, 'connectivity' not in data.columns,
-                                           version, mol_descriptor_chunksize, mol_descriptor_path)
+                                           version, mol_descriptor_chunksize, mol_descriptor_path,
+                                           ids=data[merge_on].unique().tolist())
     mol_descs = filter_molecular_descriptors(mol_descs, merge_on, data[merge_on].unique())
     data = data.merge(mol_descs, on=merge_on)
     merge_on_values = data[[merge_on]]

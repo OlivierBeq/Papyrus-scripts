@@ -2,6 +2,7 @@
 
 """Reading functions for the Papyrus dataset."""
 
+import warnings
 from collections.abc import Generator
 from functools import reduce
 from pathlib import Path
@@ -257,14 +258,17 @@ def read_molecular_descriptors(
     """Read pre-computed molecular descriptors.
 
     :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
-        ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
+        ``'cddd'``, ``'fingerprint'``, ``'all'``
     :param is3d: load descriptors for the stereochemistry-aware variant
     :param version: dataset version to read
-    :param chunksize: when not ``None``, return a lazy :class:`~polars.LazyFrame`.
-        The numeric value is no longer used — any non-``None`` value enables
-        lazy mode.
+    :param chunksize: when not ``None``, return a lazy :class:`~polars.LazyFrame`
+        instead of collecting it (numeric value unused). For ``desc_type='all'``
+        the join is always built lazily; this only controls whether it's
+        collected (via polars' streaming engine) before returning.
     :param source_path: root directory for Papyrus data
-    :param ids: molecule identifiers to retain; ``None`` keeps all
+    :param ids: molecule identifiers to retain; ``None`` keeps all.
+        Recommended for ``desc_type='all'``: filters each descriptor file
+        before the join instead of joining them in full.
     :param verbose: unused; kept for API compatibility
     :param keep_original_files: keep each ``.tsv.xz`` original after conversion
     :raises ValueError: if *desc_type* is not recognised
@@ -273,6 +277,17 @@ def read_molecular_descriptors(
         raise ValueError(
             f'desc_type must be one of {sorted(_VALID_DESC_TYPES)}, '
             f'got {desc_type!r}',
+        )
+
+    if desc_type == 'all' and ids is None:
+        warnings.warn(
+            "read_molecular_descriptors(desc_type='all') without ids= joins "
+            'every underlying descriptor file in full - the join is streamed '
+            "to keep peak memory bounded, but it still scans and processes "
+            'every row of every involved descriptor file. Pass ids= to '
+            'filter each descriptor file before the join for a much smaller, '
+            'faster read.',
+            stacklevel=2,
         )
 
     pv         = _resolve_version(version, source_path)
@@ -290,19 +305,17 @@ def read_molecular_descriptors(
         )
 
     available = [k for k, (_, _, dims) in _MOL_DESC_REGISTRY.items() if is3d in dims]
-    all_keys  = [k for k in available if k != 'moe'] + [k for k in available if k == 'moe']
-    frames    = [
+    # Always lazy here (independent of `lazy`) so the join is one optimized
+    # query with ids= pushed down before it runs.
+    frames = [
         _read_one_mol_descriptor(
-            k, is3d, desc_dir, schemas, sizes, lazy, ids, id_col,
+            k, is3d, desc_dir, schemas, sizes, True, ids, id_col,
             keep_original_files=keep_original_files,
         )
-        for k in all_keys
+        for k in available
     ]
-    # Join all descriptor frames on the common identifier column. Every frame
-    # shares the same concrete type (driven by the single `lazy` flag above),
-    # a guarantee polars' overloaded join() can't express for a plain
-    # DataFrame | LazyFrame union.
-    return reduce(lambda a, b: a.join(b, on=id_col, how='inner'), frames)  # type: ignore[arg-type]
+    joined: pl.LazyFrame = reduce(lambda a, b: a.join(b, on=id_col, how='inner'), frames)
+    return joined if lazy else joined.collect(engine='streaming')
 
 
 def read_protein_descriptors(
