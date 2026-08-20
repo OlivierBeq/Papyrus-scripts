@@ -188,14 +188,10 @@ class TestFpsubsim2FingerprintParsing(unittest.TestCase):
         self.assertIn('must be one of', result.output)
         create.assert_not_called()
 
-    def test_unknown_parameter_name_prints_warning(self):
-        # cli.py prints a warning for an unrecognised parameter name but
-        # still forwards it to the fingerprint constructor, which then
-        # raises TypeError - a pre-existing bug, not something this test
-        # suite is fixing; asserting the actual (crashing) behaviour here.
+    def test_unknown_parameter_name_prints_warning_and_exits(self):
         result, create = self._invoke('--fingerprint', 'Morgan;bogus=1')
+        self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn('Parameters for fingerprint Morgan are', result.output)
-        self.assertIsInstance(result.exception, TypeError)
         create.assert_not_called()
 
     def test_invalid_parameter_literal_exits(self):

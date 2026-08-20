@@ -416,6 +416,7 @@ def fpsubsim2(indir: str | None, output: str | None, version: tuple[str, ...], i
                     print(f'Parameters for fingerprint {fp_name} '
                           f'are {", ".join(fp_correct_values[fp_name])}',
                           )
+                    sys.exit()
                 try:
                     fp_param_values[param_name] = ast.literal_eval(param_value)
                 except (ValueError, SyntaxError) as e:
