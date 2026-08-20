@@ -124,7 +124,6 @@ _MOL_DESC_REGISTRY = {
     'mordred':     (r'\d+\.\d+_combined_{dim}D_moldescs_mordred{dim_int}D\.tsv.*', 'mordred_{dim_int}D', (False, True)),
     'cddd':        (r'\d+\.\d+_combined_{dim}D_moldescs_CDDDs\.tsv.*',             'CDDD',               (False,)),
     'fingerprint': (r'\d+\.\d+_combined_{dim}D_moldescs_{fp}\.tsv.*',              '{fp}',               (False, True)),
-    'moe':         (r'\d+\.\d+_combined_{dim}D_moldescs_MOE\.tsv.*',               None,                 (False, True)),
 }
 
 _VALID_DESC_TYPES = frozenset(_MOL_DESC_REGISTRY) | {'all'}
@@ -451,7 +450,7 @@ def molecular_descriptors_available(
     :func:`read_molecular_descriptors` would need for *desc_type*.
 
     :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
-        ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
+        ``'cddd'``, ``'fingerprint'``, ``'all'``
     :param is3d: check for the stereochemistry-aware variant
     :param version: dataset version to check
     :param source_path: root directory for Papyrus data

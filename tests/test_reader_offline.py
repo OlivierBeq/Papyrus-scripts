@@ -6,7 +6,7 @@ Builds a small, realistic Papyrus version folder entirely locally (no
 network access, no real Papyrus download) and exercises every reader.py
 entry point against it: bioactivities (2D/3D/Papyrus++), protein targets,
 every molecular descriptor type (mold2, CDDD, mordred 2D/3D, ECFP6/E3FP,
-MOE, 'all'), protein descriptors (unirep, custom), and molecular structures
+'all'), protein descriptors (unirep, custom), and molecular structures
 (SD files, 2D/3D, chunked reading).
 
 The fixture is built twice per scenario: once left as the raw
@@ -181,12 +181,6 @@ def build_fixture(root: Path) -> None:
     })
     _write_xz_tsv(desc_dir / f'{PREFIX}_combined_2D_moldescs_ECFP6.tsv.xz', ecfp6)
 
-    moe_2d = pl.DataFrame({
-        'connectivity': _CONNECTIVITY_IDS,
-        'MOE_1': [9.9, 8.8, 7.7],
-    })
-    _write_xz_tsv(desc_dir / f'{PREFIX}_combined_2D_moldescs_MOE.tsv.xz', moe_2d)
-
     # ------------------------------------------------------------------
     # Molecular descriptors - 3D (keyed by InChIKey)
     # ------------------------------------------------------------------
@@ -202,12 +196,6 @@ def build_fixture(root: Path) -> None:
         'E3FP_2': [0, 1],
     })
     _write_xz_tsv(desc_dir / f'{PREFIX}_combined_3D_moldescs_E3FP.tsv.xz', e3fp)
-
-    moe_3d = pl.DataFrame({
-        'InChIKey': _INCHIKEY_IDS,
-        'MOE_1': [6.6, 5.5],
-    })
-    _write_xz_tsv(desc_dir / f'{PREFIX}_combined_3D_moldescs_MOE.tsv.xz', moe_3d)
 
     # ------------------------------------------------------------------
     # Protein descriptors - unirep
@@ -366,14 +354,6 @@ class _ReaderOfflineTests:
             desc_type='fingerprint', is3d=True, version=VERSION, source_path=self.ROOT,
         )
         self.assertEqual(df.schema['E3FP_1'], pl.Int64)
-
-    def test_molecular_descriptors_moe_2d(self):
-        df = reader.read_molecular_descriptors(desc_type='moe', is3d=False, version=VERSION, source_path=self.ROOT)
-        self.assertEqual(sorted(df['connectivity']), _CONNECTIVITY_IDS)
-
-    def test_molecular_descriptors_moe_3d(self):
-        df = reader.read_molecular_descriptors(desc_type='moe', is3d=True, version=VERSION, source_path=self.ROOT)
-        self.assertEqual(sorted(df['InChIKey']), _INCHIKEY_IDS)
 
     def test_molecular_descriptors_ids_filter(self):
         df = reader.read_molecular_descriptors(

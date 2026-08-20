@@ -831,7 +831,7 @@ class PapyrusDataset:
         downloaded first if not yet available locally.
 
         :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
-            ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
+            ``'cddd'``, ``'fingerprint'``, ``'all'``
         :param progress: default ``progress`` for the returned set's
             :meth:`~PapyrusDescriptorSet.aggregate` when not overridden there
         :returns: a :class:`PapyrusDescriptorSet`
@@ -1560,7 +1560,7 @@ class PapyrusMoleculeSet:
         Purely lazy: see :meth:`PapyrusDataset.molecular_descriptors`.
 
         :param desc_type: one of ``'mold2'``, ``'mordred'``, ``'cddd'``,
-            ``'fingerprint'``, ``'moe'``, ``'all'``
+            ``'fingerprint'``, ``'all'``
         :param progress: default ``progress`` for the returned set's
             :meth:`~PapyrusDescriptorSet.aggregate` when not overridden there
         :returns: a :class:`PapyrusDescriptorSet`
