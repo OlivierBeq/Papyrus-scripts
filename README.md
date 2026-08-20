@@ -44,12 +44,14 @@ Optional extras enable additional functionality:
 | Extra | Enables |
 |---|---|
 | `papyrus-scripts[subsim]` | CPU similarity & substructure search (`tables`, `FPSim2`) |
-| `papyrus-scripts[gpu]` | GPU-accelerated similarity search (`cupy`) |
+| `papyrus-scripts[gpu]` | GPU-accelerated similarity search (`cupy-cuda12x[ctk]`, bundles the CUDA 12.x toolkit) |
 | `papyrus-scripts[simgpu]` | CPU + GPU-accelerated similarity search (`subsim` + `gpu`) |
 | `papyrus-scripts[dnn]` | DNN model training (`torch`, `skorch`) |
 | `papyrus-scripts[all]` | Everything above |
 
 > **Note:** `openbabel` (needed only for FP2/FP3/FP4 fingerprints) must be installed via conda-forge, not pip, when used alongside RDKit/FPSim2/cupy in the same environment: `conda install -c conda-forge openbabel`.
+>
+> **Note:** the `gpu` extra pins `cupy-cuda12x[ctk]`, whose `ctk` extra pulls in the CUDA 12.x toolkit as a pip package — no separate toolkit install needed, only an NVIDIA driver compatible with CUDA 12.x.
 
 ## 🛠️ Requirements
 
