@@ -16,6 +16,7 @@ the repository small.
 import csv
 import lzma
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -155,8 +156,18 @@ class TestQsarPcmRealData(unittest.TestCase):
                 df = _load_fixture(fixture)
                 self.mol_descs = _synthetic_mol_descriptors(df)
                 model_args = dict(model=DecisionTreeClassifier(random_state=0))
-                results_pl, _ = self._run(qsar, df, **model_args)
-                results_pd, _ = self._run(qsar, df.to_pandas(), **model_args)
+                # Expected: some real folds are single-class; model_metrics()
+                # and sklearn's confusion_matrix() both warn about it.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        'ignore', message='Only one class present in y_true.*', category=UserWarning,
+                    )
+                    warnings.filterwarnings(
+                        'ignore', message="A single label was found in 'y_true' and 'y_pred'.*",
+                        category=UserWarning,
+                    )
+                    results_pl, _ = self._run(qsar, df, **model_args)
+                    results_pd, _ = self._run(qsar, df.to_pandas(), **model_args)
                 self.assertGreater(len(results_pl), 0)
                 pd.testing.assert_frame_equal(
                     results_pl.reset_index(drop=True), results_pd.reset_index(drop=True),
@@ -172,8 +183,18 @@ class TestQsarPcmRealData(unittest.TestCase):
                 self.mol_descs = _synthetic_mol_descriptors(df)
                 self.prot_descs = _synthetic_prot_descriptors(df)
                 model_args = dict(model=DecisionTreeClassifier(random_state=0))
-                results_pl, _ = self._run(pcm, df, **model_args)
-                results_pd, _ = self._run(pcm, df.to_pandas(), **model_args)
+                # Expected: some real folds are single-class; model_metrics()
+                # and sklearn's confusion_matrix() both warn about it.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        'ignore', message='Only one class present in y_true.*', category=UserWarning,
+                    )
+                    warnings.filterwarnings(
+                        'ignore', message="A single label was found in 'y_true' and 'y_pred'.*",
+                        category=UserWarning,
+                    )
+                    results_pl, _ = self._run(pcm, df, **model_args)
+                    results_pd, _ = self._run(pcm, df.to_pandas(), **model_args)
                 self.assertGreater(len(results_pl), 0)
                 pd.testing.assert_frame_equal(
                     results_pl.reset_index(drop=True), results_pd.reset_index(drop=True),
