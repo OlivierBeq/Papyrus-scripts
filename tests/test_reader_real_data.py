@@ -66,7 +66,7 @@ class TestRealBioactivities(unittest.TestCase):
     def test_full_2d(self):
         try:
             df = reader.read_papyrus(is3d=False, plusplus=False, version=VERSION, source_path=ROOT, chunksize=1)
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'2D (non ++) bioactivities not downloaded: {e}')
         head = df.head(SAMPLE_SIZE).collect()
         self.assertGreater(head.height, 0)
@@ -74,7 +74,7 @@ class TestRealBioactivities(unittest.TestCase):
     def test_full_3d(self):
         try:
             df = reader.read_papyrus(is3d=True, plusplus=False, version=VERSION, source_path=ROOT, chunksize=1)
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'3D bioactivities not downloaded: {e}')
         head = df.head(SAMPLE_SIZE).collect()
         self.assertGreater(head.height, 0)
@@ -113,7 +113,7 @@ class TestRealMolecularDescriptors(unittest.TestCase):
     def _run_or_skip(self, desc_type: str, is3d: bool) -> pl.DataFrame | None:
         try:
             df = self._bounded(desc_type, is3d)
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'{desc_type} ({"3D" if is3d else "2D"}) not downloaded: {e}')
             return None
         self.assertGreater(df.height, 0)
@@ -146,14 +146,15 @@ class TestRealMolecularDescriptors(unittest.TestCase):
             self.assertEqual(df.schema['E3FP_1'], pl.Int64)
 
     def test_all_2d_join(self):
+        bio = reader.read_papyrus(is3d=False, plusplus=True, version=VERSION, source_path=ROOT, chunksize=1)
+        sample_ids = bio.select('connectivity').head(SAMPLE_SIZE).collect()['connectivity'].to_list()
         try:
-            lazy = reader.read_molecular_descriptors(
-                desc_type='all', is3d=False, version=VERSION, source_path=ROOT, chunksize=1,
+            df = reader.read_molecular_descriptors(
+                desc_type='all', is3d=False, version=VERSION, source_path=ROOT, ids=sample_ids,
             )
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'not enough 2D descriptor types downloaded for an "all" join: {e}')
             return
-        df = lazy.head(SAMPLE_SIZE).collect()
         self.assertGreater(df.height, 0)
 
     def test_ids_filter_actually_filters(self):
@@ -164,7 +165,7 @@ class TestRealMolecularDescriptors(unittest.TestCase):
                 desc_type='fingerprint', is3d=False, version=VERSION, source_path=ROOT,
                 ids=sample_ids,
             )
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'2D fingerprint descriptors not downloaded: {e}')
             return
         self.assertTrue(set(df['connectivity']).issubset(set(sample_ids)))
@@ -176,7 +177,7 @@ class TestRealProteinDescriptors(unittest.TestCase):
     def test_unirep(self):
         try:
             df = reader.read_protein_descriptors(desc_type='unirep', version=VERSION, source_path=ROOT)
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'unirep descriptors not downloaded: {e}')
             return
         self.assertGreater(df.height, 0)
@@ -192,7 +193,7 @@ class TestRealProteinDescriptors(unittest.TestCase):
             df = reader.read_protein_descriptors(
                 desc_type='unirep', version=VERSION, source_path=ROOT, ids=sample_ids,
             )
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'unirep descriptors not downloaded: {e}')
             return
         self.assertTrue(set(df['target_id']).issubset(set(sample_ids)))
@@ -227,7 +228,7 @@ class TestRealMolecularStructures(unittest.TestCase):
     def test_structures_2d(self):
         try:
             chunk = self._first_chunk(is3d=False)
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'2D structures not downloaded: {e}')
             return
         self.assertGreater(chunk.height, 0)
@@ -238,7 +239,7 @@ class TestRealMolecularStructures(unittest.TestCase):
     def test_structures_3d(self):
         try:
             chunk = self._first_chunk(is3d=True)
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'3D structures not downloaded: {e}')
             return
         self.assertGreater(chunk.height, 0)
@@ -251,7 +252,7 @@ class TestRealMolecularStructures(unittest.TestCase):
             df = reader.read_molecular_structures(
                 is3d=False, version=VERSION, source_path=ROOT, ids=sample_ids, verbose=False,
             )
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
             self.skipTest(f'2D structures not downloaded: {e}')
             return
         self.assertTrue(set(df['connectivity']).issubset(set(sample_ids)))
