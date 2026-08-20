@@ -129,16 +129,16 @@ matches = sub_lib.substructure('c1ccccc1')
 
 ## 📊 Dataset versions
 
-Papyrus releases are hosted on different servers depending on release and ChEMBL version:
+Papyrus releases are hosted on Zenodo:
 
-| Papyrus version | Revisions | Legacy alias | ChEMBL version | Zenodo | 4TU |
-|:---:|:---:|:---:|:---:|:---:|:---:|
-| **2022.04** | 2 | 05.4 | 29 | ✓ | ✓ |
-| **2022.08** | 3 | 05.5 | 30 | ✓ | ✗ |
-| **2022.11** | 4 | 05.6 | 31 | ✓ | ✗ |
-| **2024.09** | 2 | 05.7 | 34 | ✓ | ✗ |
+| Papyrus version | Revisions | Legacy alias | ChEMBL version | Zenodo |
+|:---:|:---:|:---:|:---:|:---:|
+| **2022.04** | 2 | 05.4 | 29 | [link](https://zenodo.org/records/10943992) |
+| **2022.08** | 3 | 05.5 | 30 | [link](https://zenodo.org/records/7019873) |
+| **2022.11** | 4 | 05.6 | 31 | [link](https://zenodo.org/records/7373213) |
+| **2024.09** | 2 | 05.7 | 34 | [link](https://zenodo.org/records/13787633) |
 
-> **Note:** precomputed descriptors and 2D/3D structures are not available for 2022.04 (05.4) on 4TU, but are on Zenodo. For machine learning use cases, we recommend the datasets without stereochemistry (files marked "2D" and/or "without_stereochemistry").
+> **Note:** for machine learning use cases, we recommend the datasets without stereochemistry (files marked "2D" and/or "without_stereochemistry").
 
 ## ⚙️ Advanced utilities
 
