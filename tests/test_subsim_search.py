@@ -1712,9 +1712,11 @@ class TestParallelCreateProgressReporting(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_TABLES and HAS_FPSIM2, 'requires tables and FPSim2')
-# pytables >=3.11 can raise AttributeError from a Table/EArray's __del__
-# during cyclic-GC finalization after its File is already closed - a
-# finalizer bug, not a correctness issue; silenced rather than worked around.
+# Confirmed via minimal repro: fetching 2+ Table nodes from one pytables
+# File session, closed normally via `with`, can still raise AttributeError
+# from one node's __del__ during later GC (pytables 3.11.1). Reproduces with
+# bare pytables calls alone - a pytables finalizer bug, not a leak in
+# FPSubSim2/sort_db_file; silenced rather than worked around.
 @pytest.mark.filterwarnings('ignore::pytest.PytestUnraisableExceptionWarning')
 class TestFPSubSim2AllFingerprints(unittest.TestCase):
     """End-to-end (unmocked): build a real .h5 db with every fingerprint type and query it."""
