@@ -591,14 +591,16 @@ class TestReaderAgainstRawXzFiles(_ReaderOfflineTests, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls._warnings_ctx = warnings.catch_warnings()
+        cls._warnings_ctx.__enter__()
         warnings.filterwarnings('ignore', category=FutureWarning)
-        warnings.filterwarnings('ignore', category=UserWarning)
         cls._tmpdir = _make_root()
         cls.ROOT = cls._tmpdir.name
 
     @classmethod
     def tearDownClass(cls):
         cls._tmpdir.cleanup()
+        cls._warnings_ctx.__exit__(None, None, None)
 
 
 class TestReaderAgainstParquetFiles(_ReaderOfflineTests, unittest.TestCase):
@@ -608,8 +610,9 @@ class TestReaderAgainstParquetFiles(_ReaderOfflineTests, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls._warnings_ctx = warnings.catch_warnings()
+        cls._warnings_ctx.__enter__()
         warnings.filterwarnings('ignore', category=FutureWarning)
-        warnings.filterwarnings('ignore', category=UserWarning)
         cls._tmpdir = _make_root()
         cls.ROOT = cls._tmpdir.name
         convert_all_tabular_to_parquet(Path(cls.ROOT))
@@ -617,6 +620,7 @@ class TestReaderAgainstParquetFiles(_ReaderOfflineTests, unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls._tmpdir.cleanup()
+        cls._warnings_ctx.__exit__(None, None, None)
 
 
 class TestMolecularStructuresAvailableFalse(unittest.TestCase):
