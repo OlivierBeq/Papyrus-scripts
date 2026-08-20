@@ -81,13 +81,15 @@ class TestCleanCommand(unittest.TestCase):
 class TestPdbmatchCommand(unittest.TestCase):
 
     def test_writes_matched_chunks_to_output(self):
+        # to_csv is mocked (no real file appears), so replace() is mocked too.
         runner = CliRunner()
         chunk1, chunk2 = MagicMock(), MagicMock()
         with (
             patch('src.papyrus_scripts.cli.update_rcsb_data') as mock_update,
             patch('src.papyrus_scripts.cli.read_papyrus', return_value=MagicMock()) as mock_read,
-            patch('src.papyrus_scripts.cli.get_num_rows_in_file', return_value=2_000_000),
+            patch('src.papyrus_scripts.cli.get_num_rows_in_file', return_value=2_000_000) as mock_rows,
             patch('src.papyrus_scripts.cli.get_matches', return_value=[chunk1, chunk2]) as mock_matches,
+            patch('src.papyrus_scripts.cli.Path.replace') as mock_replace,
             runner.isolated_filesystem(),
         ):
             result = runner.invoke(main, ['pdbmatch', '--output', 'out.tsv'])
@@ -95,8 +97,27 @@ class TestPdbmatchCommand(unittest.TestCase):
         mock_update.assert_called_once()
         mock_read.assert_called_once()
         self.assertEqual(mock_matches.call_args.kwargs['total'], 2)
-        chunk1.to_csv.assert_called_once_with('out.tsv', sep='\t', index=False, header=True, mode='w')
-        chunk2.to_csv.assert_called_once_with('out.tsv', sep='\t', index=False, header=False, mode='a')
+        tmp_path = chunk1.to_csv.call_args.args[0]
+        self.assertTrue(str(tmp_path).startswith('out.tsv.') and str(tmp_path).endswith('.tmp'))
+        chunk1.to_csv.assert_called_once_with(tmp_path, sep='\t', index=False, header=True, mode='w')
+        chunk2.to_csv.assert_called_once_with(tmp_path, sep='\t', index=False, header=False, mode='a')
+        mock_replace.assert_called_once_with(Path('out.tsv'))
+        # get_num_rows_in_file must use the same dataset variant as read_papyrus.
+        self.assertEqual(mock_rows.call_args.kwargs['plusplus'], mock_read.call_args.kwargs['plusplus'])
+
+    def test_more_flag_uses_full_dataset_row_count(self):
+        runner = CliRunner()
+        with (
+            patch('src.papyrus_scripts.cli.update_rcsb_data'),
+            patch('src.papyrus_scripts.cli.read_papyrus', return_value=MagicMock()) as mock_read,
+            patch('src.papyrus_scripts.cli.get_num_rows_in_file', return_value=2_000_000) as mock_rows,
+            patch('src.papyrus_scripts.cli.get_matches', return_value=[]),
+            runner.isolated_filesystem(),
+        ):
+            result = runner.invoke(main, ['pdbmatch', '--output', 'out.tsv', '--more'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertFalse(mock_read.call_args.kwargs['plusplus'])
+        self.assertFalse(mock_rows.call_args.kwargs['plusplus'])
 
 
 class TestFpsubsim2MutexOption(unittest.TestCase):
@@ -167,14 +188,10 @@ class TestFpsubsim2FingerprintParsing(unittest.TestCase):
         self.assertIn('must be one of', result.output)
         create.assert_not_called()
 
-    def test_unknown_parameter_name_prints_warning(self):
-        # cli.py prints a warning for an unrecognised parameter name but
-        # still forwards it to the fingerprint constructor, which then
-        # raises TypeError - a pre-existing bug, not something this test
-        # suite is fixing; asserting the actual (crashing) behaviour here.
+    def test_unknown_parameter_name_prints_warning_and_exits(self):
         result, create = self._invoke('--fingerprint', 'Morgan;bogus=1')
+        self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn('Parameters for fingerprint Morgan are', result.output)
-        self.assertIsInstance(result.exception, TypeError)
         create.assert_not_called()
 
     def test_invalid_parameter_literal_exits(self):

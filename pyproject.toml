@@ -74,7 +74,7 @@ subsim = [
     "FPSim2",
 ]
 gpu = [
-    "cupy-cuda12x",
+    "cupy-cuda12x[ctk]",
 ]
 simgpu = [
     "papyrus_scripts[subsim,gpu]"

@@ -922,6 +922,7 @@ def _collect_similar_molecules(
         fingerprint: Fingerprint,
         threshold: float,
         cuda: bool,
+        desc: str = 'Searching similar molecules',
 ) -> pl.DataFrame:
     """Run similarity search for every query SMILES and return merged results.
 
@@ -930,12 +931,13 @@ def _collect_similar_molecules(
     :param fingerprint: fingerprint to use for similarity search
     :param threshold: Tanimoto similarity threshold
     :param cuda: use GPU-accelerated search
+    :param desc: progress bar description
     :returns: DataFrame with ``InChIKey`` and the similarity score column
     """
     engine = fpss2.get_similarity_lib(fp_signature=repr(fingerprint), cuda=cuda)
     frames = [
         engine.similarity(smi, threshold=threshold)
-        for smi in tqdm(molecule_smiles)
+        for smi in tqdm(molecule_smiles, desc=desc)
     ]
     result = pl.concat(frames, how='diagonal')
     return result.select(['InChIKey', result.columns[-1]])
@@ -963,7 +965,10 @@ def keep_similar(
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
     fpss2        = _load_fpsubsim2(fpsubsim2_file, fingerprint)
-    similar_mols = _collect_similar_molecules(fpss2, molecule_smiles, fingerprint, threshold, cuda)
+    similar_mols = _collect_similar_molecules(
+        fpss2, molecule_smiles, fingerprint, threshold, cuda,
+        desc='Searching similar molecules',
+    )
     score_col    = similar_mols.columns[-1]
     scores: pl.DataFrame | pl.LazyFrame = similar_mols.select(['InChIKey', score_col])
     # A LazyFrame can only be joined against another LazyFrame.
@@ -998,17 +1003,24 @@ def keep_dissimilar(
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
     fpss2        = _load_fpsubsim2(fpsubsim2_file, fingerprint)
-    similar_mols = _collect_similar_molecules(fpss2, molecule_smiles, fingerprint, threshold, cuda)
+    similar_mols = _collect_similar_molecules(
+        fpss2, molecule_smiles, fingerprint, threshold, cuda,
+        desc='Searching dissimilar molecules',
+    )
     return data.filter(~pl.col('InChIKey').is_in(similar_mols['InChIKey'].implode()))
 
 
 def _collect_substructure_molecules(
         fpss2: FPSubSim2,
         molecule_smiles: list[str],
+        desc: str = 'Searching substructure matches',
 ) -> pl.DataFrame:
     """Run substructure search for every query SMILES and return merged results."""
     engine = fpss2.get_substructure_lib()
-    frames = [engine.substructure(smi) for smi in tqdm(molecule_smiles)]
+    frames = [
+        engine.substructure(smi)
+        for smi in tqdm(molecule_smiles, desc=desc)
+    ]
     return pl.concat(frames, how='diagonal')
 
 
@@ -1026,7 +1038,9 @@ def keep_substructure(
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
     fpss2             = _load_fpsubsim2(fpsubsim2_file, fingerprint=None)
-    substructure_mols = _collect_substructure_molecules(fpss2, molecule_smiles)
+    substructure_mols = _collect_substructure_molecules(
+        fpss2, molecule_smiles, desc='Searching substructure matches',
+    )
     return data.filter(pl.col('InChIKey').is_in(substructure_mols['InChIKey'].implode()))
 
 
@@ -1044,7 +1058,9 @@ def keep_not_substructure(
     if isinstance(molecule_smiles, str):
         molecule_smiles = [molecule_smiles]
     fpss2             = _load_fpsubsim2(fpsubsim2_file, fingerprint=None)
-    substructure_mols = _collect_substructure_molecules(fpss2, molecule_smiles)
+    substructure_mols = _collect_substructure_molecules(
+        fpss2, molecule_smiles, desc='Searching non-substructure matches',
+    )
     return data.filter(~pl.col('InChIKey').is_in(substructure_mols['InChIKey'].implode()))
 
 

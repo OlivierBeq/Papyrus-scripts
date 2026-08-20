@@ -10,17 +10,25 @@ explicitly patch its HAS_* flag rather than rely on ambient absence, since
 these must pass regardless of what's actually installed.
 """
 
+import itertools
+import queue
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import numpy as np
 import polars as pl
+import pytest
 from rdkit import Chem
 
+from src.papyrus_scripts import fingerprint as fp
 from src.papyrus_scripts import subsim_search as ss
 from src.papyrus_scripts.fingerprint import Fingerprint, MorganFingerprint
 from src.papyrus_scripts.subsim_search import (
+    HAS_FPSIM2,
+    HAS_TABLES,
     FPSubSim2,
     _build_result_df,
     _check_optional_deps,
@@ -132,6 +140,13 @@ class TestDecodeBytesDf(unittest.TestCase):
         out = _decode_bytes_df(df)
         self.assertEqual(out['a'].to_list(), ['x', 'y'])
 
+    def test_decodes_binary_column_from_pytables_fixed_length_strings(self):
+        # PyTables 'S' columns surface as pl.Binary, not pl.Object.
+        df = pl.DataFrame({'a': pl.Series([b'x', b'y'], dtype=pl.Binary), 'b': [1, 2]})
+        out = _decode_bytes_df(df)
+        self.assertEqual(out.schema['a'], pl.Utf8)
+        self.assertEqual(out['a'].to_list(), ['x', 'y'])
+
 
 class TestBuildResultDf(unittest.TestCase):
 
@@ -232,7 +247,7 @@ class TestSortDbFile(unittest.TestCase):
                 MagicMock(__enter__=MagicMock(return_value=src), __exit__=MagicMock(return_value=False)),
                 MagicMock(__enter__=MagicMock(return_value=dst), __exit__=MagicMock(return_value=False)),
             ]
-            with patch('src.papyrus_scripts.subsim_search.Path.rename'), \
+            with patch('src.papyrus_scripts.subsim_search.Path.replace'), \
                  patch('src.papyrus_scripts.subsim_search.Path.unlink'), \
                  patch('src.papyrus_scripts.subsim_search.Path.is_file', return_value=False):
                 ss.sort_db_file('fake.h5', verbose=progress)
@@ -249,13 +264,13 @@ class TestSortDbFile(unittest.TestCase):
     def test_sorts_without_progress(self):
         self._run(progress=False)
 
-    def test_removes_stale_tmp_file_before_rename(self):
+    def test_removes_stale_tmp_file_before_sorting(self):
         with (
             patch.object(ss, 'tb', create=True) as mock_tb,
             patch.object(ss, 'calc_popcnt_bins_pytables', create=True, return_value=[]),
             patch('src.papyrus_scripts.subsim_search.Path.is_file', return_value=True) as mock_is_file,
             patch('src.papyrus_scripts.subsim_search.Path.unlink') as mock_unlink,
-            patch('src.papyrus_scripts.subsim_search.Path.rename'),
+            patch('src.papyrus_scripts.subsim_search.Path.replace'),
         ):
             src = MagicMock()
             src.walk_groups.return_value = []
@@ -268,6 +283,19 @@ class TestSortDbFile(unittest.TestCase):
             ss.sort_db_file('fake.h5')
         self.assertTrue(mock_is_file.called)
         self.assertTrue(mock_unlink.called)
+
+    def test_failure_removes_temp_and_leaves_original_untouched(self):
+        with (
+            patch.object(ss, 'tb', create=True) as mock_tb,
+            patch('src.papyrus_scripts.subsim_search.Path.is_file', return_value=False),
+            patch('src.papyrus_scripts.subsim_search.Path.unlink') as mock_unlink,
+            patch('src.papyrus_scripts.subsim_search.Path.replace') as mock_replace,
+        ):
+            mock_tb.open_file.side_effect = RuntimeError('boom')
+            with self.assertRaises(RuntimeError):
+                ss.sort_db_file('fake.h5')
+        mock_unlink.assert_called_once_with(missing_ok=True)
+        mock_replace.assert_not_called()
 
 
 class TestFPSubSim2Init(unittest.TestCase):
@@ -336,6 +364,7 @@ class TestCreate(unittest.TestCase):
             patch.object(engine, '_single_process_create') as mock_single,
             patch.object(engine, '_parallel_create') as mock_parallel,
             patch.object(engine, 'load') as mock_load,
+            patch.object(Path, 'replace'),
         ):
             mock_tb.Filters.return_value = MagicMock()
             mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
@@ -352,6 +381,7 @@ class TestCreate(unittest.TestCase):
             patch.object(engine, '_single_process_create') as mock_single,
             patch.object(engine, '_parallel_create') as mock_parallel,
             patch.object(engine, 'load'),
+            patch.object(Path, 'replace'),
         ):
             mock_tb.Filters.return_value = MagicMock()
             mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
@@ -367,11 +397,29 @@ class TestCreate(unittest.TestCase):
             patch.object(ss, 'create_schema', create=True),
             patch.object(engine, '_single_process_create'),
             patch.object(engine, 'load'),
+            patch.object(Path, 'replace'),
         ):
             mock_tb.Filters.return_value = MagicMock()
             mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
             engine.create(sd_file='mols.sd', fingerprint=[MorganFingerprint()], njobs=1, progress=False)
         self.assertEqual(engine.h5_filename, Path('Papyrus_custom_FPSubSim2_3D.h5'))
+
+    def test_build_failure_cleans_up_temp_file_and_final_path_untouched(self):
+        engine = make_engine()
+        with (
+            patch.object(ss, 'tb', create=True) as mock_tb,
+            patch.object(ss, 'create_schema', create=True),
+            patch.object(engine, '_single_process_create', side_effect=RuntimeError('boom')),
+            patch.object(Path, 'glob') as mock_glob,
+        ):
+            mock_tb.Filters.return_value = MagicMock()
+            mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
+            leftover = MagicMock()
+            mock_glob.return_value = [leftover]
+            with self.assertRaises(RuntimeError):
+                engine.create(sd_file='mols.sd', fingerprint=[MorganFingerprint()], njobs=1, progress=False)
+        leftover.unlink.assert_called_once_with(missing_ok=True)
+        self.assertEqual(engine.h5_filename, Path('Papyrus_custom_FPSubSim2_2D.h5.building'))
 
 
 class TestLoad(unittest.TestCase):
@@ -790,6 +838,78 @@ class TestWorkerProcess(unittest.TestCase):
         self.assertIsInstance(lib_bytes, bytes)
 
 
+class TestParquetShardWorkerProcess(unittest.TestCase):
+    """Each worker reads its own shard's rows directly from the Parquet file."""
+
+    class _FakeFp:
+        def __init__(self, **params):
+            pass
+
+        def __repr__(self):
+            return 'FakeFp_1bits_0x0'
+
+        def get(self, mol):
+            return [0, 1]
+
+    def _write_parquet(self, path, n_mols):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        mol = Chem.MolFromSmiles('CCO')
+        ctab = Chem.MolToMolBlock(mol)
+        table = pa.table({
+            'ctab': [ctab] * n_mols,
+            'InChIKey': [f'KEY{i}' for i in range(n_mols)],
+        })
+        pq.write_table(table, path)
+
+    def test_only_own_shard_rows_are_parsed_and_added(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / 'mols.parquet'
+            self._write_parquet(path, n_mols=5)  # mol_ids 1..5
+
+            fp_output_queue = MagicMock()
+            shard_result_queue = MagicMock()
+            fp_specs = [(self._FakeFp, {})]
+
+            # n_shards=2: shard 0 -> mol_ids [2, 4] (mol_id % 2 == 0); shard 1 -> [1, 3, 5]
+            ss._parquet_shard_worker_process(
+                0, fp_specs, 2048, str(path), 2, fp_output_queue, shard_result_queue,
+            )
+
+        fp_output_queue.put.assert_called_once()
+        kind, mappings_batch, fps_batch = fp_output_queue.put.call_args.args[0]
+        self.assertEqual(kind, 'rows')
+        self.assertEqual([m[0] for m in mappings_batch], [2, 4])
+        self.assertIn('FakeFp_1bits_0x0', fps_batch)
+
+        shard_result_queue.put.assert_called_once()
+        shard_idx, lib_bytes, padding, mol_ids = shard_result_queue.put.call_args.args[0]
+        self.assertEqual(shard_idx, 0)
+        self.assertEqual(mol_ids, [2, 4])
+        self.assertIsInstance(lib_bytes, bytes)
+
+    def test_unparseable_ctab_is_skipped_and_warned(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / 'mols.parquet'
+            table = pa.table({'ctab': [None], 'InChIKey': ['KEY0']})
+            pq.write_table(table, path)
+
+            fp_output_queue = MagicMock()
+            shard_result_queue = MagicMock()
+
+            with self.assertWarns(UserWarning):
+                ss._parquet_shard_worker_process(
+                    0, [], 2048, str(path), 1, fp_output_queue, shard_result_queue,
+                )
+
+        fp_output_queue.put.assert_not_called()
+        shard_result_queue.put.assert_called_once()
+        _, _, _, mol_ids = shard_result_queue.put.call_args.args[0]
+        self.assertEqual(mol_ids, [])
+
+
 class TestFpWriterProcess(unittest.TestCase):
 
     def test_flushes_on_stop_and_sets_done_event(self):
@@ -804,7 +924,7 @@ class TestFpWriterProcess(unittest.TestCase):
             mock_tb.open_file.return_value.__enter__.return_value = h5file
             ss._fp_writer_process(
                 'fake.h5', fp_output_queue, table_paths={'sig1': '/similarity_info/sig1/fps'},
-                total=1, progress=False, fp_writer_done=fp_writer_done,
+                progress_queue=None, fp_writer_done=fp_writer_done,
             )
         h5file.root.mol_mappings.append.assert_called()
         h5file.get_node.return_value.append.assert_called()
@@ -819,6 +939,7 @@ class TestFpWriterProcess(unittest.TestCase):
         fp_output_queue.get.side_effect = messages
         h5file = MagicMock()
         fp_writer_done = MagicMock()
+        progress_queue = MagicMock()
         with (
             patch.object(ss, 'tb', create=True) as mock_tb,
             patch.object(ss, 'BATCH_WRITE_SIZE', 2, create=True),
@@ -826,10 +947,11 @@ class TestFpWriterProcess(unittest.TestCase):
             mock_tb.open_file.return_value.__enter__.return_value = h5file
             ss._fp_writer_process(
                 'fake.h5', fp_output_queue, table_paths={'sig1': '/similarity_info/sig1/fps'},
-                total=None, progress=True, fp_writer_done=fp_writer_done,
+                progress_queue=progress_queue, fp_writer_done=fp_writer_done,
             )
         self.assertGreaterEqual(h5file.root.mol_mappings.append.call_count, 1)
         self.assertGreaterEqual(h5file.get_node.return_value.append.call_count, 1)
+        progress_queue.put.assert_called_once_with(3)
         fp_writer_done.set.assert_called_once()
 
     def test_sets_done_event_even_on_exception(self):
@@ -841,7 +963,7 @@ class TestFpWriterProcess(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ss._fp_writer_process(
                     'fake.h5', fp_output_queue, table_paths={},
-                    total=None, progress=False, fp_writer_done=fp_writer_done,
+                    progress_queue=None, fp_writer_done=fp_writer_done,
                 )
         fp_writer_done.set.assert_called_once()
 
@@ -1097,13 +1219,17 @@ class TestMappingMixinGetMapping(unittest.TestCase):
         obj.fp_filename = 'fake.h5'
         return obj
 
-    def test_wraps_scalar_id_in_list(self):
-        obj = self._make_mixin()
-        row = MagicMock()
-        row.fetch_all_fields.return_value = (1, b'CONN', b'INCHI')
+    _MAPPING_DTYPE = [('idnumber', '<i8'), ('connectivity', 'S4'), ('InChIKey', 'S5')]
+
+    def _mock_mappings_table(self, rows: list[tuple]) -> MagicMock:
         mappings_table = MagicMock()
         mappings_table.cols._v_colnames = ['idnumber', 'connectivity', 'InChIKey']
-        mappings_table.where.return_value = iter([row])
+        mappings_table.read.return_value = np.array(rows, dtype=self._MAPPING_DTYPE)
+        return mappings_table
+
+    def test_wraps_scalar_id_in_list(self):
+        obj = self._make_mixin()
+        mappings_table = self._mock_mappings_table([(1, b'CONN', b'INCHI')])
         h5file = MagicMock()
         h5file.root.mol_mappings = mappings_table
         with patch.object(ss, 'tb', create=True) as mock_tb:
@@ -1124,9 +1250,7 @@ class TestMappingMixinGetMapping(unittest.TestCase):
 
     def test_missing_id_raises(self):
         obj = self._make_mixin()
-        mappings_table = MagicMock()
-        mappings_table.cols._v_colnames = ['idnumber', 'connectivity', 'InChIKey']
-        mappings_table.where.return_value = iter([])
+        mappings_table = self._mock_mappings_table([])
         h5file = MagicMock()
         h5file.root.mol_mappings = mappings_table
         with patch.object(ss, 'tb', create=True) as mock_tb:
@@ -1379,6 +1503,7 @@ class TestParallelCreateWorkerCount(unittest.TestCase):
             patch.object(ss.multiprocessing, 'cpu_count', return_value=cpu_count),
             patch.object(engine, '_parallel_create') as mock_parallel,
             patch.object(engine, 'load'),
+            patch.object(Path, 'replace'),
         ):
             mock_tb.Filters.return_value = MagicMock()
             mock_tb.open_file.return_value.__enter__.return_value = MagicMock()
@@ -1477,6 +1602,173 @@ class TestParallelCreateCleanup(unittest.TestCase):
         for proc in process_instances:
             proc.terminate.assert_called_once()
         mock_sort.assert_not_called()
+
+
+class TestParallelCreateParquetTopology(unittest.TestCase):
+    """A .parquet sd_file skips the reader process; workers read it directly."""
+
+    def test_no_reader_process_and_workers_read_parquet_directly(self):
+        engine = make_engine()
+        engine.sd_file = 'fake_sd_file.parquet'
+        process_instances: list = []
+        targets: list = []
+
+        def fake_process(target=None, args=None, **kwargs):
+            proc = MagicMock()
+            proc.is_alive = MagicMock(return_value=False)
+            proc.join = MagicMock()
+            targets.append(target)
+            process_instances.append(proc)
+            return proc
+
+        with (
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.cpu_count', return_value=4),
+            patch(
+                'src.papyrus_scripts.subsim_search.multiprocessing.Process',
+                side_effect=fake_process,
+            ),
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.Queue', side_effect=lambda *a, **kw: MagicMock()),
+            patch('src.papyrus_scripts.subsim_search.sort_db_file') as mock_sort,
+        ):
+            engine._parallel_create(
+                njobs=2, fingerprint=[], progress=False, total=None,
+                n_shards=2, pattern_holder_bits=2048,
+            )
+
+        # 2 workers + fp_writer + subst_writer - no reader.
+        self.assertEqual(len(process_instances), 4)
+        self.assertNotIn(ss._reader_process, targets)
+        self.assertEqual(targets.count(ss._parquet_shard_worker_process), 2)
+        mock_sort.assert_called_once()
+
+
+class TestParallelCreateProgressReporting(unittest.TestCase):
+    """pbar lives in the main process, driven by counts from progress_queue
+    (not owned by the forked fp_writer child - not fork-safe there)."""
+
+    def test_pbar_receives_counts_reported_by_fp_writer_and_terminates(self):
+        engine = make_engine()
+        process_instances: list = []
+
+        # Same sequence feeds both .get(timeout=) and .get_nowait().
+        items = iter([5, 3, 2])
+
+        def _get(*_args, **_kwargs):
+            try:
+                return next(items)
+            except StopIteration:
+                raise queue.Empty from None
+        progress_queue_mock = MagicMock()
+        progress_queue_mock.get.side_effect = _get
+        progress_queue_mock.get_nowait.side_effect = _get
+
+        def fake_process_factory(target=None, args=None, **kwargs):
+            proc = MagicMock()
+            if target is ss._subst_writer_process:
+                # Only .join()ed directly in real code - already finished
+                # by the time `finally` checks it here.
+                proc.is_alive = MagicMock(return_value=False)
+            else:
+                # True once (still running), then False - finally checks
+                # again, so a fixed-length side_effect list would StopIteration.
+                call_count = itertools.count()
+                proc.is_alive = MagicMock(side_effect=lambda: next(call_count) == 0)
+            process_instances.append(proc)
+            return proc
+
+        # Queue() order: input_queues (1 here), fp_output_queue,
+        # shard_result_queue, progress_queue.
+        queue_calls: list = []
+
+        def fake_queue_factory(*args, **kwargs):
+            queue_calls.append(None)
+            return progress_queue_mock if len(queue_calls) == 4 else MagicMock()
+
+        pbar = MagicMock()
+        with (
+            patch('src.papyrus_scripts.subsim_search.multiprocessing.cpu_count', return_value=4),
+            patch(
+                'src.papyrus_scripts.subsim_search.multiprocessing.Process',
+                side_effect=fake_process_factory,
+            ),
+            patch(
+                'src.papyrus_scripts.subsim_search.multiprocessing.Queue',
+                side_effect=fake_queue_factory,
+            ),
+            patch('src.papyrus_scripts.subsim_search.tqdm', return_value=pbar) as mock_tqdm,
+            patch('src.papyrus_scripts.subsim_search.sort_db_file') as mock_sort,
+        ):
+            engine._parallel_create(
+                njobs=2, fingerprint=[], progress=True, total=10,
+                n_shards=1, pattern_holder_bits=2048,
+            )
+
+        mock_tqdm.assert_called_once_with(total=10, smoothing=0.0, desc=ANY)
+        pbar.update.assert_has_calls([call(5), call(3), call(2)])
+        pbar.close.assert_called_once()
+        for proc in process_instances:
+            proc.terminate.assert_not_called()
+        mock_sort.assert_called_once()
+
+
+@unittest.skipUnless(HAS_TABLES and HAS_FPSIM2, 'requires tables and FPSim2')
+# Confirmed via minimal repro: fetching 2+ Table nodes from one pytables
+# File session, closed normally via `with`, can still raise AttributeError
+# from one node's __del__ during later GC (pytables 3.11.1). Reproduces with
+# bare pytables calls alone - a pytables finalizer bug, not a leak in
+# FPSubSim2/sort_db_file; silenced rather than worked around.
+@pytest.mark.filterwarnings('ignore::pytest.PytestUnraisableExceptionWarning')
+class TestFPSubSim2AllFingerprints(unittest.TestCase):
+    """End-to-end (unmocked): build a real .h5 db with every fingerprint type and query it."""
+
+    SMILES = ['CCO', 'c1ccccc1', 'c1ccccc1O', 'CC(=O)O', 'CC(=O)Oc1ccccc1C(=O)O']  # last is aspirin
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = tempfile.mkdtemp()
+        cls.sd_file = Path(cls.tmpdir) / 'molecules.sd'
+        with Chem.SDWriter(str(cls.sd_file)) as writer:
+            for smi in cls.SMILES:
+                writer.write(Chem.MolFromSmiles(smi))
+
+        cls.fingerprints = [
+            fp.MACCSKeysFingerprint(),
+            fp.AvalonFingerprint(nBits=128),
+            fp.MorganFingerprint(nBits=128),
+            fp.TopologicalTorsionFingerprint(nBits=128),
+            fp.AtomPairFingerprint(nBits=128),
+            fp.RDKitTopologicalFingerprint(fpSize=128),
+            fp.RDKPatternFingerprint(fpSize=128),
+        ]
+        if fp.HAS_PYBEL:
+            cls.fingerprints += [fp.FP2Fingerprint(), fp.FP3Fingerprint(), fp.FP4Fingerprint()]
+
+        cls.h5_file = Path(cls.tmpdir) / 'test.h5'
+        cls.engine_db = FPSubSim2()
+        cls.engine_db.create(
+            sd_file=cls.sd_file, outfile=cls.h5_file,
+            fingerprint=cls.fingerprints, progress=False, njobs=1,
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def test_every_fingerprint_is_stored(self):
+        available = self.engine_db.available_fingerprints
+        self.assertEqual(set(available.keys()), {repr(f) for f in self.fingerprints})
+
+    def test_every_fingerprint_finds_an_exact_self_match(self):
+        # Aspirin, not CCO: CCO is too small for a non-empty TopologicalTorsion
+        # fingerprint, and Tanimoto self-similarity of an all-zero vector is undefined.
+        query = self.SMILES[-1]
+        for f in self.fingerprints:
+            with self.subTest(fingerprint=f.name):
+                engine = self.engine_db.get_similarity_lib(fp_signature=repr(f))
+                result = engine.similarity(query, threshold=0.999)
+                self.assertGreaterEqual(result.height, 1)
+                score_col = [c for c in result.columns if c.startswith('Tanimoto')][0]
+                self.assertAlmostEqual(result[score_col].max(), 1.0, places=3)
 
 
 if __name__ == '__main__':

@@ -232,6 +232,7 @@ def crossvalidate_model(data: pd.DataFrame,
                         groups: list[int] | pd.Series | None = None,
                         scale_method: TransformerMixin | None = None,
                         verbose: bool = False,
+                        leave: bool = True,
                         ) -> tuple[pd.DataFrame, dict[str, RegressorMixin | ClassifierMixin]]:
     """Create a machine learning model predicting values in the first column.
 
@@ -245,44 +246,50 @@ def crossvalidate_model(data: pd.DataFrame,
        the final "Full model" - left fitted on that full-dataset call when
        this function returns, so a caller can reuse it as-is
     :param verbose: whether to show fold progression
+    :param leave: whether this function's progress bar stays on screen once done
     :return: cross-validated performance and model trained on the entire dataset
     """
     X, y = data.iloc[:, 1:], data.iloc[:, 0].values.ravel()
     fold_metrics: list[dict[str, Any]] = []
-    if verbose:
-        pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1)
-    models: dict[str, RegressorMixin | ClassifierMixin] = {}
-    split_groups = groups if isinstance(folds, _GROUP_AWARE_SPLITTERS) else None
-    # Perform cross-validation
-    for i, (train, test) in enumerate(folds.split(X, y, split_groups)):
+    pbar = tqdm(desc='Fitting model', total=folds.n_splits + 1, leave=leave) if verbose else None
+    try:
+        models: dict[str, RegressorMixin | ClassifierMixin] = {}
+        split_groups = groups if isinstance(folds, _GROUP_AWARE_SPLITTERS) else None
+        # Perform cross-validation
+        for i, (train, test) in enumerate(folds.split(X, y, split_groups)):
+            if verbose:
+                pbar.set_description(f'Fitting model on fold {i + 1}', refresh=True)
+            X_train, X_test = X.iloc[train, :], X.iloc[test, :]
+            if scale_method is not None:
+                X_train = pd.DataFrame(scale_method.fit_transform(X_train),
+                                       index=X_train.index, columns=X_train.columns)
+                X_test = pd.DataFrame(scale_method.transform(X_test),
+                                      index=X_test.index, columns=X_test.columns)
+            model.fit(X_train, y[train])
+            models[f'Fold {i + 1}'] = deepcopy(model)
+            fold_metrics.append(model_metrics(model, y[test], X_test))
+            if verbose:
+                pbar.update()
+        # Organize result in a dataframe
+        performance = pd.DataFrame(fold_metrics)
+        performance.index = [f'Fold {i + 1}' for i in range(folds.n_splits)]
+        # Add average and sd of performance
+        performance.loc['Mean'] = [np.mean(performance[col]) if ':' not in col else '-' for col in performance]
+        performance.loc['SD'] = [np.std(performance[col]) if ':' not in col else '-' for col in performance]
+        # Fit model on the entire dataset
         if verbose:
-            pbar.set_description(f'Fitting model on fold {i + 1}', refresh=True)
-        X_train, X_test = X.iloc[train, :], X.iloc[test, :]
+            pbar.set_description('Fitting model on entire training set', refresh=True)
         if scale_method is not None:
-            X_train = pd.DataFrame(scale_method.fit_transform(X_train),
-                                   index=X_train.index, columns=X_train.columns)
-            X_test = pd.DataFrame(scale_method.transform(X_test),
-                                  index=X_test.index, columns=X_test.columns)
-        model.fit(X_train, y[train])
-        models[f'Fold {i + 1}'] = deepcopy(model)
-        fold_metrics.append(model_metrics(model, y[test], X_test))
+            X = pd.DataFrame(scale_method.fit_transform(X), index=X.index, columns=X.columns)
+        model.fit(X, y)
+        models['Full model'] = deepcopy(model)
         if verbose:
             pbar.update()
-    # Organize result in a dataframe
-    performance = pd.DataFrame(fold_metrics)
-    performance.index = [f'Fold {i + 1}' for i in range(folds.n_splits)]
-    # Add average and sd of performance
-    performance.loc['Mean'] = [np.mean(performance[col]) if ':' not in col else '-' for col in performance]
-    performance.loc['SD'] = [np.std(performance[col]) if ':' not in col else '-' for col in performance]
-    # Fit model on the entire dataset
-    if verbose:
-        pbar.set_description('Fitting model on entire training set', refresh=True)
-    if scale_method is not None:
-        X = pd.DataFrame(scale_method.fit_transform(X), index=X.index, columns=X.columns)
-    model.fit(X, y)
-    models['Full model'] = deepcopy(model)
-    if verbose:
-        pbar.update()
+    finally:
+        if pbar is not None:
+            # avoids tqdm.notebook leaving a stuck widget if closed early
+            pbar.n = pbar.total
+            pbar.close()
     return performance, models
 
 
@@ -318,6 +325,11 @@ def train_test_proportional_group_split(data: pd.DataFrame,
     return data[opposite], data[assignment], t_groups, best
 
 
+def _leave_bar(leave_level: int, depth: int) -> bool:
+    """Whether a bar nested *depth* levels deep (1 = outermost) leaves, per ``leave_level``."""
+    return leave_level < 0 or leave_level >= depth
+
+
 class _InsufficientDataError(Exception):
     """Raised by _fit_and_evaluate when a split/class-balance check fails.
 
@@ -347,6 +359,7 @@ def _fit_and_evaluate(data: pd.DataFrame,
                       random_state: int,
                       verbose: bool,
                       strict_split_checks: bool,
+                      cv_leave: bool = True,
                       ) -> tuple[pd.DataFrame, dict[str, Any], dict[str, RegressorMixin | ClassifierMixin]]:
     """Split *data*, fit *model* via cross-validation, and evaluate on the held-out test set.
 
@@ -357,6 +370,7 @@ def _fit_and_evaluate(data: pd.DataFrame,
         dropped it after merging protein descriptors
     :param strict_split_checks: qsar() also requires >= *folds* training
         rows and balanced test-set classes; pcm() checks neither
+    :param cv_leave: passed through as crossvalidate_model()'s ``leave``
     :raises _InsufficientDataError: if a split/class-balance check fails
     :returns: (performance, return_val, cv_models) - return_val holds the
         scaler/label_encoder/data_splitter (as applicable); cv_models is
@@ -453,7 +467,7 @@ def _fit_and_evaluate(data: pd.DataFrame,
         kfold = KFold(n_splits=folds, shuffle=True, random_state=random_state)
     performance, cv_models = crossvalidate_model(
         training_set, model, kfold, training_groups,
-        scale_method=scale_method if scale else None, verbose=verbose,
+        scale_method=scale_method if scale else None, verbose=verbose, leave=cv_leave,
     )
     full_model = cv_models['Full model']
     X_test, y_test = test_set.iloc[:, 1:], test_set.iloc[:, 0].values.ravel()
@@ -498,6 +512,7 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
          yscramble: bool = False,
          random_state: int = 1234,
          verbose: bool = True,
+         leave_level: int = -1,
          ) -> tuple[pd.DataFrame, dict[str,
                                        None | (TransformerMixin | LabelEncoder |
                                                       BaseCrossValidator | dict[str, ClassifierMixin])]]:
@@ -543,6 +558,9 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
     :param random_state: seed to use for train/test splitting and KFold shuffling
     :param verbose: log details to stdout
+    :param leave_level: how many nested progress bar levels stay on screen
+        once done (level 1: per-target; level 2: per-fold); ``0`` none,
+        ``-1`` all (default)
     :return: both:
     - a dataframe of the cross-validation results where each line is a fold of QSAR modelling of an accession
     - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
@@ -590,9 +608,11 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         # Change endpoint
         endpoint = 'Activity_class'
         del preserved, active, inactive
-    # Get and merge molecular descriptors
+    # Get and merge molecular descriptors. ids= bounds the read itself instead
+    # of filtering after reading the full file(s).
     descs = read_molecular_descriptors(descriptors, 'connectivity' not in data.columns,
-                                       version, descriptor_chunksize, descriptor_path)
+                                       version, descriptor_chunksize, descriptor_path,
+                                       ids=data[merge_on].unique().tolist())
     descs = filter_molecular_descriptors(descs, merge_on, data[merge_on].unique())
     data = data.merge(descs, on=merge_on)
     merge_on_values = data[[merge_on]]
@@ -606,100 +626,106 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     final_return_val: dict[str, Any] = {}
     targets = list(data['target_id'].unique())
     n_targets = len(targets)
-    if verbose:
-        pbar = tqdm(total=n_targets, smoothing=0.1)
-    # Build QSAR model for targets reaching criteria
-    for i_target in range(n_targets - 1, -1, -1):
-        tmp_data = data[data['target_id'] == targets[i_target]]
-        tmp_merge_on_values = merge_on_values[merge_on_values.index.isin(tmp_data.index)]
-        if verbose:
-            pbar.set_description(f'Building QSAR for target: {targets[i_target]} #datapoints {tmp_data.shape[0]}',
-                                 refresh=True)
-        # Insufficient data points
-        if tmp_data.shape[0] < num_points:
+    cv_leave = _leave_bar(leave_level, 2)
+    pbar = tqdm(total=n_targets, smoothing=0.1, leave=_leave_bar(leave_level, 1)) if verbose else None
+    try:
+        # Build QSAR model for targets reaching criteria
+        for i_target in range(n_targets - 1, -1, -1):
+            tmp_data = data[data['target_id'] == targets[i_target]]
+            tmp_merge_on_values = merge_on_values[merge_on_values.index.isin(tmp_data.index)]
+            if verbose:
+                pbar.set_description(
+                    f'Building QSAR for target: {targets[i_target]} #datapoints {tmp_data.shape[0]}',
+                    refresh=True)
+            # Insufficient data points
+            if tmp_data.shape[0] < num_points:
+                if model_type == 'regressor':
+                    fold_results.append(pd.DataFrame([[targets[i_target],
+                                                  tmp_data.shape[0],
+                                                  f'Number of points {tmp_data.shape[0]} < {num_points}']],
+                                                columns=['target', 'number', 'error']))
+                else:
+                    data_classes = Counter(tmp_data[endpoint])
+                    fold_results.append(
+                        pd.DataFrame([[targets[i_target],
+                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                       f'Number of points {tmp_data.shape[0]} < {num_points}']],
+                                     columns=['target', 'A:N', 'error']))
+                if verbose:
+                    pbar.update()
+                models[targets[i_target]] = None
+                continue
             if model_type == 'regressor':
-                fold_results.append(pd.DataFrame([[targets[i_target],
-                                              tmp_data.shape[0],
-                                              f'Number of points {tmp_data.shape[0]} < {num_points}']],
-                                            columns=['target', 'number', 'error']))
+                min_activity = tmp_data[endpoint].min()
+                max_activity = tmp_data[endpoint].max()
+                delta = max_activity - min_activity
+                # Not enough activity amplitude
+                if delta < delta_activity:
+                    fold_results.append(pd.DataFrame([[targets[i_target],
+                                                  tmp_data.shape[0],
+                                                  f'Delta activity {delta} < {delta_activity}']],
+                                                columns=['target', 'number', 'error']))
+                    if verbose:
+                        pbar.update()
+                    models[targets[i_target]] = None
+                    continue
             else:
                 data_classes = Counter(tmp_data[endpoint])
-                fold_results.append(
-                    pd.DataFrame([[targets[i_target],
-                                   ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                   f'Number of points {tmp_data.shape[0]} < {num_points}']],
-                                 columns=['target', 'A:N', 'error']))
+                # Only one activity class
+                if len(data_classes) == 1:
+                    fold_results.append(
+                        pd.DataFrame([[targets[i_target],
+                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                       'Only one activity class']],
+                                     columns=['target', 'A:N', 'error']))
+                    if verbose:
+                        pbar.update()
+                    models[targets[i_target]] = None
+                    continue
+                # Not enough data in minority class for all folds
+                elif not all(x >= folds for x in data_classes.values()):
+                    fold_results.append(
+                        pd.DataFrame([[targets[i_target],
+                                       ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                       f'Not enough data in minority class for all {folds} folds']],
+                                     columns=['target', 'A:N', 'error']))
+                    if verbose:
+                        pbar.update()
+                    models[targets[i_target]] = None
+                    continue
+            # Split, fit and evaluate this target - see _fit_and_evaluate's
+            # docstring for the pipeline shared with pcm().
+            try:
+                performance, final_return_val, cv_models = _fit_and_evaluate(
+                    tmp_data, endpoint, model_type, model, merge_on, tmp_merge_on_values,
+                    split_by, split_year, test_set_size, cluster_method, custom_groups,
+                    features_to_ignore, ['Year', 'target_id'], scale, scale_method,
+                    yscramble, stratify, folds, random_state, verbose,
+                    strict_split_checks=True, cv_leave=cv_leave,
+                )
+            except _InsufficientDataError as exc:
+                if model_type == 'regressor':
+                    fold_results.append(pd.DataFrame([[targets[i_target], tmp_data.shape[0], str(exc)]],
+                                                columns=['target', 'number', 'error']))
+                else:
+                    data_classes = Counter(tmp_data[endpoint])
+                    fold_results.append(pd.DataFrame([[targets[i_target],
+                                                  ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
+                                                  str(exc)]],
+                                                columns=['target', 'A:N', 'error']))
+                if verbose:
+                    pbar.update()
+                models[targets[i_target]] = None
+                continue
+            performance.loc[:, 'target'] = targets[i_target]
+            fold_results.append(performance.reset_index())
+            models[targets[i_target]] = cv_models
             if verbose:
                 pbar.update()
-            models[targets[i_target]] = None
-            continue
-        if model_type == 'regressor':
-            min_activity = tmp_data[endpoint].min()
-            max_activity = tmp_data[endpoint].max()
-            delta = max_activity - min_activity
-            # Not enough activity amplitude
-            if delta < delta_activity:
-                fold_results.append(pd.DataFrame([[targets[i_target],
-                                              tmp_data.shape[0],
-                                              f'Delta activity {delta} < {delta_activity}']],
-                                            columns=['target', 'number', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-        else:
-            data_classes = Counter(tmp_data[endpoint])
-            # Only one activity class
-            if len(data_classes) == 1:
-                fold_results.append(
-                    pd.DataFrame([[targets[i_target],
-                                   ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                   'Only one activity class']],
-                                 columns=['target', 'A:N', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-            # Not enough data in minority class for all folds
-            elif not all(x >= folds for x in data_classes.values()):
-                fold_results.append(
-                    pd.DataFrame([[targets[i_target],
-                                   ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                   f'Not enough data in minority class for all {folds} folds']],
-                                 columns=['target', 'A:N', 'error']))
-                if verbose:
-                    pbar.update()
-                models[targets[i_target]] = None
-                continue
-        # Split, fit and evaluate this target - see _fit_and_evaluate's
-        # docstring for the pipeline shared with pcm().
-        try:
-            performance, final_return_val, cv_models = _fit_and_evaluate(
-                tmp_data, endpoint, model_type, model, merge_on, tmp_merge_on_values,
-                split_by, split_year, test_set_size, cluster_method, custom_groups,
-                features_to_ignore, ['Year', 'target_id'], scale, scale_method,
-                yscramble, stratify, folds, random_state, verbose,
-                strict_split_checks=True,
-            )
-        except _InsufficientDataError as exc:
-            if model_type == 'regressor':
-                fold_results.append(pd.DataFrame([[targets[i_target], tmp_data.shape[0], str(exc)]],
-                                            columns=['target', 'number', 'error']))
-            else:
-                data_classes = Counter(tmp_data[endpoint])
-                fold_results.append(pd.DataFrame([[targets[i_target],
-                                              ':'.join(str(data_classes.get(x, 0)) for x in ['A', 'N']),
-                                              str(exc)]],
-                                            columns=['target', 'A:N', 'error']))
-            if verbose:
-                pbar.update()
-            models[targets[i_target]] = None
-            continue
-        performance.loc[:, 'target'] = targets[i_target]
-        fold_results.append(performance.reset_index())
-        models[targets[i_target]] = cv_models
-        if verbose:
-            pbar.update()
+    finally:
+        if pbar is not None:
+            pbar.n = pbar.total
+            pbar.close()
     if isinstance(model, (xgboost.XGBRegressor, xgboost.XGBClassifier)):
         warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
@@ -743,6 +769,7 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         yscramble: bool = False,
         random_state: int = 1234,
         verbose: bool = True,
+        leave_level: int = -1,
         ) -> tuple[pd.DataFrame, dict[str,
                                       (TransformerMixin | LabelEncoder |
                                             BaseCrossValidator | RegressorMixin | ClassifierMixin)]]:
@@ -794,6 +821,8 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     :param yscramble: should the endpoint be shuffled to compare performance to the unshuffled endpoint
     :param random_state: seed to use for train/test splitting and KFold shuffling
     :param verbose: log details to stdout
+    :param leave_level: whether the (single) progress bar stays on screen
+        once done; ``0`` no, anything else (``-1`` default) yes
     :return: both:
     - a dataframe of the cross-validation results where each line is a fold of PCM modelling
     - a dictionary of the feature scaler (if used), label encoder (if mode is a classifier),
@@ -841,9 +870,11 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         # Change endpoint
         endpoint = 'Activity_class'
         del preserved, active, inactive
-    # Get and merge molecular descriptors
+    # Get and merge molecular descriptors. ids= bounds the read itself instead
+    # of filtering after reading the full file(s).
     mol_descs = read_molecular_descriptors(mol_descriptors, 'connectivity' not in data.columns,
-                                           version, mol_descriptor_chunksize, mol_descriptor_path)
+                                           version, mol_descriptor_chunksize, mol_descriptor_path,
+                                           ids=data[merge_on].unique().tolist())
     mol_descs = filter_molecular_descriptors(mol_descs, merge_on, data[merge_on].unique())
     data = data.merge(mol_descs, on=merge_on)
     merge_on_values = data[[merge_on]]
@@ -879,7 +910,7 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
             split_by, split_year, test_set_size, cluster_method, custom_groups,
             features_to_ignore, ['Year'], scale, scale_method,
             yscramble, stratify, folds, random_state, verbose,
-            strict_split_checks=False,
+            strict_split_checks=False, cv_leave=_leave_bar(leave_level, 1),
         )
     except _InsufficientDataError as exc:
         raise ValueError(str(exc)) from None

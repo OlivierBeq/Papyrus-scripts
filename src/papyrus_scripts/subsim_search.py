@@ -8,6 +8,7 @@ import importlib.util
 import json
 import multiprocessing
 import multiprocessing.synchronize
+import queue
 import warnings
 from abc import ABC
 from collections import defaultdict
@@ -19,6 +20,7 @@ from typing import Literal, cast
 
 import numpy as np
 import polars as pl
+import pyarrow.parquet as pq
 import pystow
 import rdkit
 from rdkit import Chem
@@ -121,6 +123,29 @@ def _check_optional_deps() -> None:
         )
 
 
+def _pump_progress_queue(
+        progress_queue: multiprocessing.Queue | None,
+        pbar: tqdm | None,
+        timeout: float = 0.1,
+) -> None:
+    """Update *pbar* from counts on *progress_queue*; no-op if ``None``.
+
+    Blocks up to *timeout* for the first count, then drains the rest
+    without blocking.
+    """
+    if progress_queue is None:
+        return
+    try:
+        pbar.update(progress_queue.get(timeout=timeout))
+    except queue.Empty:
+        return
+    while True:
+        try:
+            pbar.update(progress_queue.get_nowait())
+        except queue.Empty:
+            return
+
+
 def _ensure_cupy() -> ModuleType:
     """Import cupy lazily, only when a CUDA engine is actually constructed."""
     global cupy
@@ -185,16 +210,18 @@ def _derive_connectivity(props: dict, rdmol: Chem.Mol) -> tuple[str, str]:
 
 
 def _decode_bytes_df(df: pl.DataFrame) -> pl.DataFrame:
-    """Decode any ``Object``-typed column that contains bytes values to ``str``."""
-    cast_exprs = [
-        pl.col(c).map_elements(
-            lambda x: x.decode('utf-8') if isinstance(x, bytes) else x,
-            return_dtype=pl.Utf8,
-        )
-        if df.schema[c] == pl.Object else pl.col(c)
-        for c in df.columns
-    ]
-    return df.select(cast_exprs)
+    """Decode bytes columns (``Binary``/``Object``) to ``str``."""
+    def _decode_col(c: str) -> pl.Expr:
+        if df.schema[c] == pl.Binary:
+            return pl.col(c).cast(pl.Utf8)
+        if df.schema[c] == pl.Object:
+            return pl.col(c).map_elements(
+                lambda x: x.decode('utf-8') if isinstance(x, bytes) else x,
+                return_dtype=pl.Utf8,
+            )
+        return pl.col(c)
+
+    return df.select([_decode_col(c) for c in df.columns])
 
 
 def _build_result_df(
@@ -229,45 +256,49 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
     """Sort an FPSubSim2 HDF5 file by fingerprint popcount.
 
     Sorting enables the efficient popcount-range pruning used by FPSim2 during
-    similarity searches. The operation rewrites the file via a temporary copy.
+    similarity searches. Rewrites via a temp copy; *filename* is untouched
+    until success.
 
     :param filename: path to the ``.h5`` FPSubSim2 database
-    :param verbose: print progress messages and per-table progress bars
+    :param verbose: show a progress bar
     """
-    if verbose:
-        print('Optimizing FPSubSim2 file.')
-
     filename = Path(filename)
-    tmp_filename = filename.with_name(filename.name + '_tmp')
+    tmp_filename = filename.with_name(filename.name + '.sorting')
     if tmp_filename.is_file():
         tmp_filename.unlink()
-    filename.rename(tmp_filename)
 
     filters = tb.Filters(complib='blosc', complevel=1, shuffle=True, bitshuffle=True)
     stats: dict = {'groups': 0, 'leaves': 0, 'links': 0, 'bytes': 0, 'hardlinks': 0}
 
-    with tb.open_file(tmp_filename, mode='r') as src:
-        with tb.open_file(filename, mode='w') as dst:
+    try:
+        _sort_into(filename, tmp_filename, filters, stats, verbose)
+    except BaseException:
+        tmp_filename.unlink(missing_ok=True)
+        raise
+    tmp_filename.replace(filename)
+
+
+def _sort_into(filename: Path, tmp_filename: Path, filters: tb.Filters, stats: dict, verbose: bool) -> None:
+    """Copy *filename* into *tmp_filename*, sorted (helper for :func:`sort_db_file`)."""
+    with tb.open_file(filename, mode='r') as src:
+        with tb.open_file(tmp_filename, mode='w') as dst:
             siminfo_group = dst.create_group(
                 dst.root, 'similarity_info', 'Infos for similarity search',
             )
-            simfp_groups = list(src.walk_groups('/similarity_info/'))
+            simfp_groups = [g for g in src.walk_groups('/similarity_info/') if g._v_name]
+            group_tables = [
+                (simfp_group, list(src.iter_nodes(simfp_group, classname='Table')))
+                for simfp_group in simfp_groups
+            ]
+            total = sum(len(tables) for _, tables in group_tables) + 1
 
-            for i, simfp_group in enumerate(simfp_groups):
-                if not simfp_group._v_name:
-                    continue
+            pbar = tqdm(total=total, desc='Optimizing FPSubSim2 file', disable=not verbose)
+            for simfp_group, fp_tables in group_tables:
                 dst_group = simfp_group._f_copy(
                     siminfo_group, recursive=False, filters=filters, stats=stats,
                 )
-                fp_tables = list(src.iter_nodes(simfp_group, classname='Table'))
-                table_iter = (
-                    tqdm(fp_tables,
-                         desc=f'Optimizing tables of group ({i}/{len(simfp_groups)})',
-                         leave=False,
-                         )
-                    if verbose else fp_tables
-                )
-                for fp_table in table_iter:
+                pbar.set_description(f'Optimizing {simfp_group._v_name}')
+                for fp_table in fp_tables:
                     dst_fp_table = fp_table.copy(
                         dst_group,
                         fp_table.name,
@@ -282,15 +313,19 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
                         propindexes=True,
                     )
                     popcnt_bins = calc_popcnt_bins_pytables(dst_fp_table, fp_table.attrs.length)
+                    dst_fp_table.close()
                     popcounts = dst.create_vlarray(
                         dst_group, 'popcounts', tb.ObjectAtom(),
                         f'Popcounts of {dst_group._v_name}',
                     )
                     for x in popcnt_bins:
                         popcounts.append(x)
+                    popcounts.close()
+                    pbar.update(1)
+                dst_group._f_close()
+            siminfo_group._f_close()
 
-            if verbose:
-                print('Optimizing remaining groups and arrays.')
+            pbar.set_description('Optimizing remaining groups and arrays')
             for node in src.iter_nodes(src.root):
                 if isinstance(node, tb.group.Group):
                     if isinstance(node, tb.group.RootGroup) or 'similarity_info' in str(node):
@@ -302,10 +337,8 @@ def sort_db_file(filename: str | Path, verbose: bool = False) -> None:
                     )
                 else:
                     node.copy(dst.root, node._v_name, overwrite=True, stats=stats)
-
-    if verbose:
-        print('Cleaning up temporary files.')
-    tmp_filename.unlink()
+            pbar.update(1)
+            pbar.close()
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +384,8 @@ class FPSubSim2:
         :param is3d: use the stereochemistry-aware (3D) SD file
         :param version: Papyrus dataset version
         :param outfile: output ``.h5`` path; auto-generated when ``None``
-        :param fingerprint: fingerprint(s) to store; defaults to all available
+        :param fingerprint: fingerprint(s) to store; defaults to
+            :class:`~fingerprint.MorganFingerprint` (see :meth:`create`)
         :param root_folder: Papyrus data root directory
             (default: pystow's home directory)
         :param progress: display progress bars
@@ -363,9 +397,6 @@ class FPSubSim2:
         :param pattern_holder_bits: bits for the substructure library's
             ``PatternHolder`` prescreen (size vs. query-speed tradeoff)
         """
-        if fingerprint is None:
-            fingerprint = MorganFingerprint()
-
         self.version = version if isinstance(version, PapyrusVersion) else PapyrusVersion(version=version)
         if not self.version.is_downloaded(root_folder=root_folder):
             raise ValueError(f'Version {self.version.version} not found. Did you download it first?')
@@ -414,7 +445,10 @@ class FPSubSim2:
 
         :param sd_file: path to the SD file containing structures
         :param outfile: output ``.h5`` path; auto-generated when ``None``
-        :param fingerprint: fingerprint(s) to store; defaults to all available
+        :param fingerprint: fingerprint(s) to store; defaults to
+            :class:`~fingerprint.MorganFingerprint`. Every registered type
+            (e.g. ``[fp() for fp in Fingerprint.derived()]``) is far more
+            expensive and must be requested explicitly
         :param progress: display progress bars
         :param total: molecule count for progress bar display
         :param njobs: worker processes (``-1`` = all, ``1`` = single-process)
@@ -427,13 +461,17 @@ class FPSubSim2:
             for a parallel build
         """
         self.sd_file = Path(sd_file)
+        if fingerprint is None:
+            fingerprint = MorganFingerprint()
         fingerprint = _validate_fingerprints(fingerprint)
 
         dim_tag = '3D' if self.is3d else '2D'
         version_str = str(self.version) if self.version is not None else 'custom'
-        self.h5_filename = Path(outfile) if outfile is not None else Path(
+        final_h5_filename = Path(outfile) if outfile is not None else Path(
             f'Papyrus_{version_str}_FPSubSim2_{dim_tag}.h5',
         )
+        # Build under a temp name; rename to final only on success.
+        self.h5_filename = final_h5_filename.with_name(final_h5_filename.name + '.building')
 
         if not isinstance(njobs, int) or njobs < -1:
             raise ValueError('njobs must be -1 or a positive integer.')
@@ -451,6 +489,33 @@ class FPSubSim2:
         else:
             resolved_n_shards = n_shards if n_shards is not None else DEFAULT_N_SHARDS_SINGLE_PROCESS
 
+        try:
+            self._build(
+                fingerprint, dim_tag, parallel, njobs, progress, total,
+                resolved_n_shards, pattern_holder_bits,
+            )
+        except BaseException:
+            # Remove all build artifacts, incl. sort_db_file's own '.sorting'.
+            for path in self.h5_filename.parent.glob(f'{self.h5_filename.name}*'):
+                path.unlink(missing_ok=True)
+            raise
+
+        self.h5_filename.replace(final_h5_filename)
+        self.h5_filename = final_h5_filename
+        self.load(self.h5_filename)
+
+    def _build(
+            self,
+            fingerprint: list[Fingerprint],
+            dim_tag: str,
+            parallel: bool,
+            njobs: int,
+            progress: bool,
+            total: int | None,
+            resolved_n_shards: int,
+            pattern_holder_bits: int,
+    ) -> None:
+        """Write the schema to ``self.h5_filename`` and populate it."""
         filters = tb.Filters()
         with tb.open_file(self.h5_filename, mode='w') as h5file:
             simil_group = h5file.create_group(
@@ -518,8 +583,6 @@ class FPSubSim2:
         else:
             self._single_process_create(fingerprint, progress, total, resolved_n_shards, pattern_holder_bits)
 
-        self.load(self.h5_filename)
-
     # ------------------------------------------------------------------
     # Load
     # ------------------------------------------------------------------
@@ -528,15 +591,22 @@ class FPSubSim2:
         """Load an existing FPSubSim2 database file.
 
         :param fpsubsim_path: path to the ``.h5`` database
-        :raises ValueError: if *fpsubsim_path* does not exist
+        :raises ValueError: if *fpsubsim_path* does not exist or can't be opened
         """
         fpsubsim_path = Path(fpsubsim_path)
         if not fpsubsim_path.is_file():
             raise ValueError(f'File does not exist: {fpsubsim_path!r}')
-        self.h5_filename = fpsubsim_path
 
-        with tb.open_file(self.h5_filename) as h5file:
-            rdkit_version, version_str, dim_tag = h5file.root.config.read()[0]
+        try:
+            with tb.open_file(fpsubsim_path) as h5file:
+                rdkit_version, version_str, dim_tag = h5file.root.config.read()[0]
+        except Exception as exc:
+            raise ValueError(
+                f'Could not open {fpsubsim_path!r} as an FPSubSim2 database ({exc!r}). '
+                'The file may be incomplete or corrupt, e.g. left behind by an '
+                'interrupted create()/create_from_papyrus() call - delete it and rebuild.',
+            ) from exc
+        self.h5_filename = fpsubsim_path
 
         if rdkit.__version__ != rdkit_version:
             warnings.warn(
@@ -583,6 +653,7 @@ class FPSubSim2:
 
             with MolSupplier(source=self.sd_file, total=total,
                              show_progress=progress, start_id=1,
+                             desc='🔍 Building FPSubSim2 database',
                              ) as supplier:
                 for mol_id, rdmol in supplier:
                     shard_idx = _shard_for_mol_id(mol_id, n_shards)
@@ -642,13 +713,21 @@ class FPSubSim2:
     ) -> None:
         """Populate similarity and substructure tables using multiple processes.
 
-        Topology: a reader routes molecules to per-shard input queues; each
-        worker owns one substructure shard (built in-process) and pushes
-        batched rows to ``fp_output_queue``. ``fp_writer`` writes the
-        similarity/mapping tables; ``subst_writer`` writes the substructure
-        shards, but only after ``fp_writer`` has closed the file
+        Topology: each worker owns one substructure shard (built in-process)
+        and pushes batched rows to ``fp_output_queue``. ``fp_writer`` writes
+        the similarity/mapping tables; ``subst_writer`` writes the
+        substructure shards, but only after ``fp_writer`` has closed the file
         (``fp_writer_done`` - sequencing, since concurrent HDF5 writes
         aren't safe).
+
+        For a Parquet *sd_file* there is no reader process: each worker reads
+        the file directly and parses only its own shard's rows (see
+        ``_parquet_shard_worker_process``), so parsing isn't bottlenecked on
+        one serial reader. Other formats still use the reader + per-shard
+        input queues, since row boundaries need sequential parsing to find.
+
+        The progress bar is owned by this (main) process and updated from
+        counts ``fp_writer`` reports over ``progress_queue``.
         """
         if self.h5_filename is None:
             raise RuntimeError('h5_filename not set before _parallel_create()')
@@ -658,53 +737,87 @@ class FPSubSim2:
         table_paths = {repr(fp): _fp_table_path(fp) for fp in fingerprint}
 
         n_workers = n_shards  # one shard per worker, built in-process (see docstring)
+        use_parquet_workers = str(self.sd_file).endswith('.parquet')
 
-        # Bounded so put() blocks naturally - Queue.qsize() isn't portable.
-        input_queues: list[multiprocessing.Queue] = [
-            multiprocessing.Queue(maxsize=INPUT_QUEUE_MAXSIZE_BATCHES) for _ in range(n_shards)
-        ]
+        input_queues: list[multiprocessing.Queue] = []
+        reader: multiprocessing.Process | None = None
+        if not use_parquet_workers:
+            # Bounded so put() blocks naturally - Queue.qsize() isn't portable.
+            input_queues = [
+                multiprocessing.Queue(maxsize=INPUT_QUEUE_MAXSIZE_BATCHES) for _ in range(n_shards)
+            ]
+            reader = multiprocessing.Process(
+                target=_reader_process,
+                args=(self.sd_file, n_shards, total, False, input_queues),
+            )
+
         fp_output_queue: multiprocessing.Queue = multiprocessing.Queue(
             maxsize=OUTPUT_QUEUE_MAXSIZE_BATCHES_PER_WORKER * n_workers,
         )
         shard_result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=n_shards)
+        # Unbounded: holds only small ints; must not block the writer.
+        progress_queue: multiprocessing.Queue | None = multiprocessing.Queue() if progress else None
         fp_writer_done = multiprocessing.Event()
 
-        reader = multiprocessing.Process(
-            target=_reader_process,
-            args=(self.sd_file, n_shards, total, False, input_queues),
-        )
         fp_writer = multiprocessing.Process(
             target=_fp_writer_process,
-            args=(self.h5_filename, fp_output_queue, table_paths, total, progress, fp_writer_done),
+            args=(self.h5_filename, fp_output_queue, table_paths, progress_queue, fp_writer_done),
         )
         subst_writer = multiprocessing.Process(
             target=_subst_writer_process,
             args=(self.h5_filename, shard_result_queue, n_shards, fp_writer_done),
         )
-        workers = [
-            multiprocessing.Process(
-                target=_worker_process,
-                args=(
-                    shard_idx, fp_specs, pattern_holder_bits,
-                    input_queues[shard_idx], fp_output_queue, shard_result_queue,
-                ),
-            )
-            for shard_idx in range(n_workers)
-        ]
+        if use_parquet_workers:
+            workers = [
+                multiprocessing.Process(
+                    target=_parquet_shard_worker_process,
+                    args=(
+                        shard_idx, fp_specs, pattern_holder_bits,
+                        self.sd_file, n_shards, fp_output_queue, shard_result_queue,
+                    ),
+                )
+                for shard_idx in range(n_workers)
+            ]
+        else:
+            workers = [
+                multiprocessing.Process(
+                    target=_worker_process,
+                    args=(
+                        shard_idx, fp_specs, pattern_holder_bits,
+                        input_queues[shard_idx], fp_output_queue, shard_result_queue,
+                    ),
+                )
+                for shard_idx in range(n_workers)
+            ]
 
-        procs = [reader, fp_writer, subst_writer, *workers]
+        procs = [p for p in (reader, fp_writer, subst_writer, *workers) if p is not None]
+        wait_first = [p for p in (reader, *workers) if p is not None]
+        pbar = tqdm(total=total, smoothing=0.0, desc='🔍 Building FPSubSim2 database') if progress else None
         try:
-            reader.start()
+            if reader is not None:
+                reader.start()
             fp_writer.start()
             subst_writer.start()
             for w in workers:
                 w.start()
 
-            for p in [reader, *workers]:
+            if progress_queue is not None:
+                # Poll instead of blocking join() so the bar updates live.
+                remaining = list(wait_first)
+                while remaining:
+                    _pump_progress_queue(progress_queue, pbar)
+                    remaining = [p for p in remaining if p.is_alive()]
+            for p in wait_first:
                 p.join()
 
             fp_output_queue.put('STOP')
+
+            if progress_queue is not None:
+                while fp_writer.is_alive():
+                    _pump_progress_queue(progress_queue, pbar)
             fp_writer.join()
+            if progress_queue is not None:
+                _pump_progress_queue(progress_queue, pbar, timeout=0.0)  # catch any late-arriving count
             subst_writer.join()
         finally:
             # No-op on the happy path; on exception, terminates whatever's
@@ -716,6 +829,11 @@ class FPSubSim2:
             for q in [*input_queues, fp_output_queue, shard_result_queue]:
                 q.close()
                 q.join_thread()
+            if progress_queue is not None:
+                progress_queue.close()
+                progress_queue.join_thread()
+            if pbar is not None:
+                pbar.close()
 
         sort_db_file(self.h5_filename, verbose=progress)
 
@@ -1081,21 +1199,104 @@ def _worker_process(
     shard_result_queue.put((shard_idx, lib_bytes, padding, mol_ids))
 
 
+def _parquet_shard_worker_process(
+        shard_idx: int,
+        fp_specs: list[tuple[type, dict]],
+        pattern_holder_bits: int,
+        parquet_path: str | Path,
+        n_shards: int,
+        fp_output_queue: multiprocessing.Queue,
+        shard_result_queue: multiprocessing.Queue,
+) -> None:
+    """Build one substructure shard by reading *parquet_path* directly.
+
+    Opens its own ``pq.ParquetFile`` handle and parses only the rows whose
+    ``mol_id`` belongs to *shard_idx* - unlike :func:`_worker_process`, no
+    reader process feeds it.
+    """
+    lib = SubstructLibrary(CachedSmilesMolHolder(), PatternHolder(pattern_holder_bits))
+    fpers = [fp_cls(**fp_params) for fp_cls, fp_params in fp_specs]
+    mol_ids: list[int] = []  # mol_ids[k] = true idnumber of the k-th AddMol()
+    failed_ids: list[int] = []
+
+    mappings_batch: list[tuple] = []
+    fps_batch: defaultdict[str, list] = defaultdict(list)
+
+    def _flush() -> None:
+        nonlocal mappings_batch, fps_batch
+        if mappings_batch:
+            fp_output_queue.put(('rows', mappings_batch, dict(fps_batch)))
+        mappings_batch = []
+        fps_batch = defaultdict(list)
+
+    parquet_file = pq.ParquetFile(parquet_path)
+    prop_cols = [name for name in parquet_file.schema_arrow.names if name != 'ctab']
+
+    row_id = 1  # start_id, matching MolSupplier's default
+    for batch in parquet_file.iter_batches():
+        n_rows = batch.num_rows
+        shard_positions = [
+            i for i in range(n_rows) if _shard_for_mol_id(row_id + i, n_shards) == shard_idx
+        ]
+        if shard_positions:
+            ctab_col = batch.column('ctab')
+            prop_col_arrays = {name: batch.column(name) for name in prop_cols}
+            for i in shard_positions:
+                mol_id = row_id + i
+                ctab = ctab_col[i].as_py()
+                if ctab is None:
+                    failed_ids.append(mol_id)
+                    continue
+                rdmol = Chem.MolFromMolBlock(ctab)
+                if rdmol is None:
+                    failed_ids.append(mol_id)
+                    continue
+                for name in prop_cols:
+                    value = prop_col_arrays[name][i].as_py()
+                    if value is not None:
+                        rdmol.SetProp(name, str(value))
+
+                lib.AddMol(rdmol)
+                mol_ids.append(mol_id)
+                connectivity, inchikey = _derive_connectivity(rdmol.GetPropsAsDict(), rdmol)
+                mappings_batch.append((mol_id, connectivity, inchikey))
+                for fper in fpers:
+                    fps_batch[repr(fper)].append((mol_id, *fper.get(rdmol)))
+                if len(mappings_batch) >= WORKER_IPC_BATCH_SIZE:
+                    _flush()
+        row_id += n_rows
+    _flush()
+
+    if failed_ids:
+        preview = ', '.join(map(str, failed_ids[:10]))
+        more = f', +{len(failed_ids) - 10} more' if len(failed_ids) > 10 else ''
+        warnings.warn(
+            f'{len(failed_ids)} molecule(s) could not be parsed and were skipped '
+            f'(indices: {preview}{more}).',
+            stacklevel=2,
+        )
+
+    lib_bytes = _serialize_substruct_lib(lib)
+    padding = _padding_for(lib_bytes)
+    lib_bytes = _pad_to_int64(lib_bytes)
+    shard_result_queue.put((shard_idx, lib_bytes, padding, mol_ids))
+
+
 def _fp_writer_process(
         h5_filename: str | Path,
         fp_output_queue: multiprocessing.Queue,
         table_paths: dict,
-        total: int | None,
-        progress: bool,
+        progress_queue: multiprocessing.Queue | None,
         fp_writer_done: multiprocessing.synchronize.Event,
 ) -> None:
     """Consume fingerprint/mapping row batches from workers and write them to the HDF5 file.
 
     Sets *fp_writer_done* in a ``finally`` so an exception still releases
     the waiting ``_subst_writer_process``.
-    """
-    pbar = tqdm(total=total, smoothing=0.0) if progress else None
 
+    Reports progress by count over *progress_queue* rather than owning a
+    ``tqdm`` bar (unsafe in a forked child - see ``_parallel_create``).
+    """
     mappings_insert: list[tuple] = []
     similarity_insert: defaultdict[str, list] = defaultdict(list)
 
@@ -1118,8 +1319,8 @@ def _fp_writer_process(
 
                 _, mappings_batch, fps_batch = data
                 mappings_insert.extend(mappings_batch)
-                if pbar is not None:
-                    pbar.update(len(mappings_batch))
+                if progress_queue is not None:
+                    progress_queue.put(len(mappings_batch))
                 for fp_id, fp_rows in fps_batch.items():
                     similarity_insert[fp_id].extend(fp_rows)
 
@@ -1134,9 +1335,6 @@ def _fp_writer_process(
                         node.append(fp_rows)
                         node.flush()
                     similarity_insert = defaultdict(list)
-
-        if pbar is not None:
-            pbar.close()
 
         with tb.open_file(h5_filename, mode='r+') as h5file:
             h5file.root.mol_mappings.cols.idnumber.reindex()
@@ -1341,6 +1539,9 @@ class _MappingMixin:
     def _get_mapping(self, ids: list[int] | int) -> pl.DataFrame:
         """Return a DataFrame with Papyrus identifiers for the given integer *ids*.
 
+        Reads the table once and joins in memory - a per-id ``where()`` loop
+        doesn't scale to large hit counts.
+
         :param ids: one or more molecule IDs from the similarity/substructure result
         :raises ValueError: if any ID is not an integer or is not in the database
         """
@@ -1355,16 +1556,16 @@ class _MappingMixin:
         with tb.open_file(self.fp_filename) as fp_file:
             mappings_table = fp_file.root.mol_mappings
             colnames = mappings_table.cols._v_colnames
-            rows = []
-            for i in ids:
-                ptr = mappings_table.where(f'idnumber == {i}')
-                try:
-                    rows.append(next(ptr).fetch_all_fields())
-                except StopIteration:
-                    raise ValueError(f'Index {i} not found in the database.') from None
+            data = mappings_table.read()
 
-        rows_as_dicts = [dict(zip(colnames, r, strict=True)) for r in rows]
-        return _decode_bytes_df(pl.DataFrame(rows_as_dicts))
+        full = _decode_bytes_df(pl.DataFrame({c: data[c] for c in colnames}))
+        result = pl.DataFrame({'idnumber': pl.Series(ids, dtype=pl.Int64)}).join(
+            full, on='idnumber', how='left',
+        )
+        missing = result.filter(pl.col('InChIKey').is_null())
+        if missing.height:
+            raise ValueError(f'Index {missing["idnumber"][0]} not found in the database.')
+        return result
 
 
 # ---------------------------------------------------------------------------

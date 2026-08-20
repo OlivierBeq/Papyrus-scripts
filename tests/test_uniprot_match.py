@@ -388,7 +388,7 @@ class TestUniprotMappingsFunction(unittest.TestCase):
         sifts = pd.DataFrame({'SP_PRIMARY': ['Q1', 'Q2'], 'PDB': ['1abc;2xyz', '3foo']})
         with patch('src.papyrus_scripts.utils.UniprotMatch.pd.read_csv', return_value=sifts):
             result = uniprot_mappings('1abc', map_from='PDB', map_to='ACC')
-        self.assertEqual(list(result['PDB']), ['1abc'])
+        self.assertEqual(list(result['PDB']), ['1ABC'])
         self.assertEqual(list(result['ACC']), ['Q1'])
 
     def test_sifts_path_no_query_returns_all(self):

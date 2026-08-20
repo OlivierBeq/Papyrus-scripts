@@ -20,6 +20,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import requests
+
 from src.papyrus_scripts import download
 
 
@@ -28,6 +30,28 @@ def make_version(key):
     pv.pystow_path_key = key
     pv.__str__.return_value = key
     return pv
+
+
+class TestSizeForFtype(unittest.TestCase):
+    """Unit tests for download._size_for_ftype (papyrus++ key: "papyrus++" pre-2024.09.1, "papyrus_++" after)."""
+
+    def test_uses_the_mapped_key_when_present(self):
+        self.assertEqual(download._size_for_ftype({'papyrus_++': 42}, 'papyrus++'), 42)
+
+    def test_falls_back_to_the_legacy_unmapped_key(self):
+        self.assertEqual(download._size_for_ftype({'papyrus++': 42}, 'papyrus++'), 42)
+
+    def test_mapped_key_takes_priority_over_the_legacy_one(self):
+        self.assertEqual(
+            download._size_for_ftype({'papyrus_++': 42, 'papyrus++': 99}, 'papyrus++'), 42,
+        )
+
+    def test_other_ftypes_are_unaffected(self):
+        self.assertEqual(download._size_for_ftype({'papyrus_3D': 61085152}, '3D_papyrus'), 61085152)
+
+    def test_missing_key_returns_none(self):
+        self.assertIsNone(download._size_for_ftype({}, 'papyrus++'))
+        self.assertIsNone(download._size_for_ftype({}, '3D_papyrus'))
 
 
 class TestPrintBanner(unittest.TestCase):
@@ -406,16 +430,16 @@ class TestDownloadPapyrusQueuesConversionsAsItGoes(unittest.TestCase):
             'https://example.org/papyruspp': b'fake-tsv-xz-papyruspp',
         }
         files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
                            'size': 8, 'sha256': 'x'},
-                'requirements': {'name': '05.4_additional_files.zip',
+                'requirements': {'name': '2022.04.2_additional_files.zip',
                                  'url': 'https://example.org/requirements',
                                  'size': len(zip_bytes), 'sha256': 'x'},
-                'proteins': {'name': '05.4_combined_set_protein_targets.tsv.xz',
+                'proteins': {'name': '2022.04.2_combined_set_protein_targets.tsv.xz',
                              'url': 'https://example.org/proteins',
                              'size': 20, 'sha256': 'x'},
-                'papyrus++': {'name': '05.4++_combined_set_without_stereochemistry.tsv.xz',
+                'papyrus++': {'name': '2022.04.2++_combined_set_without_stereochemistry.tsv.xz',
                               'url': 'https://example.org/papyruspp',
                               'size': 21, 'sha256': 'x'},
             },
@@ -465,14 +489,13 @@ class TestDownloadPapyrusQueuesConversionsAsItGoes(unittest.TestCase):
             os.environ['PYSTOW_HOME'] = self._old_pystow_home
 
     def test_each_tabular_file_is_queued_right_after_its_own_download(self):
-        with self.assertWarns(DeprecationWarning):  # links.json legacy-key warning
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=False)
 
         task_queue = self._queues_created[0]
         tasks = [item for item in task_queue.items if item is not download._CONVERSION_DONE]
         self.assertEqual({t['fpath'].name for t in tasks},
-                          {'05.4_combined_set_protein_targets.tsv.xz',
-                           '05.4++_combined_set_without_stereochemistry.tsv.xz'})
+                          {'2022.04.2_combined_set_protein_targets.tsv.xz',
+                           '2022.04.2++_combined_set_without_stereochemistry.tsv.xz'})
         # The sentinel must be the very last thing queued, once every file
         # has been downloaded (and every other file already queued).
         self.assertIs(task_queue.items[-1], download._CONVERSION_DONE)
@@ -487,34 +510,32 @@ class TestDownloadPapyrusQueuesConversionsAsItGoes(unittest.TestCase):
         self.assertLess(first_queued_index, last_download_index)
 
     def test_queued_tasks_carry_an_approximate_row_total_from_data_size_json(self):
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=False)
 
         task_queue = self._queues_created[0]
         tasks = {t['fpath'].name: t for t in task_queue.items if t is not download._CONVERSION_DONE}
         self.assertEqual(
-            tasks['05.4_combined_set_protein_targets.tsv.xz']['total_rows'], 7,
+            tasks['2022.04.2_combined_set_protein_targets.tsv.xz']['total_rows'], 7,
         )
         self.assertEqual(
-            tasks['05.4++_combined_set_without_stereochemistry.tsv.xz']['total_rows'], 42,
+            tasks['2022.04.2++_combined_set_without_stereochemistry.tsv.xz']['total_rows'], 42,
         )
 
     def test_queued_tasks_use_the_short_ftype_as_progress_bar_label(self):
         # Regression test: the progress bar label used to be the real
-        # filename (e.g. "05.4++_combined_set_without_stereochemistry.tsv"),
+        # filename (e.g. "2022.04.2++_combined_set_without_stereochemistry.tsv"),
         # long enough on its own to overflow the fixed bar width before the
         # bar itself even starts. It must be the short ftype key from
         # links.json (e.g. "papyrus++") instead.
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=False)
 
         task_queue = self._queues_created[0]
         tasks = {t['fpath'].name: t for t in task_queue.items if t is not download._CONVERSION_DONE}
         self.assertEqual(
-            tasks['05.4_combined_set_protein_targets.tsv.xz']['desc'], 'Converting proteins',
+            tasks['2022.04.2_combined_set_protein_targets.tsv.xz']['desc'], 'Converting proteins',
         )
         self.assertEqual(
-            tasks['05.4++_combined_set_without_stereochemistry.tsv.xz']['desc'],
+            tasks['2022.04.2++_combined_set_without_stereochemistry.tsv.xz']['desc'],
             'Converting papyrus++',
         )
 
@@ -565,16 +586,16 @@ class TestDownloadPapyrusEnqueueDeadlock(unittest.TestCase):
             'https://example.org/papyruspp': b'fake-tsv-xz-papyruspp',
         }
         files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
                            'size': 8, 'sha256': 'x'},
-                'requirements': {'name': '05.4_additional_files.zip',
+                'requirements': {'name': '2022.04.2_additional_files.zip',
                                  'url': 'https://example.org/requirements',
                                  'size': len(zip_bytes), 'sha256': 'x'},
-                'proteins': {'name': '05.4_combined_set_protein_targets.tsv.xz',
+                'proteins': {'name': '2022.04.2_combined_set_protein_targets.tsv.xz',
                              'url': 'https://example.org/proteins',
                              'size': 20, 'sha256': 'x'},
-                'papyrus++': {'name': '05.4++_combined_set_without_stereochemistry.tsv.xz',
+                'papyrus++': {'name': '2022.04.2++_combined_set_without_stereochemistry.tsv.xz',
                               'url': 'https://example.org/papyruspp',
                               'size': 21, 'sha256': 'x'},
             },
@@ -629,20 +650,14 @@ class TestDownloadPapyrusEnqueueDeadlock(unittest.TestCase):
             os.environ['PYSTOW_HOME'] = self._old_pystow_home
 
     def test_dead_converter_raises_instead_of_hanging(self):
-        with (
-            self.assertWarns(DeprecationWarning),  # links.json legacy-key warning
-            self.assertRaises(RuntimeError) as ctx,
-        ):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        with self.assertRaises(RuntimeError) as ctx:
+            download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=False)
         self.assertIn('worker crashed: BOOM', str(ctx.exception))
 
     def test_error_queue_empty_falls_back_to_generic_message(self):
         self._queue_factories[1] = lambda *a, **k: _EmptyErrorQueue()
-        with (
-            self.assertWarns(DeprecationWarning),
-            self.assertRaises(RuntimeError) as ctx,
-        ):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        with self.assertRaises(RuntimeError) as ctx:
+            download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=False)
         self.assertIn('worker exited unexpectedly', str(ctx.exception))
 
 
@@ -686,13 +701,13 @@ class TestDownloadPapyrusSingleConvertingProgressBar(unittest.TestCase):
             'https://example.org/proteins': b'fake-tsv-xz-proteins',
         }
         files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
                            'size': 8, 'sha256': 'x'},
-                'requirements': {'name': '05.4_additional_files.zip',
+                'requirements': {'name': '2022.04.2_additional_files.zip',
                                  'url': 'https://example.org/requirements',
                                  'size': len(zip_bytes), 'sha256': 'x'},
-                'proteins': {'name': '05.4_combined_set_protein_targets.tsv.xz',
+                'proteins': {'name': '2022.04.2_combined_set_protein_targets.tsv.xz',
                              'url': 'https://example.org/proteins',
                              'size': 20, 'sha256': 'x'},
             },
@@ -739,25 +754,110 @@ class TestDownloadPapyrusSingleConvertingProgressBar(unittest.TestCase):
             os.environ['PYSTOW_HOME'] = self._old_pystow_home
 
     def test_converting_files_bar_created_at_most_once(self):
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
 
         converting_calls = [c for c in self.tqdm_calls if c.get('desc') == 'Converting files']
         self.assertEqual(len(converting_calls), 1)
 
     def test_converting_files_bar_uses_position_one(self):
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
 
         converting_calls = [c for c in self.tqdm_calls if c.get('desc') == 'Converting files']
         self.assertEqual(converting_calls[0].get('position'), 1)
 
     def test_download_bar_uses_position_zero(self):
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
 
         download_calls = [c for c in self.tqdm_calls if 'Downloading version' in c.get('desc', '')]
         self.assertEqual(download_calls[0].get('position'), 0)
+
+
+class TestDownloadPapyrusConvertingBarTotalWithLegacyPlusPlusKey(unittest.TestCase):
+    """Regression test: pre-2024.09.1 data_size.json's "papyrus++" key used to
+    leave the aggregate 'Converting files' bar's total unset (stuck indeterminate).
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._old_pystow_home = os.environ.get('PYSTOW_HOME')
+        self.addCleanup(self._restore_pystow_home)
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+            zh.writestr('data_size.json', '{"papyrus++": 42, "papyrus_proteins": 7}')
+        zip_bytes = zip_buf.getvalue()
+
+        content_by_url = {
+            'https://example.org/readme': b'a readme',
+            'https://example.org/requirements': zip_bytes,
+            'https://example.org/proteins': b'fake-tsv-xz-proteins',
+            'https://example.org/papyruspp': b'fake-tsv-xz-papyruspp',
+        }
+        files = {
+            '2022.04.2': {
+                'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
+                           'size': 8, 'sha256': 'x'},
+                'requirements': {'name': '2022.04.2_additional_files.zip',
+                                 'url': 'https://example.org/requirements',
+                                 'size': len(zip_bytes), 'sha256': 'x'},
+                'proteins': {'name': '2022.04.2_combined_set_protein_targets.tsv.xz',
+                             'url': 'https://example.org/proteins',
+                             'size': 20, 'sha256': 'x'},
+                'papyrus++': {'name': '2022.04.2++_combined_set_without_stereochemistry.tsv.xz',
+                              'url': 'https://example.org/papyruspp',
+                              'size': 21, 'sha256': 'x'},
+            },
+        }
+
+        def fake_get(url, **kwargs):
+            return _FakeResponse(content_by_url[url])
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        self.tqdm_mocks: list[MagicMock] = []
+
+        def fake_tqdm(*args, **kwargs):
+            m = MagicMock()
+            m._kwargs = kwargs
+            self.tqdm_mocks.append(m)
+            return m
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_queue': patch(
+                'src.papyrus_scripts.download.mp.Queue', side_effect=lambda *a, **k: _FakeQueue(),
+            ),
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process', side_effect=_FakeProcess,
+            ),
+            'tqdm': patch('src.papyrus_scripts.download.tqdm', side_effect=fake_tqdm),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def _restore_pystow_home(self):
+        if self._old_pystow_home is None:
+            os.environ.pop('PYSTOW_HOME', None)
+        else:
+            os.environ['PYSTOW_HOME'] = self._old_pystow_home
+
+    def test_aggregate_total_uses_legacy_papyruspp_key(self):
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
+
+        converting_bar = next(m for m in self.tqdm_mocks if m._kwargs.get('desc') == 'Converting files')
+        converting_bar.reset.assert_called_once_with(total=49)
 
 
 class _SlowConsumerProcess:
@@ -858,16 +958,16 @@ class TestDownloadPapyrusBackpressureFeedback(unittest.TestCase):
             'https://example.org/papyruspp': b'fake-tsv-xz-papyruspp',
         }
         files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
                            'size': 8, 'sha256': 'x'},
-                'requirements': {'name': '05.4_additional_files.zip',
+                'requirements': {'name': '2022.04.2_additional_files.zip',
                                  'url': 'https://example.org/requirements',
                                  'size': len(zip_bytes), 'sha256': 'x'},
-                'proteins': {'name': '05.4_combined_set_protein_targets.tsv.xz',
+                'proteins': {'name': '2022.04.2_combined_set_protein_targets.tsv.xz',
                              'url': 'https://example.org/proteins',
                              'size': 20, 'sha256': 'x'},
-                'papyrus++': {'name': '05.4++_combined_set_without_stereochemistry.tsv.xz',
+                'papyrus++': {'name': '2022.04.2++_combined_set_without_stereochemistry.tsv.xz',
                               'url': 'https://example.org/papyruspp',
                               'size': 21, 'sha256': 'x'},
             },
@@ -917,8 +1017,7 @@ class TestDownloadPapyrusBackpressureFeedback(unittest.TestCase):
         result = {}
 
         def run():
-            with self.assertWarns(DeprecationWarning):
-                download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+            download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
             result['finished'] = True
 
         t = threading.Thread(target=run, daemon=True)
@@ -927,8 +1026,7 @@ class TestDownloadPapyrusBackpressureFeedback(unittest.TestCase):
         self.assertTrue(result.get('finished'), 'download_papyrus hung instead of completing')
 
     def test_shows_feedback_while_backpressured_instead_of_going_silent(self):
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
 
         # Some bar (download bar's postfix, or converting_pbar's
         # description) must have received a non-empty, real (non-'?') live
@@ -983,16 +1081,16 @@ class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.T
             'https://example.org/papyruspp': _SlowFakeResponse(b'fake-tsv-xz-papyruspp' * 20),
         }
         files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
                            'size': 8, 'sha256': 'x'},
-                'requirements': {'name': '05.4_additional_files.zip',
+                'requirements': {'name': '2022.04.2_additional_files.zip',
                                  'url': 'https://example.org/requirements',
                                  'size': len(zip_bytes), 'sha256': 'x'},
-                'proteins': {'name': '05.4_combined_set_protein_targets.tsv.xz',
+                'proteins': {'name': '2022.04.2_combined_set_protein_targets.tsv.xz',
                              'url': 'https://example.org/proteins',
                              'size': 20 * 20, 'sha256': 'x'},
-                'papyrus++': {'name': '05.4++_combined_set_without_stereochemistry.tsv.xz',
+                'papyrus++': {'name': '2022.04.2++_combined_set_without_stereochemistry.tsv.xz',
                               'url': 'https://example.org/papyruspp',
                               'size': 21 * 20, 'sha256': 'x'},
             },
@@ -1043,8 +1141,7 @@ class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.T
             os.environ['PYSTOW_HOME'] = self._old_pystow_home
 
     def test_download_bar_shows_conversion_progress_before_it_closes(self):
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
 
         download_bars = [m for m in self.pbar_mocks if 'Downloading version' in m._kwargs.get('desc', '')]
         converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
@@ -1080,8 +1177,7 @@ class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.T
         )
 
     def test_completed_file_shows_complete_instead_of_final_row_count(self):
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
 
         converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
         self.assertEqual(len(converting_bars), 1)
@@ -1105,8 +1201,7 @@ class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.T
         # so the *next* redraw landed on a fresh line instead of
         # overwriting in place. The description must now be set with
         # refresh=False, letting update(1)'s own refresh be the only one.
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
 
         converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
         self.assertEqual(len(converting_bars), 1)
@@ -1133,8 +1228,7 @@ class TestDownloadPapyrusShowsConversionProgressWhileStillDownloading(unittest.T
         # permanently shifting it one row off for every redraw from that
         # point on. Bars must close bottom-up: converting_pbar first, then
         # the download bar last.
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
 
         download_bars = [m for m in self.pbar_mocks if 'Downloading version' in m._kwargs.get('desc', '')]
         converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
@@ -1726,7 +1820,7 @@ class TestDownloadPapyrusFileSelectionByFlags(unittest.TestCase):
             return {'name': name, 'url': url, 'size': 1, 'sha256': 'x'}
 
         self.files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': entry('u:readme', 'README.txt'),
                 'requirements': entry('u:requirements', 'req.zip'),
                 'proteins': entry('u:proteins', 'proteins.tsv.xz'),
@@ -1772,10 +1866,9 @@ class TestDownloadPapyrusFileSelectionByFlags(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def _run(self, **kwargs):
-        with self.assertWarns(DeprecationWarning):  # links.json legacy-key warning
-            download.download_papyrus(
-                outdir=self._tmpdir.name, version='05.4', progress=False, keep_xz=True, **kwargs,
-            )
+        download.download_papyrus(
+            outdir=self._tmpdir.name, version='2022.04.2', progress=False, keep_xz=True, **kwargs,
+        )
 
     def test_only_pp_false_downloads_full_2d_bioactivity_set(self):
         self._run(nostereo=True, only_pp=False, stereo=False, descriptors=None)
@@ -1800,11 +1893,11 @@ class TestDownloadPapyrusFileSelectionByFlags(unittest.TestCase):
         self.assertIn('u:prodec', self.requested_urls)
 
     def test_prodec_absent_from_links_warns_and_is_skipped(self):
-        files = {'05.4': {k: v for k, v in self.files['05.4'].items() if k != 'proteins_prodec'}}
+        files = {'2022.04.2': {k: v for k, v in self.files['2022.04.2'].items() if k != 'proteins_prodec'}}
         self.mocks['get_papyrus_links'].return_value = files
         with self.assertWarns(UserWarning):
             download.download_papyrus(
-                outdir=self._tmpdir.name, version='05.4', progress=False, keep_xz=True,
+                outdir=self._tmpdir.name, version='2022.04.2', progress=False, keep_xz=True,
                 nostereo=True, stereo=False, descriptors=['prodec'],
             )
         self.assertNotIn('u:prodec', self.requested_urls)
@@ -1812,6 +1905,17 @@ class TestDownloadPapyrusFileSelectionByFlags(unittest.TestCase):
     def test_descriptors_none_downloads_no_descriptor_files(self):
         self._run(nostereo=True, only_pp=True, stereo=False, descriptors=None)
         self.assertNotIn('u:2dmold2', self.requested_urls)
+
+    def test_keep_xz_leaves_originals_on_disk_without_converting(self):
+        # keep_xz=True must skip conversion (and the .xz deletion that follows it).
+        self._run(nostereo=True, structures=True, stereo=False, descriptors=None)
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '2022.04.2'
+        self.assertTrue((version_root / 'papyruspp.tsv.xz').is_file())
+        self.assertTrue((version_root / 'proteins.tsv.xz').is_file())
+        self.assertTrue((version_root / 'structures' / '2dstruct.sd.xz').is_file())
+        self.assertFalse((version_root / 'papyruspp.tsv.parquet').exists())
+        self.assertFalse((version_root / 'proteins.tsv.parquet').exists())
+        self.assertFalse((version_root / 'structures' / '2dstruct.sd.parquet').exists())
 
 
 class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
@@ -1824,7 +1928,7 @@ class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
         self.files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': {'name': 'README.txt', 'url': 'u:readme', 'size': 1, 'sha256': 'x'},
                 'requirements': {'name': 'req.zip', 'url': 'u:requirements', 'size': 1, 'sha256': 'x'},
                 'proteins': {'name': 'proteins.tsv.xz', 'url': 'u:proteins', 'size': 1, 'sha256': 'x'},
@@ -1861,33 +1965,75 @@ class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
         # 'proteins' is a _ROOT_FTYPES entry - its parquet sibling lives
         # directly under the version root, not under descriptors/.
         # progress=True also exercises the pbar.update() on this skip path.
-        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '2022.04.2'
         version_root.mkdir(parents=True)
         (version_root / 'proteins.tsv.parquet').touch()
-        with (
-            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
-            self.assertWarns(DeprecationWarning),
-        ):
+        with patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True):
             download.download_papyrus(
-                outdir=self._tmpdir.name, version='05.4', progress=True, keep_xz=True,
+                outdir=self._tmpdir.name, version='2022.04.2', progress=True, keep_xz=True,
                 nostereo=False, stereo=False, only_pp=False, descriptors=None,
             )
         self.assertNotIn('u:proteins', self.requested_urls)
 
     def test_intact_file_on_disk_with_matching_hash_is_not_redownloaded(self):
         # progress=True also exercises the pbar.update() on this skip path.
-        version_root = Path(self._tmpdir.name) / 'papyrus' / '05.4'
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '2022.04.2'
         version_root.mkdir(parents=True)
         (version_root / 'proteins.tsv.xz').write_bytes(b'already-here')
-        with (
-            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
-            self.assertWarns(DeprecationWarning),
-        ):
+        with patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True):
             download.download_papyrus(
-                outdir=self._tmpdir.name, version='05.4', progress=True, keep_xz=True,
+                outdir=self._tmpdir.name, version='2022.04.2', progress=True, keep_xz=True,
                 nostereo=False, stereo=False, only_pp=False, descriptors=None,
             )
         self.assertNotIn('u:proteins', self.requested_urls)
+
+    def test_requirements_zip_already_extracted_is_not_redownloaded(self):
+        # Extracted metadata present -> zip must not be re-fetched.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '2022.04.2'
+        version_root.mkdir(parents=True)
+        (version_root / 'data_types.json').write_text('{}')
+        (version_root / 'data_size.json').write_text('{}')
+        (version_root / 'README.txt').write_text('a readme')
+        (version_root / 'proteins.tsv.parquet').touch()
+        with patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='2022.04.2', progress=True, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertNotIn('u:requirements', self.requested_urls)
+
+    def test_requirements_zip_redownloaded_when_extraction_incomplete(self):
+        # Partial metadata -> zip must still be fetched.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '2022.04.2'
+        version_root.mkdir(parents=True)
+        (version_root / 'data_types.json').write_text('{}')
+        # data_size.json deliberately missing.
+        with patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='2022.04.2', progress=False, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertIn('u:requirements', self.requested_urls)
+
+    def test_requirements_zip_already_extracted_is_excluded_from_download_count(self):
+        # The "N file(s) to download" banner is printed before the download
+        # loop, so it must exclude an already-extracted 'requirements' too.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '2022.04.2'
+        version_root.mkdir(parents=True)
+        (version_root / 'data_types.json').write_text('{}')
+        (version_root / 'data_size.json').write_text('{}')
+        (version_root / 'README.txt').write_text('a readme')
+        (version_root / 'proteins.tsv.parquet').touch()
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
+            redirect_stdout(io.StringIO()) as buf,
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='2022.04.2', progress=True, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        # readme + proteins only - requirements excluded, not the full 3.
+        self.assertIn('2 file(s) to download', buf.getvalue())
 
     def test_hash_mismatch_retries_then_succeeds(self):
         # Every file goes through the same hash check - only 'proteins'
@@ -1898,12 +2044,9 @@ class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
         def fake_sha(fpath, sha):
             return next(proteins_results) if fpath.name == 'proteins.tsv.xz' else True
 
-        with (
-            patch('src.papyrus_scripts.download.assert_sha256sum', side_effect=fake_sha),
-            self.assertWarns(DeprecationWarning),
-        ):
+        with patch('src.papyrus_scripts.download.assert_sha256sum', side_effect=fake_sha):
             download.download_papyrus(
-                outdir=self._tmpdir.name, version='05.4', progress=True, keep_xz=True,
+                outdir=self._tmpdir.name, version='2022.04.2', progress=True, keep_xz=True,
                 nostereo=False, stereo=False, only_pp=False, descriptors=None,
             )
         self.assertEqual(self.requested_urls.count('u:proteins'), 2)
@@ -1917,10 +2060,63 @@ class TestDownloadPapyrusFileAlreadyPresent(unittest.TestCase):
             self.assertRaises(OSError),
         ):
             download.download_papyrus(
-                outdir=self._tmpdir.name, version='05.4', progress=False, keep_xz=True,
+                outdir=self._tmpdir.name, version='2022.04.2', progress=False, keep_xz=True,
                 nostereo=False, stereo=False, only_pp=False, descriptors=None,
             )
         self.assertEqual(self.requested_urls.count('u:proteins'), download._RETRIES)
+
+    def test_chunk_error_retries_then_succeeds_and_leaves_no_truncated_file(self):
+        # A dropped connection mid-stream must retry like a hash mismatch.
+        attempts = {'n': 0}
+
+        class _ChunkErrorThenOkResponse:
+            def iter_content(self, chunk_size):
+                attempts['n'] += 1
+                if attempts['n'] < 2:
+                    yield b'x'
+                    raise requests.exceptions.ChunkedEncodingError('chunk corrupted')
+                yield b'x'
+
+        def fake_get(url, **kwargs):
+            self.requested_urls.append(url)
+            if url == 'u:proteins':
+                return _ChunkErrorThenOkResponse()
+            content = self.zip_bytes if url == 'u:requirements' else b'x'
+            return _FakeResponse(content)
+
+        self.fake_session.get.side_effect = fake_get
+
+        with patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='2022.04.2', progress=True, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertEqual(self.requested_urls.count('u:proteins'), 2)
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '2022.04.2'
+        self.assertTrue((version_root / 'proteins.tsv.xz').is_file())
+
+    def test_chunk_error_exhausts_retries_raises_and_cleans_up_truncated_file(self):
+        def fake_get(url, **kwargs):
+            self.requested_urls.append(url)
+            if url == 'u:proteins':
+                raise requests.exceptions.ChunkedEncodingError('chunk corrupted')
+            content = self.zip_bytes if url == 'u:requirements' else b'x'
+            return _FakeResponse(content)
+
+        self.fake_session.get.side_effect = fake_get
+
+        with (
+            patch('src.papyrus_scripts.download.assert_sha256sum', return_value=True),
+            self.assertRaises(OSError),
+        ):
+            download.download_papyrus(
+                outdir=self._tmpdir.name, version='2022.04.2', progress=False, keep_xz=True,
+                nostereo=False, stereo=False, only_pp=False, descriptors=None,
+            )
+        self.assertEqual(self.requested_urls.count('u:proteins'), download._RETRIES)
+        # No truncated file left behind to be mistaken for complete later.
+        version_root = Path(self._tmpdir.name) / 'papyrus' / '2022.04.2'
+        self.assertFalse((version_root / 'proteins.tsv.xz').exists())
 
 
 class TestDownloadPapyrusFailureDuringDownloadCleansUpConverter(unittest.TestCase):
@@ -1936,7 +2132,7 @@ class TestDownloadPapyrusFailureDuringDownloadCleansUpConverter(unittest.TestCas
         with zipfile.ZipFile(zip_buf, 'w') as zh:
             zh.writestr('data_types.json', '{}')
         files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': {'name': 'README.txt', 'url': 'u:readme', 'size': 1, 'sha256': 'x'},
                 'requirements': {'name': 'req.zip', 'url': 'u:requirements', 'size': 1, 'sha256': 'x'},
                 'proteins': {'name': 'proteins.tsv.xz', 'url': 'u:proteins', 'size': 1, 'sha256': 'x'},
@@ -1981,11 +2177,8 @@ class TestDownloadPapyrusFailureDuringDownloadCleansUpConverter(unittest.TestCas
             self.addCleanup(p.stop)
 
     def test_exception_propagates_after_signalling_the_converter_to_stop(self):
-        with (
-            self.assertWarns(DeprecationWarning),
-            self.assertRaises(ConnectionError),
-        ):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        with self.assertRaises(ConnectionError):
+            download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=False)
         task_queue = self._queues_created[0]
         self.assertIs(task_queue.items[-1], download._CONVERSION_DONE)
 
@@ -1994,7 +2187,7 @@ class TestDownloadPapyrusFailureDuringDownloadCleansUpConverter(unittest.TestCas
             patch('src.papyrus_scripts.download.tqdm') as fake_tqdm_cls,
             self.assertRaises(ConnectionError),
         ):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+            download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
         pbar_mock = fake_tqdm_cls.return_value
         pbar_mock.close.assert_called()
 
@@ -2009,7 +2202,7 @@ class TestDownloadPapyrusConversionFailureRaises(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
         files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': {'name': 'README.txt', 'url': 'u:readme', 'size': 1, 'sha256': 'x'},
                 'requirements': {'name': 'req.zip', 'url': 'u:requirements', 'size': 1, 'sha256': 'x'},
             },
@@ -2054,18 +2247,15 @@ class TestDownloadPapyrusConversionFailureRaises(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def test_conversion_error_raises_runtimeerror_with_the_message(self):
-        with (
-            self.assertWarns(DeprecationWarning),
-            self.assertRaisesRegex(RuntimeError, 'conversion exploded'),
-        ):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=False)
+        with self.assertRaisesRegex(RuntimeError, 'conversion exploded'):
+            download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=False)
 
     def test_progress_true_closes_the_bar_before_raising(self):
         with (
             patch('src.papyrus_scripts.download.tqdm') as fake_tqdm_cls,
             self.assertRaises(RuntimeError),
         ):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+            download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
         # First tqdm() call is the download bar; it must be closed.
         fake_tqdm_cls.return_value.close.assert_called()
 
@@ -2209,7 +2399,7 @@ class TestDownloadPapyrusProgressResetMessage(unittest.TestCase):
         with zipfile.ZipFile(zip_buf, 'w') as zh:
             zh.writestr('data_types.json', '{}')
         files = {
-            '05.4': {
+            '2022.04.2': {
                 'readme': {'name': 'README.txt', 'url': 'u:readme', 'size': 1, 'sha256': 'x'},
                 'requirements': {'name': 'req.zip', 'url': 'u:requirements', 'size': 1, 'sha256': 'x'},
                 'proteins': {'name': 'proteins.tsv.xz', 'url': 'u:proteins', 'size': 1, 'sha256': 'x'},
@@ -2251,8 +2441,7 @@ class TestDownloadPapyrusProgressResetMessage(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def test_reset_message_zeroes_the_row_count_shown(self):
-        with self.assertWarns(DeprecationWarning):
-            download.download_papyrus(outdir=self._tmpdir.name, version='05.4', progress=True)
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
 
         converting_bars = [m for m in self.pbar_mocks if m._kwargs.get('desc') == 'Converting files']
         self.assertEqual(len(converting_bars), 1)

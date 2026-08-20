@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import cast
 
 import pystow
+import requests
 from tqdm.auto import tqdm
 
 from .utils.IO import (
@@ -26,7 +27,9 @@ from .utils.IO import (
     get_papyrus_links,
     load_data_type_schemas,
     new_session,
+    notebook_safe_ncols,
     read_jsonfile,
+    widen_indeterminate_notebook_bar,
     write_jsonfile,
 )
 
@@ -80,6 +83,20 @@ _SIZE_KEY_BY_FTYPE = {
     '3D_structures':   'structures_3D',
 }
 
+def _size_for_ftype(sizes: dict, ftype: str) -> int | None:
+    """Look up *ftype*'s row count in a parsed data_size.json, or ``None`` if absent.
+
+    Releases up to 2022.11.4 key papyrus++ as ``"papyrus++"``; 2024.09.1+
+    use ``"papyrus_++"`` (``_SIZE_KEY_BY_FTYPE['papyrus++']``) - try both.
+    """
+    key = _SIZE_KEY_BY_FTYPE.get(ftype)
+    if key in sizes:
+        return sizes[key]
+    if ftype == 'papyrus++' and 'papyrus++' in sizes:
+        return sizes['papyrus++']
+    return None
+
+
 #: Fixed progress-bar width (characters) for the download and conversion
 #: bars, so none of them grows to fill an entire wide terminal.
 _PBAR_NCOLS = 100
@@ -132,6 +149,14 @@ def _print_banner(emoji: str, title: str, *lines: str) -> None:
             for wrapped in textwrap.wrap(line, text_width) or ['']:
                 print(_row(wrapped))
     print(f'└{rule}┘')
+
+
+def _requirements_already_extracted(papyrus_version_root) -> bool:
+    """Whether the 'requirements' zip was already downloaded and extracted (it's deleted after extraction)."""
+    return (
+        papyrus_version_root.join(name='data_types.json').is_file()
+        and papyrus_version_root.join(name='data_size.json').is_file()
+    )
 
 
 def _parquet_sibling(fpath: Path) -> Path | None:
@@ -403,16 +428,10 @@ _CONVERSION_DONE = None
 
 #: Messages put on the progress queue by _convert_worker, consumed by
 #: _drain_progress_queue in the parent process:
-#: ('start', desc, total_rows) - beginning a new file: reset the current
-#:     file's row count to 0 and record its description/total
-#: ('reset',)                  - conversion restarted from row 0 (dtype
-#:     drift healing) - reset the current file's row count, keep its total
-#: ('chunk', n)                - n more rows written for the current file
-#: ('done',)                   - current file finished; advance the
-#:     "files converted" bar by one
-#: 'start'/'reset'/'chunk' only ever update the *description* of the single
-#: "Converting files" bar (current file + its row progress) - never a
-#: second bar object; see download_papyrus's own comments for why.
+#: ('start', desc, total_rows) - new file: reset row count, set desc/total
+#: ('reset',)   - dtype drift healing: undo credited rows, reset row count
+#: ('chunk', n) - n more rows written; advances the row-unit progress bar
+#: ('done',)    - current file finished
 _PROGRESS_START = 'start'
 _PROGRESS_RESET = 'reset'
 _PROGRESS_CHUNK = 'chunk'
@@ -646,6 +665,10 @@ def download_papyrus(outdir: str | Path | None = None,
         # Drop any key that is absent from this version's link table
         downloads = {ft for ft in downloads if ft in version_files}
 
+        # Drop 'requirements' before the count/total below if already extracted.
+        if 'requirements' in downloads and _requirements_already_extracted(papyrus_version_root):
+            downloads.discard('requirements')
+
         # ------------------------------------------------------------------
         # Check available disk space
         # ------------------------------------------------------------------
@@ -693,7 +716,7 @@ def download_papyrus(outdir: str | Path | None = None,
                 desc=f'Downloading version {pv.version}',
                 unit='B',
                 unit_scale=True,
-                ncols=_PBAR_NCOLS,
+                ncols=notebook_safe_ncols(_PBAR_NCOLS),
                 position=0,
             )
 
@@ -727,7 +750,6 @@ def download_papyrus(outdir: str | Path | None = None,
         error_queue: mp.Queue | None = None
         progress_queue: mp.Queue | None = None
         converting_pbar: tqdm | None = None
-        files_converted = 0
         current_desc = ''
         current_rows = 0
         current_total: int | None = None
@@ -743,18 +765,13 @@ def download_papyrus(outdir: str | Path | None = None,
             # Only ever called once converting_pbar has been created (see call sites).
             if converting_pbar is None:  # noqa: B023
                 raise RuntimeError('converting_pbar not created despite progress=True')
-            # refresh=False: the caller immediately follows this with
-            # update(1), which does its own refresh - two separate refreshes
-            # for the same event means two consecutive cursor-repositioning
-            # writes (moveto's newline-down/ANSI-up dance) with nothing in
-            # between them, which on Windows (even with colorama) has been
-            # observed to leave the cursor one line off, so the *next*
-            # redraw lands on a fresh line instead of overwriting in place.
+            # refresh=False: caller's own refresh() follows right after; two
+            # back-to-back refreshes can leave the cursor off by a line on Windows.
             converting_pbar.set_description(f'{current_desc} (complete)', refresh=False)  # noqa: B023
 
         def _drain_progress_queue() -> None:
             """Apply every conversion-progress message available right now, without blocking."""
-            nonlocal files_converted, current_desc, current_rows, current_total
+            nonlocal current_desc, current_rows, current_total
             # Only ever called once progress_queue has been created (see call sites).
             if progress_queue is None:  # noqa: B023
                 raise RuntimeError('progress_queue not created despite progress=True')
@@ -768,24 +785,25 @@ def download_papyrus(outdir: str | Path | None = None,
                     _, current_desc, current_total = message
                     current_rows = 0
                 elif kind == _PROGRESS_RESET:
+                    # Undo rows already credited before restarting from 0.
+                    if converting_pbar is not None and current_rows:  # noqa: B023
+                        converting_pbar.update(-current_rows)  # noqa: B023
                     current_rows = 0
                 elif kind == _PROGRESS_CHUNK:
                     current_rows += message[1]
-                elif kind == _PROGRESS_DONE:
-                    files_converted += 1
                 # Defensive only: progress_queue only ever receives messages
                 # when progress is True, which is also when converting_pbar
                 # is created - the two are never out of sync in practice.
                 if converting_pbar is None:  # pragma: no cover  # noqa: B023
                     continue
-                if kind == _PROGRESS_DONE:
-                    # Set the description first (no refresh), then let the
-                    # single update(1) refresh show both the new count and
-                    # the new description together - see
-                    # _mark_current_file_complete's own comment for why.
+                if kind == _PROGRESS_CHUNK:
+                    # update()'s refresh also repaints the description set below.
+                    converting_pbar.update(message[1])  # noqa: B023
+                    _update_current_file_description()
+                elif kind == _PROGRESS_DONE:
                     _mark_current_file_complete()
-                    converting_pbar.update(1)  # noqa: B023
-                elif kind in (_PROGRESS_START, _PROGRESS_RESET, _PROGRESS_CHUNK):
+                    converting_pbar.refresh()  # noqa: B023
+                elif kind in (_PROGRESS_START, _PROGRESS_RESET):
                     _update_current_file_description()
 
         def _wait_for_converter() -> None:
@@ -832,22 +850,27 @@ def download_papyrus(outdir: str | Path | None = None,
                     _drain_progress_queue()
 
         if not keep_xz:
-            to_convert_total = 0
+            # ftype per file still needing conversion; used once data_size.json
+            # is read to compute converting_pbar's total row count.
+            to_convert_ftypes: list[str] = []
             for ftype in ordered_ftypes:
                 for entry in _iter_entries(version_files[ftype]):
                     fpath = _file_path(papyrus_version_root, ftype, entry['name'])
                     parquet_path = _parquet_sibling(fpath)
                     if parquet_path is not None and not parquet_path.is_file():
-                        to_convert_total += 1
+                        to_convert_ftypes.append(ftype)
 
             task_queue = mp.Queue(maxsize=1)
             error_queue = mp.Queue()
             progress_queue = mp.Queue()
             if progress:
                 converting_pbar = tqdm(
-                    total=to_convert_total, desc='Converting files', unit=' file',
-                    ncols=_PBAR_NCOLS, position=1,
+                    # Unknown total until sizes is loaded, unless nothing to convert.
+                    total=(0 if not to_convert_ftypes else None),
+                    desc='Converting files', unit=' row', unit_scale=True,
+                    ncols=notebook_safe_ncols(_PBAR_NCOLS), position=1,
                 )
+                widen_indeterminate_notebook_bar(converting_pbar)
             converter_process = mp.Process(
                 target=_convert_worker,
                 args=(task_queue, error_queue, progress_queue, progress),
@@ -881,27 +904,39 @@ def download_papyrus(outdir: str | Path | None = None,
                         # Attempt download with up to _RETRIES tries
                         success = False
                         remaining = _RETRIES
+                        last_error: Exception | None = None
                         while not success and remaining > 0:
-                            res = session.get(
-                                durl,
-                                stream=True,
-                                verify=True,
-                            )
-                            with open(fpath, 'wb') as fh:
-                                for chunk in res.iter_content(chunk_size=_CHUNKSIZE):
-                                    fh.write(chunk)
-                                    if progress:
-                                        pbar.update(len(chunk))
-                                    if progress_queue is not None:
-                                        _drain_progress_queue()
+                            try:
+                                res = session.get(
+                                    durl,
+                                    stream=True,
+                                    verify=True,
+                                )
+                                with open(fpath, 'wb') as fh:
+                                    for chunk in res.iter_content(chunk_size=_CHUNKSIZE):
+                                        fh.write(chunk)
+                                        if progress:
+                                            pbar.update(len(chunk))
+                                        if progress_queue is not None:
+                                            _drain_progress_queue()
+                                success = assert_sha256sum(fpath, dhash)
+                                last_error = None
+                            except requests.exceptions.RequestException as err:
+                                # Chunk failed mid-stream - retry like a hash mismatch.
+                                success = False
+                                last_error = err
 
-                            success = assert_sha256sum(fpath, dhash)
                             if not success:
                                 remaining -= 1
-                                fpath.unlink()
+                                # Never leave a truncated file behind.
+                                fpath.unlink(missing_ok=True)
                                 if progress:
+                                    if last_error is not None:
+                                        reason = f'Connection error downloading {dname}: {last_error}. '
+                                    else:
+                                        reason = f'SHA256 mismatch for {dname}. '
                                     msg = (
-                                            f'SHA256 mismatch for {dname}. '
+                                            reason
                                             + (f'Retrying ({remaining} left).'
                                                if remaining > 0
                                                else f'All {_RETRIES} attempts failed.')
@@ -911,7 +946,7 @@ def download_papyrus(outdir: str | Path | None = None,
                         if not success:
                             # pbar is intentionally left open here (not
                             # closed) - see the except handler below for why.
-                            raise OSError(f'Download failed for {dname}')
+                            raise OSError(f'Download failed for {dname}') from last_error
 
                     # Extract ZIP archives in-place
                     if dname.endswith('.zip'):
@@ -933,6 +968,16 @@ def download_papyrus(outdir: str | Path | None = None,
                                 # data_size.json is always written as a JSON object.
                                 sizes = cast(dict, read_jsonfile(papyrus_version_root.join(name='data_size.json')))
                                 metadata_loaded = True
+                                # Sum per-ftype row counts into the real total,
+                                # unless any is unknown (avoid understating it).
+                                if progress and converting_pbar is not None and to_convert_ftypes:
+                                    per_file_rows = [
+                                        _size_for_ftype(sizes, ft)
+                                        for ft in to_convert_ftypes
+                                    ]
+                                    if all(n is not None for n in per_file_rows):
+                                        # reset() syncs the widget's max too, unlike plain `.total =`.
+                                        converting_pbar.reset(total=sum(per_file_rows))
                         if task_queue is None:
                             raise RuntimeError('task_queue not created')
                         _enqueue({
@@ -940,7 +985,7 @@ def download_papyrus(outdir: str | Path | None = None,
                             'parquet_path': parquet_path,
                             'schema_overrides': schemas.get(_SCHEMA_KEY_BY_FTYPE.get(ftype)),
                             'null_values': _NULL_VALUES_BY_FTYPE.get(ftype),
-                            'total_rows': sizes.get(_SIZE_KEY_BY_FTYPE.get(ftype)),
+                            'total_rows': _size_for_ftype(sizes, ftype),
                             # ftype (e.g. 'papyrus++', '2D_mold2') rather
                             # than fpath.name: the real filenames (e.g.
                             # '05.6++_combined_set_without_stereochemistry

@@ -2,7 +2,9 @@
 
 """Match data of the Papyrus dataset with that of the Protein Data Bank."""
 
+import os
 import time
+import uuid
 from collections.abc import Generator, Iterator
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from rdkit import Chem
 from tqdm.auto import tqdm, trange
 
 from .utils import IO, UniprotMatch
-from .utils.IO import new_session
+from .utils.IO import new_session, notebook_safe_ncols
 from .utils.mol_reader import suppress_rdkit_log
 
 
@@ -75,7 +77,7 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     """
     # Define output path
     path = papyrus_rcsb_data_root(root_folder)
-    output_path = path.join('rcsb', name='RCSB_data.tsv.xz')
+    output_path = path.join('rcsb', name='RCSB_data.tsv.gz')
     # Check if file is too recent
     if (output_path.is_file() and (time.time() - output_path.stat().st_mtime) < 86400) and not overwrite:
         if verbose:
@@ -110,10 +112,10 @@ def update_rcsb_data(root_folder: str | Path | None = None,
         }
         """
     results = []
-    chunk_size = 200  # Max entries per GraphQL query to prevent server timeouts
+    chunk_size = 1000  # RCSB GraphQL API hard limit on entry_ids per query
     total_chunks = (len(pdb_ids) - 1) // chunk_size + 1
     if verbose:
-        pbar = trange(0, len(pdb_ids), chunk_size, desc='Gather RCSB data', ncols=100)
+        pbar = trange(0, len(pdb_ids), chunk_size, desc='Gather RCSB data', ncols=notebook_safe_ncols(100))
     else:
         pbar = range(0, len(pdb_ids), chunk_size)
     # 2. Process the IDs in chunks (RDKit warnings suppressed due to InChI-fication)
@@ -158,6 +160,8 @@ def update_rcsb_data(root_folder: str | Path | None = None,
                                         break
                         if smiles_stereo:
                             mol = Chem.MolFromSmiles(smiles_stereo)
+                            if mol is None:
+                                continue
                             mol_2D = Chem.Mol(mol)
                             Chem.RemoveStereochemistry(mol_2D)
                             results.append({
@@ -199,7 +203,15 @@ def update_rcsb_data(root_folder: str | Path | None = None,
     # Write to disk and return
     if verbose:
         print('Writing results to disk')
-    pdb_data.to_csv(output_path, sep='\t', index=False)
+    tmp_path = output_path.with_name(f'{output_path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp')
+    for stale in output_path.parent.glob(f'{output_path.name}.*.tmp'):
+        stale.unlink(missing_ok=True)
+    try:
+        # explicit compression: tmp_path's name doesn't end in '.gz'
+        pdb_data.to_csv(tmp_path, sep='\t', index=False, compression='gzip')
+        tmp_path.replace(output_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return pdb_data
 
 
@@ -237,11 +249,8 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
         # Update the data if possible
         if update:
             _ = update_rcsb_data(root_folder, verbose=verbose)
-        # Set pystow root folder
-        IO._set_root_folder(root_folder)
-        papyrus_root = pystow.module('papyrus')
-        rcsb_data_path = papyrus_root.join('rcsb', name='RCSB_data.tsv.xz')
-        # Read the data mapping
+        # Read the mapping from where update_rcsb_data() wrote it
+        rcsb_data_path = papyrus_rcsb_data_root(root_folder).join('rcsb', name='RCSB_data.tsv.gz')
         rcsb_data = pl.read_csv(rcsb_data_path, separator='\t')
         if 'SMILES' in rcsb_data.columns:
             rcsb_data = rcsb_data.drop('SMILES')
@@ -266,7 +275,7 @@ def get_matches(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | PandasTextFil
 def _chunked_get_matches(chunks: PandasTextFileReader | Iterator, root_folder: str | Path | None, verbose: bool,
                          total: int | None) -> Generator[pd.DataFrame, None, None]:
     if verbose:
-        pbar = tqdm(chunks, total=total, ncols=100)
+        pbar = tqdm(chunks, total=total, ncols=notebook_safe_ncols(100))
     else:
         pbar = chunks
     for chunk in pbar:

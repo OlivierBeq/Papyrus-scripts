@@ -416,6 +416,52 @@ class TestPapyrusDatasetKeepOriginalFiles(unittest.TestCase):
             descriptor_set.aggregate()
         self.assertEqual(mock_download.call_args.kwargs['keep_xz'], True)
 
+    def test_structures_fallback_forwards_keep_original_files(self):
+        dataset, _ = self._run_init(keep_original_files=True)
+        with (
+            patch(
+                'src.papyrus_scripts.oop.reader.read_molecular_structures',
+                side_effect=[FileNotFoundError, pl.DataFrame({'connectivity': [], 'mol': []})],
+            ),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=0),
+            patch.object(PapyrusDataset, 'aggregate', return_value=pl.DataFrame({'connectivity': []})),
+        ):
+            dataset.molecules().aggregate()
+        self.assertEqual(mock_download.call_args.kwargs['keep_xz'], True)
+
+    def test_protein_descriptor_fallback_forwards_keep_original_files(self):
+        fake_version = MagicMock()
+        fake_version.pystow_path_key = '2022.04.2'
+        papyrus_params = dict(
+            is3d=False, version=fake_version, plusplus=True, chunksize=None,
+            source_path=None, download_progress=False,
+            keep_original_files=True, disk_margin=0.10,
+        )
+        proteins = pl.DataFrame({'target_id': ['P1', 'P2']})
+        protein_set = PapyrusProteinSet(proteins, papyrus_params, num_proteins=2)
+        with (
+            patch(
+                'src.papyrus_scripts.oop.reader.read_protein_descriptors',
+                side_effect=[FileNotFoundError, pl.DataFrame()],
+            ),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+        ):
+            protein_set.protein_descriptors('unirep')
+        self.assertEqual(mock_download.call_args.kwargs['keep_xz'], True)
+
+    def test_fpsubsim2_fallback_forwards_keep_original_files(self):
+        with patch('src.papyrus_scripts.oop.subsim_search.FPSubSim2'):
+            dataset = make_dataset()
+            dataset.papyrus_params['version'] = IO.PapyrusVersion('2022.04.2')
+            dataset.papyrus_params['keep_original_files'] = True
+            engine = dataset._fpsubsim2
+            engine.path = '/nonexistent_xyz/file.h5'
+            engine.fpsubsim2.create_from_papyrus.side_effect = [FileNotFoundError, None]
+            with patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download:
+                engine._ensure_loaded()
+            self.assertEqual(mock_download.call_args.kwargs['keep_xz'], True)
+
 
 class TestPapyrusDatasetDiskMargin(unittest.TestCase):
     """disk_margin must reach every download_papyrus() call the object API
@@ -672,6 +718,17 @@ class TestMoleculesAndMolecularDescriptorsAreLazy(unittest.TestCase):
             mock_download.assert_not_called()
         self.assertIsInstance(desc_set, PapyrusDescriptorSet)
         self.assertIsNone(desc_set.data)
+
+    def test_molecular_descriptors_rejects_invalid_desc_type_before_downloading(self):
+        """Invalid desc_type raises immediately, before any download starts."""
+        with (
+            patch('src.papyrus_scripts.oop.reader.read_molecular_descriptors') as mock_read,
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+        ):
+            with self.assertRaises(ValueError):
+                self.dataset.molecular_descriptors('rdkit')
+            mock_read.assert_not_called()
+            mock_download.assert_not_called()
 
     def test_molecules_aggregate_reads_without_downloading_on_a_cache_hit(self):
         mol_set = self.dataset.molecules()
@@ -1233,6 +1290,18 @@ class TestPapyrusMoleculeSetExtras(unittest.TestCase):
         desc_set = mol_set.molecular_descriptors('mold2')
         self.assertIsInstance(desc_set, PapyrusDescriptorSet)
         self.assertIn('mold2', dataset.papyrus_params['_source']._descriptor_types)
+
+    def test_molecular_descriptors_invalid_desc_type_not_registered_with_source(self):
+        with (
+            patch('src.papyrus_scripts.oop.IO.get_num_rows_in_file', return_value=1),
+            patch('src.papyrus_scripts.oop.reader.read_papyrus', return_value=pl.DataFrame()),
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()),
+        ):
+            dataset = PapyrusDataset(version='2022.04.2', download_progress=False)
+        mol_set = dataset.molecules()
+        with self.assertRaises(ValueError):
+            mol_set.molecular_descriptors('rdkit')
+        self.assertNotIn('rdkit', dataset.papyrus_params['_source']._descriptor_types)
 
 
 class TestPapyrusDescriptorSetExtras(unittest.TestCase):

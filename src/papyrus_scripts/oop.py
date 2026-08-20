@@ -81,10 +81,10 @@ _NOT_AVAILABLE_LOCALLY: tuple[type[Exception], ...] = (
 # A freshly-constructed PapyrusDataset must not download (or even check for)
 # its bioactivity/protein files until data is actually needed - not at
 # construction, and not when a filter (keep_quality, keep_accession, …) is
-# applied, only once aggregate()/agg()/consume_chunks()/to_dataframe() (or
-# an equivalent - .proteins(), .match_rcsb_pdb(), FPSubSim2-backed filters)
-# forces materialisation. Every filter method just wraps the *unresolved*
-# state in one more pending operation instead.
+# applied, only once aggregate() (or an alias, or an equivalent - .proteins(),
+# .match_rcsb_pdb(), FPSubSim2-backed filters) forces materialisation. Every
+# filter method just wraps the *unresolved* state in one more pending
+# operation instead.
 
 class _Deferred:
     """A value computed by *loader* the first time it's needed, then cached."""
@@ -226,9 +226,11 @@ class _PapyrusSource:
         bioactivity_data = reader.read_papyrus(
             is3d=self._is3d, version=self._pv, plusplus=self._plusplus,
             chunksize=self._chunksize, source_path=self._source_path,
+            keep_original_files=self._keep_original_files,
         )
         protein_data = reader.read_protein_set(
             source_path=self._source_path, version=self._pv,
+            keep_original_files=self._keep_original_files,
         )
         return num_rows, bioactivity_data, protein_data
 
@@ -314,8 +316,8 @@ class PapyrusDataset:
 
     Every filter method (``keep_*``, ``contains``, ``isin``, …) returns a new
     :class:`PapyrusDataset` whose data stream is lazily filtered.  Call
-    :meth:`aggregate` (or its aliases :meth:`agg`, :meth:`to_dataframe`,
-    :meth:`consume_chunks`) to materialise the result into a DataFrame.
+    :meth:`aggregate` (or an alias: :meth:`agg`, :meth:`collect`,
+    :meth:`to_dataframe`, :meth:`consume_chunks`) to materialise into a DataFrame.
     """
 
     papyrus_bioactivity_data: pd.DataFrame | pl.DataFrame | pl.LazyFrame | Iterator[pd.DataFrame] | _LazyBioactivity
@@ -367,9 +369,9 @@ class PapyrusDataset:
         )
 
         # Nothing is downloaded, converted, or even checked for here - only
-        # once aggregate()/agg()/consume_chunks()/to_dataframe() (or an
-        # equivalent - .proteins(), .match_rcsb_pdb(), a similarity-search
-        # filter, keep_protein_class()/keep_organism()) actually needs the
+        # once aggregate() (or an alias, or an equivalent - .proteins(),
+        # .match_rcsb_pdb(), a similarity-search filter,
+        # keep_protein_class()/keep_organism()) actually needs the
         # data does _PapyrusSource resolve it, downloading only the
         # bioactivity file matching (is3d, plusplus) plus the always-needed
         # protein-target file - not every stereo/++ combination, structures,
@@ -630,6 +632,27 @@ class PapyrusDataset:
     # Filters — molecular structure
     # ------------------------------------------------------------------
 
+    def create_fp_subsim_search(
+            self,
+            fp: Fingerprint | list[Fingerprint] | None = None,
+            path: str | Path | None = None,
+            progress: bool = True,
+            njobs: int = 1,
+            n_shards: int | None = None,
+            pattern_holder_bits: int = subsim_search.DEFAULT_PATTERN_HOLDER_BITS,
+            force: bool = False,
+    ) -> Path:
+        """Create the FPSubSim2 search database file.
+
+        Called automatically by the ``keep_*_molecules`` filters if the
+        file is missing. See :meth:`FPSubSim2Engine.create_fp_subsim_search`
+        for parameter details.
+        """
+        return self._fpsubsim2.create_fp_subsim_search(
+            fp=fp, path=path, progress=progress, njobs=njobs,
+            n_shards=n_shards, pattern_holder_bits=pattern_holder_bits, force=force,
+        )
+
     def keep_similar_molecules(
             self,
             smiles: str | list[str],
@@ -726,6 +749,10 @@ class PapyrusDataset:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
+    def collect(self, progress: bool = False) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
     # ------------------------------------------------------------------
     # Derived datasets
     # ------------------------------------------------------------------
@@ -804,15 +831,16 @@ class PapyrusDataset:
         downloaded first if not yet available locally.
 
         :param desc_type: descriptor set; one of ``'mold2'``, ``'mordred'``,
-            ``'cddd'``, ``'fingerprint'``, ``'moe'``, ``'all'``
+            ``'cddd'``, ``'fingerprint'``, ``'all'``
         :param progress: default ``progress`` for the returned set's
             :meth:`~PapyrusDescriptorSet.aggregate` when not overridden there
         :returns: a :class:`PapyrusDescriptorSet`
         """
+        descriptor_set = PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
         source = self.papyrus_params.get('_source')
         if source is not None:
             source.request_descriptors(desc_type)
-        return PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
+        return descriptor_set
 
     # ------------------------------------------------------------------
     # Administration
@@ -833,6 +861,66 @@ class PapyrusDataset:
             self.papyrus_bioactivity_data = _LazyBioactivity(loader=source.get_bioactivity)
             self.papyrus_protein_data = _Deferred(loader=source.get_proteins)
         return self._can_reset
+
+    def download(
+            self,
+            include_nostereo: bool = True,
+            include_stereo: bool = False,
+            include_structures: bool = False,
+            include_mold2: bool = True,
+            include_cddd: bool = True,
+            include_mordred: bool = True,
+            include_fingerprint: bool = True,
+            include_unirep: bool = True,
+            include_prodec: bool = True,
+            include_all: bool = False,
+    ) -> None:
+        """Download (and convert) Papyrus data for this dataset's version.
+
+        Wraps :func:`~download.download_papyrus`; version/outdir/progress/
+        disk_margin/keep_xz come from this dataset. ``only_pp=False`` always.
+
+        :param include_nostereo: download 2D data
+        :param include_stereo: download 3D data
+        :param include_structures: download molecule structures
+        :param include_mold2: download 2D Mold2 descriptors
+        :param include_cddd: download 2D CDDD descriptors
+        :param include_mordred: download Mordred descriptors
+        :param include_fingerprint: download fingerprint descriptors
+        :param include_unirep: download UniRep protein descriptors
+        :param include_prodec: download ProDEC protein descriptors
+        :param include_all: override all other ``include_*`` flags to True
+        """
+        if include_all:
+            include_nostereo = include_stereo = include_structures = True
+            include_mold2 = include_cddd = include_mordred = include_fingerprint = True
+            include_unirep = include_prodec = True
+        descriptors = []
+        if include_mold2:
+            descriptors.append('mold2')
+        if include_cddd:
+            descriptors.append('cddd')
+        if include_mordred:
+            descriptors.append('mordred')
+        if include_fingerprint:
+            descriptors.append('fingerprint')
+        if include_unirep:
+            descriptors.append('unirep')
+        if include_prodec:
+            descriptors.append('prodec')
+        pv = self.papyrus_params['version']
+        download.download_papyrus(
+            outdir=self.papyrus_params['source_path'],
+            version=pv.pystow_path_key,
+            nostereo=include_nostereo,
+            stereo=include_stereo,
+            only_pp=False,
+            structures=include_structures,
+            descriptors=descriptors,
+            progress=self.papyrus_params['download_progress'],
+            disk_margin=self.papyrus_params['disk_margin'],
+            keep_xz=self.papyrus_params['keep_original_files'],
+        )
 
     @staticmethod
     def remove(
@@ -1243,22 +1331,70 @@ class FPSubSim2Engine:
             )
         return path
 
-    def _ensure_loaded(self) -> None:
-        """Load or create the FPSubSim2 database as needed."""
-        if self.path is None:
-            self.path = self._resolve_path()
+    def create_fp_subsim_search(
+            self,
+            fp: Fingerprint | list[Fingerprint] | None = None,
+            path: str | Path | None = None,
+            progress: bool = True,
+            njobs: int = 1,
+            n_shards: int | None = None,
+            pattern_holder_bits: int = subsim_search.DEFAULT_PATTERN_HOLDER_BITS,
+            force: bool = False,
+    ) -> Path:
+        """Create the FPSubSim2 similarity/substructure search database file.
 
-        if Path(self.path).is_file():
-            self.fpsubsim2.load(fpsubsim_path=self.path)
-        else:
-            self.fpsubsim2.create_from_papyrus(
+        :param fp: fingerprint(s) to store (default: Morgan)
+        :param path: ``.h5`` output path; auto-derived when ``None``
+        :param progress: show progress bars (default ``True``)
+        :param njobs: worker processes (``-1`` = all cores, ``1`` = single-process)
+        :param n_shards: substructure shard count; single-process builds only
+            (raises :exc:`ValueError` if set with ``njobs > 1``)
+        :param pattern_holder_bits: ``PatternHolder`` prescreen size
+        :param force: rebuild even if the file already exists
+        :returns: path to the ``.h5`` file
+        """
+        if fp is not None:
+            self.fp = fp
+        if path is not None:
+            self.path = path
+        elif self.path is None:
+            self.path = self._resolve_path()
+        self.progress = progress
+
+        if force or not Path(self.path).is_file():
+            create_kwargs = dict(
                 is3d=self.papyrus_params['is3d'],
                 version=self.papyrus_params['version'],
                 outfile=self.path,
                 fingerprint=self.fp,
                 root_folder=self.papyrus_params['source_path'],
                 progress=self.progress,
+                njobs=njobs,
+                n_shards=n_shards,
+                pattern_holder_bits=pattern_holder_bits,
             )
+            try:
+                self.fpsubsim2.create_from_papyrus(**create_kwargs)
+            except _NOT_AVAILABLE_LOCALLY:
+                download.download_papyrus(
+                    outdir=self.papyrus_params['source_path'],
+                    version=self.papyrus_params['version'].pystow_path_key,  # not .version: must match the folder key
+                    nostereo=not self.papyrus_params['is3d'],
+                    stereo=self.papyrus_params['is3d'],
+                    only_pp=False,
+                    structures=True,
+                    descriptors=None,
+                    progress=self.papyrus_params['download_progress'],
+                    disk_margin=self.papyrus_params['disk_margin'],
+                    keep_xz=self.papyrus_params['keep_original_files'],
+                )
+                self.fpsubsim2.create_from_papyrus(**create_kwargs)
+        return Path(self.path)
+
+    def _ensure_loaded(self) -> None:
+        """Create the database if needed, then load it."""
+        self.create_fp_subsim_search()
+        self.fpsubsim2.load(fpsubsim_path=self.path)
 
     def _set_data(
             self,
@@ -1406,6 +1542,10 @@ class PapyrusMoleculeSet:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
+    def collect(self, progress: bool | None = None) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
     # ------------------------------------------------------------------
     # Descriptors
     # ------------------------------------------------------------------
@@ -1420,15 +1560,16 @@ class PapyrusMoleculeSet:
         Purely lazy: see :meth:`PapyrusDataset.molecular_descriptors`.
 
         :param desc_type: one of ``'mold2'``, ``'mordred'``, ``'cddd'``,
-            ``'fingerprint'``, ``'moe'``, ``'all'``
+            ``'fingerprint'``, ``'all'``
         :param progress: default ``progress`` for the returned set's
             :meth:`~PapyrusDescriptorSet.aggregate` when not overridden there
         :returns: a :class:`PapyrusDescriptorSet`
         """
+        descriptor_set = PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
         source = self.papyrus_params.get('_source')
         if source is not None:
             source.request_descriptors(desc_type)
-        return PapyrusDescriptorSet(self, desc_type=desc_type, progress=progress)
+        return descriptor_set
 
     # ------------------------------------------------------------------
     # Dunder
@@ -1465,6 +1606,11 @@ class PapyrusDescriptorSet:
             progress: bool = False,
     ) -> None:
         """Record *dataset* and *desc_type*; nothing is loaded until :meth:`aggregate`."""
+        if desc_type not in reader._VALID_DESC_TYPES:
+            raise ValueError(
+                f'desc_type must be one of {sorted(reader._VALID_DESC_TYPES)}, '
+                f'got {desc_type!r}',
+            )
         self._dataset = dataset
         self._desc_type = desc_type
         self._default_progress = progress
@@ -1484,6 +1630,7 @@ class PapyrusDescriptorSet:
             source_path=self.papyrus_params['source_path'],
             ids=ids,
             verbose=progress,
+            keep_original_files=self.papyrus_params['keep_original_files'],
         )
         try:
             self.data = reader.read_molecular_descriptors(**read_kwargs)
@@ -1528,6 +1675,10 @@ class PapyrusDescriptorSet:
         return self.aggregate(progress=progress)
 
     def to_dataframe(self, progress: bool | None = None) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
+    def collect(self, progress: bool | None = None) -> pl.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
@@ -1592,6 +1743,7 @@ class ProteinSet(ABC):
                 source_path=self.papyrus_params['source_path'],
                 ids=ids,
                 verbose=progress,
+                keep_original_files=self.papyrus_params['keep_original_files'],
             )
         except _NOT_AVAILABLE_LOCALLY:
             download.download_papyrus(
@@ -1656,6 +1808,10 @@ class PapyrusProteinSet(ProteinSet):
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 
+    def collect(self, progress: bool = False) -> pl.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
     # ------------------------------------------------------------------
     # Dunder
     # ------------------------------------------------------------------
@@ -1707,6 +1863,10 @@ class PapyrusPDBProteinSet(ProteinSet):
         return self.aggregate(progress=progress)
 
     def to_dataframe(self, progress: bool = False) -> pd.DataFrame:
+        """Alias for :meth:`aggregate`."""
+        return self.aggregate(progress=progress)
+
+    def collect(self, progress: bool = False) -> pd.DataFrame:
         """Alias for :meth:`aggregate`."""
         return self.aggregate(progress=progress)
 

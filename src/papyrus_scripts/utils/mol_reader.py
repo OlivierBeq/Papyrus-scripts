@@ -24,6 +24,8 @@ from rdkit.Chem import (
 )
 from tqdm.auto import tqdm
 
+from .IO import notebook_safe_ncols, widen_indeterminate_notebook_bar
+
 
 @contextmanager
 def suppress_rdkit_log() -> Generator[None]:
@@ -488,6 +490,7 @@ class MolSupplier:
             * ``total`` *(int, default None)* – total molecules for the
               progress bar
             * ``show_progress`` *(bool, default False)* – display a tqdm bar
+            * ``desc`` *(str, default None)* – progress bar description
         :raises ValueError: if neither or both of *source* / *supplier* are
             given, or if a file-like object is provided without *format*.
         """
@@ -498,6 +501,7 @@ class MolSupplier:
         self._iter_start    = kwargs.pop('start_id',      0)
         self._iter_total    = kwargs.pop('total',         None)
         self._iter_progress = kwargs.pop('show_progress', False)
+        self._iter_desc     = kwargs.pop('desc',           None)
         self._supplier_kwargs = kwargs
 
         self._owns_handle = False   # whether we opened the stream
@@ -656,16 +660,19 @@ class MolSupplier:
         start: int = 0,
         progress: bool = True,
         total: int | None = None,
+        desc: str | None = None,
     ) -> None:
         """Configure iteration behaviour after construction.
 
         :param start: starting molecule index (used in ``(mol_id, mol)`` pairs)
         :param progress: show a tqdm progress bar
         :param total: total number of molecules (for the progress bar)
+        :param desc: progress bar description
         """
         self._iter_start    = start
         self._iter_progress = progress
         self._iter_total    = total
+        self._iter_desc     = desc
 
     # ------------------------------------------------------------------
     # Core generator
@@ -682,7 +689,11 @@ class MolSupplier:
             raise RuntimeError('MolSupplier is closed.')
         enumerated = enumerate(self._inner_supplier, self._iter_start)
         if self._iter_progress:
-            enumerated = tqdm(enumerated, total=self._iter_total, ncols=100)
+            enumerated = tqdm(
+                enumerated, total=self._iter_total, desc=self._iter_desc,
+                ncols=notebook_safe_ncols(100),
+            )
+            widen_indeterminate_notebook_bar(enumerated)
 
         failed_ids: list[int] = []
         try:

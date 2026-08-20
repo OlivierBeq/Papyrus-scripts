@@ -779,6 +779,19 @@ class TestGetPapyrusLinksAndAliases(unittest.TestCase):
         self.assertEqual(result, {'fake': 'data'})
         self.assertEqual(self._links_path.read_text(), response.text)
 
+    def test_get_papyrus_links_online_write_failure_leaves_cache_untouched(self):
+        response = mock.MagicMock()
+        response.text = json.dumps({'fake': 'data'})
+        original = self._links_path.read_text()
+        with (
+            mock.patch.object(IO, 'new_session') as mock_new_session,
+            mock.patch.object(IO.Path, 'write_text', side_effect=OSError('disk full')),
+        ):
+            mock_new_session.return_value.get.return_value = response
+            with self.assertRaises(OSError):
+                IO.get_papyrus_links(offline=False)
+        self.assertEqual(self._links_path.read_text(), original)
+
     def test_get_papyrus_links_online_falls_back_on_request_error(self):
         import requests
         with mock.patch.object(IO, 'new_session') as mock_new_session:
@@ -1290,6 +1303,17 @@ class TestConvertXzToGz(unittest.TestCase):
         with gzip.open(dst, 'rb') as fh:
             self.assertEqual(fh.read(), b'hello')
 
+    def test_interruption_leaves_no_file_at_destination(self):
+        src = Path(self._tmpdir.name) / 'in4.tsv.xz'
+        with lzma.open(src, 'wb') as fh:
+            fh.write(b'hello')
+        dst = Path(self._tmpdir.name) / 'out4.tsv.gz'
+        with mock.patch.object(IO.gzip, 'open', side_effect=OSError('boom')):
+            with self.assertRaises(OSError):
+                IO.convert_xz_to_gz(src, dst)
+        self.assertFalse(dst.exists())
+        self.assertEqual(list(Path(self._tmpdir.name).glob('*.converting')), [])
+
 
 class TestConvertGzToXz(unittest.TestCase):
 
@@ -1325,6 +1349,17 @@ class TestConvertGzToXz(unittest.TestCase):
         IO.convert_gz_to_xz(src, dst, compression_level=None)
         with lzma.open(dst, 'rb') as fh:
             self.assertEqual(fh.read(), b'hello')
+
+    def test_interruption_leaves_no_file_at_destination(self):
+        src = Path(self._tmpdir.name) / 'in4.tsv.gz'
+        with gzip.open(src, 'wb') as fh:
+            fh.write(b'hello')
+        dst = Path(self._tmpdir.name) / 'out4.tsv.xz'
+        with mock.patch.object(IO.lzma, 'open', side_effect=OSError('boom')):
+            with self.assertRaises(OSError):
+                IO.convert_gz_to_xz(src, dst)
+        self.assertFalse(dst.exists())
+        self.assertEqual(list(Path(self._tmpdir.name).glob('*.converting')), [])
 
 
 if __name__ == '__main__':

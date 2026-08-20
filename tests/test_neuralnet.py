@@ -22,6 +22,8 @@ from src.papyrus_scripts.neuralnet import BaseNN
 TORCH_AVAILABLE = nn_mod.HAS_TORCH
 
 if TORCH_AVAILABLE:
+    from skorch.callbacks import Callback
+
     from src.papyrus_scripts.neuralnet import (
         MultiTaskNNClassifier,
         MultiTaskNNRegressor,
@@ -53,6 +55,84 @@ def setUpModule():
 def tearDownModule():
     if _mps_patcher is not None:
         _mps_patcher.stop()
+
+
+if TORCH_AVAILABLE:
+    class _LossRecorder(Callback):
+        """Records train_loss every epoch (net.history gets truncated on reload)."""
+
+        def __init__(self):
+            self.losses: list[float] = []
+
+        def on_epoch_end(self, net, **kwargs):
+            self.losses.append(net.history[-1, 'train_loss'])
+
+
+def _ill_conditioned_regression_data(n_train=160, n_valid=40, seed=0):
+    """Regression data: raw features span ~9 orders of magnitude, target stays small."""
+    rng = np.random.default_rng(seed)
+    n = n_train + n_valid
+    z = rng.standard_normal((n, 4))
+    y = z @ np.array([1.0, 1.0, 1.0, 1.0]) + rng.normal(0, 0.1, n)
+    scales = np.array([1.0, 1e4, 1e-3, 1e6])
+    offsets = np.array([0.0, 5e4, 2e-3, -3e6])
+    X = z * scales + offsets
+    return (pd.DataFrame(X[:n_train]), pd.Series(y[:n_train]),
+            pd.DataFrame(X[n_train:]), pd.Series(y[n_train:]))
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestFeatureScaling(unittest.TestCase):
+    """BaseNN standardizes inputs by default (see neuralnet.py's `scale` param)."""
+
+    def _fit_regressor(self, X, y, X_valid, y_valid, *, scale, tmpdir):
+        recorder = _LossRecorder()
+        reg = SingleTaskNNRegressor(tmpdir, epochs=60, early_stop=60, lr=0.01,
+                                    hidden_layers=[16, 8], scale=scale, random_seed=0, verbose=0)
+        reg.set_architecture(4)
+        reg.set_validation(X_valid, y_valid)
+        reg.callbacks.append(('loss_recorder', recorder))
+        reg.fit(X, y)
+        return reg, recorder.losses
+
+    def test_training_loss_decreases_when_features_are_scaled(self):
+        X, y, X_valid, y_valid = _ill_conditioned_regression_data()
+        with tempfile.TemporaryDirectory() as d:
+            _, losses = self._fit_regressor(X, y, X_valid, y_valid, scale=True, tmpdir=d)
+        self.assertLess(losses[-1], losses[0] * 0.9)
+
+    def test_unscaled_features_leave_loss_orders_of_magnitude_larger(self):
+        X, y, X_valid, y_valid = _ill_conditioned_regression_data()
+        with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:
+            _, scaled_losses = self._fit_regressor(X, y, X_valid, y_valid, scale=True, tmpdir=d1)
+            _, unscaled_losses = self._fit_regressor(X, y, X_valid, y_valid, scale=False, tmpdir=d2)
+        self.assertLess(scaled_losses[-1], unscaled_losses[-1] / 1e6)
+
+    def test_scaler_is_fit_on_training_data_only(self):
+        X, y, X_valid, y_valid = _ill_conditioned_regression_data()
+        with tempfile.TemporaryDirectory() as d:
+            reg, _ = self._fit_regressor(X, y, X_valid, y_valid, scale=True, tmpdir=d)
+        expected_mean = X.to_numpy(dtype='float32').mean(axis=0)
+        expected_scale = X.to_numpy(dtype='float32').std(axis=0)
+        np.testing.assert_allclose(reg.scaler_.mean_, expected_mean, rtol=1e-5)
+        np.testing.assert_allclose(reg.scaler_.scale_, expected_scale, rtol=1e-5)
+
+    def test_scale_false_disables_scaler(self):
+        X, y, X_valid, y_valid = _ill_conditioned_regression_data()
+        with tempfile.TemporaryDirectory() as d:
+            reg, _ = self._fit_regressor(X, y, X_valid, y_valid, scale=False, tmpdir=d)
+        self.assertIsNone(reg.scaler_)
+
+    def test_predict_applies_the_fitted_scaler(self):
+        X, y, X_valid, y_valid = _ill_conditioned_regression_data()
+        with tempfile.TemporaryDirectory() as d:
+            reg, _ = self._fit_regressor(X, y, X_valid, y_valid, scale=True, tmpdir=d)
+            X_scaled = reg.scaler_.transform(X_valid.to_numpy(dtype='float32')).astype('float32')
+            with nn_mod.torch.no_grad():
+                reg.module_.eval()
+                expected = reg.module_(nn_mod.torch.from_numpy(X_scaled)).numpy()
+            actual = reg.predict(X_valid)
+        np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-4)
 
 
 class TestPrepX(unittest.TestCase):
