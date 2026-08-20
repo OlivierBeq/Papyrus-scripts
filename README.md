@@ -45,6 +45,7 @@ Optional extras enable additional functionality:
 |---|---|
 | `papyrus-scripts[subsim]` | CPU similarity & substructure search (`tables`, `FPSim2`) |
 | `papyrus-scripts[gpu]` | GPU-accelerated similarity search (`cupy`) |
+| `papyrus-scripts[simgpu]` | CPU + GPU-accelerated similarity search (`subsim` + `gpu`) |
 | `papyrus-scripts[dnn]` | DNN model training (`torch`, `skorch`) |
 | `papyrus-scripts[all]` | Everything above |
 
