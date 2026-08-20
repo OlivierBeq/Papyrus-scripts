@@ -83,6 +83,20 @@ _SIZE_KEY_BY_FTYPE = {
     '3D_structures':   'structures_3D',
 }
 
+def _size_for_ftype(sizes: dict, ftype: str) -> int | None:
+    """Look up *ftype*'s row count in a parsed data_size.json, or ``None`` if absent.
+
+    Releases up to 2022.11.4 key papyrus++ as ``"papyrus++"``; 2024.09.1+
+    use ``"papyrus_++"`` (``_SIZE_KEY_BY_FTYPE['papyrus++']``) - try both.
+    """
+    key = _SIZE_KEY_BY_FTYPE.get(ftype)
+    if key in sizes:
+        return sizes[key]
+    if ftype == 'papyrus++' and 'papyrus++' in sizes:
+        return sizes['papyrus++']
+    return None
+
+
 #: Fixed progress-bar width (characters) for the download and conversion
 #: bars, so none of them grows to fill an entire wide terminal.
 _PBAR_NCOLS = 100
@@ -958,7 +972,7 @@ def download_papyrus(outdir: str | Path | None = None,
                                 # unless any is unknown (avoid understating it).
                                 if progress and converting_pbar is not None and to_convert_ftypes:
                                     per_file_rows = [
-                                        sizes.get(_SIZE_KEY_BY_FTYPE.get(ft))
+                                        _size_for_ftype(sizes, ft)
                                         for ft in to_convert_ftypes
                                     ]
                                     if all(n is not None for n in per_file_rows):
@@ -971,7 +985,7 @@ def download_papyrus(outdir: str | Path | None = None,
                             'parquet_path': parquet_path,
                             'schema_overrides': schemas.get(_SCHEMA_KEY_BY_FTYPE.get(ftype)),
                             'null_values': _NULL_VALUES_BY_FTYPE.get(ftype),
-                            'total_rows': sizes.get(_SIZE_KEY_BY_FTYPE.get(ftype)),
+                            'total_rows': _size_for_ftype(sizes, ftype),
                             # ftype (e.g. 'papyrus++', '2D_mold2') rather
                             # than fpath.name: the real filenames (e.g.
                             # '05.6++_combined_set_without_stereochemistry
