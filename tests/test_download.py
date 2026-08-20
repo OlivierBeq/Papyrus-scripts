@@ -32,6 +32,28 @@ def make_version(key):
     return pv
 
 
+class TestSizeForFtype(unittest.TestCase):
+    """Unit tests for download._size_for_ftype (papyrus++ key: "papyrus++" pre-2024.09.1, "papyrus_++" after)."""
+
+    def test_uses_the_mapped_key_when_present(self):
+        self.assertEqual(download._size_for_ftype({'papyrus_++': 42}, 'papyrus++'), 42)
+
+    def test_falls_back_to_the_legacy_unmapped_key(self):
+        self.assertEqual(download._size_for_ftype({'papyrus++': 42}, 'papyrus++'), 42)
+
+    def test_mapped_key_takes_priority_over_the_legacy_one(self):
+        self.assertEqual(
+            download._size_for_ftype({'papyrus_++': 42, 'papyrus++': 99}, 'papyrus++'), 42,
+        )
+
+    def test_other_ftypes_are_unaffected(self):
+        self.assertEqual(download._size_for_ftype({'papyrus_3D': 61085152}, '3D_papyrus'), 61085152)
+
+    def test_missing_key_returns_none(self):
+        self.assertIsNone(download._size_for_ftype({}, 'papyrus++'))
+        self.assertIsNone(download._size_for_ftype({}, '3D_papyrus'))
+
+
 class TestPrintBanner(unittest.TestCase):
     """Unit tests for download._print_banner, the boxed emoji-tagged notice
     used for the download banners (old-format-data notice, Papyrus++
@@ -748,6 +770,94 @@ class TestDownloadPapyrusSingleConvertingProgressBar(unittest.TestCase):
 
         download_calls = [c for c in self.tqdm_calls if 'Downloading version' in c.get('desc', '')]
         self.assertEqual(download_calls[0].get('position'), 0)
+
+
+class TestDownloadPapyrusConvertingBarTotalWithLegacyPlusPlusKey(unittest.TestCase):
+    """Regression test: pre-2024.09.1 data_size.json's "papyrus++" key used to
+    leave the aggregate 'Converting files' bar's total unset (stuck indeterminate).
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._old_pystow_home = os.environ.get('PYSTOW_HOME')
+        self.addCleanup(self._restore_pystow_home)
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+            zh.writestr('data_size.json', '{"papyrus++": 42, "papyrus_proteins": 7}')
+        zip_bytes = zip_buf.getvalue()
+
+        content_by_url = {
+            'https://example.org/readme': b'a readme',
+            'https://example.org/requirements': zip_bytes,
+            'https://example.org/proteins': b'fake-tsv-xz-proteins',
+            'https://example.org/papyruspp': b'fake-tsv-xz-papyruspp',
+        }
+        files = {
+            '2022.04.2': {
+                'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
+                           'size': 8, 'sha256': 'x'},
+                'requirements': {'name': '2022.04.2_additional_files.zip',
+                                 'url': 'https://example.org/requirements',
+                                 'size': len(zip_bytes), 'sha256': 'x'},
+                'proteins': {'name': '2022.04.2_combined_set_protein_targets.tsv.xz',
+                             'url': 'https://example.org/proteins',
+                             'size': 20, 'sha256': 'x'},
+                'papyrus++': {'name': '2022.04.2++_combined_set_without_stereochemistry.tsv.xz',
+                              'url': 'https://example.org/papyruspp',
+                              'size': 21, 'sha256': 'x'},
+            },
+        }
+
+        def fake_get(url, **kwargs):
+            return _FakeResponse(content_by_url[url])
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        self.tqdm_mocks: list[MagicMock] = []
+
+        def fake_tqdm(*args, **kwargs):
+            m = MagicMock()
+            m._kwargs = kwargs
+            self.tqdm_mocks.append(m)
+            return m
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_queue': patch(
+                'src.papyrus_scripts.download.mp.Queue', side_effect=lambda *a, **k: _FakeQueue(),
+            ),
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process', side_effect=_FakeProcess,
+            ),
+            'tqdm': patch('src.papyrus_scripts.download.tqdm', side_effect=fake_tqdm),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def _restore_pystow_home(self):
+        if self._old_pystow_home is None:
+            os.environ.pop('PYSTOW_HOME', None)
+        else:
+            os.environ['PYSTOW_HOME'] = self._old_pystow_home
+
+    def test_aggregate_total_uses_legacy_papyruspp_key(self):
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.04.2', progress=True)
+
+        converting_bar = next(m for m in self.tqdm_mocks if m._kwargs.get('desc') == 'Converting files')
+        converting_bar.reset.assert_called_once_with(total=49)
 
 
 class _SlowConsumerProcess:
