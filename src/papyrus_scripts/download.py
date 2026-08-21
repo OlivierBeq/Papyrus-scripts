@@ -807,7 +807,11 @@ def download_papyrus(outdir: str | Path | None = None,
                     _update_current_file_description()
 
         def _wait_for_converter() -> None:
-            """Block until the converter process exits, draining progress messages meanwhile."""
+            """Block until the converter process exits, draining progress messages meanwhile.
+
+            Does not close converting_pbar - callers do that via
+            _close_converting_pbar, once success/failure is known.
+            """
             # Only ever called once converter_process has been started (see call sites).
             if converter_process is None:  # noqa: B023
                 raise RuntimeError('converter_process not started')
@@ -815,8 +819,27 @@ def download_papyrus(outdir: str | Path | None = None,
                 _drain_progress_queue()
                 converter_process.join(timeout=0.1)  # noqa: B023
             _drain_progress_queue()
-            if converting_pbar is not None:  # noqa: B023
-                converting_pbar.close()  # noqa: B023
+
+        def _close_converting_pbar(success: bool) -> None:
+            """Close converting_pbar, topping it up to 100% first on success.
+
+            total is a naive line count that can exceed the true row count
+            (see convert_xz_to_parquet's docstring), so n often lands just
+            under total even on success - tqdm.notebook then marks the bar
+            'danger' (red) as if it had failed. Topping up avoids that;
+            skipped on failure, where n < total is a real signal.
+            """
+            if converting_pbar is None:  # noqa: B023
+                return
+            if (
+                success  # noqa: B023
+                and isinstance(converting_pbar.total, (int, float))  # noqa: B023
+                and isinstance(converting_pbar.n, (int, float))  # noqa: B023
+            ):
+                shortfall = converting_pbar.total - converting_pbar.n  # noqa: B023
+                if shortfall > 0:
+                    converting_pbar.update(shortfall)  # noqa: B023
+            converting_pbar.close()  # noqa: B023
 
         def _enqueue(item) -> None:
             """Put *item* on task_queue, staying responsive while backpressured.
@@ -1012,6 +1035,7 @@ def download_papyrus(outdir: str | Path | None = None,
                     raise RuntimeError('task_queue not created') from None
                 _enqueue(_CONVERSION_DONE)
                 _wait_for_converter()
+                _close_converting_pbar(success=False)
             if progress:
                 pbar.close()
             raise
@@ -1028,6 +1052,7 @@ def download_papyrus(outdir: str | Path | None = None,
             _enqueue(_CONVERSION_DONE)
             _wait_for_converter()
             error = error_queue.get()
+            _close_converting_pbar(success=error is None)
             if error is not None:
                 if progress:
                     pbar.close()
