@@ -290,7 +290,9 @@ def process_groups(
 
     if has_pchembl:
         pv     = pl.col('pchembl_value')
-        pv_num = pv.cast(pl.Float64)
+        # Raw values can carry padding (e.g. "  6.700") - strip before the
+        # strict numeric cast, which otherwise rejects it.
+        pv_num = pv.str.strip_chars().cast(pl.Float64)
         median = pv_num.median()
         n      = pv_num.drop_nulls().len()
         std    = pv_num.std()
