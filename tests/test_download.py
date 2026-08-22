@@ -860,6 +860,100 @@ class TestDownloadPapyrusConvertingBarTotalWithLegacyPlusPlusKey(unittest.TestCa
         converting_bar.reset.assert_called_once_with(total=49)
 
 
+class TestDownloadPapyrusConvertingBarTotalWithMissingRowCountOverride(unittest.TestCase):
+    """Regression test: a missing data_size.json row count (e.g. 'prodec' on
+    2022.11.x) used to leave the aggregate 'Converting files' bar's total
+    unset, even with every other file's count known. Covered by
+    _ROW_COUNT_OVERRIDE_BY_SHA256.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._old_pystow_home = os.environ.get('PYSTOW_HOME')
+        self.addCleanup(self._restore_pystow_home)
+
+        self._prodec_sha256 = next(iter(download._ROW_COUNT_OVERRIDE_BY_SHA256))
+        self._prodec_rows = download._ROW_COUNT_OVERRIDE_BY_SHA256[self._prodec_sha256]
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w') as zh:
+            zh.writestr('data_types.json', '{}')
+            # No 'prodec' key - matches the real 2022.11.x data_size.json.
+            zh.writestr('data_size.json', '{"papyrus_proteins": 7}')
+        zip_bytes = zip_buf.getvalue()
+
+        content_by_url = {
+            'https://example.org/readme': b'a readme',
+            'https://example.org/requirements': zip_bytes,
+            'https://example.org/proteins': b'fake-tsv-xz-proteins',
+            'https://example.org/prodec': b'fake-tsv-xz-prodec',
+        }
+        files = {
+            '2022.11.1': {
+                'readme': {'name': 'README.txt', 'url': 'https://example.org/readme',
+                           'size': 8, 'sha256': 'x'},
+                'requirements': {'name': '2022.11.1_additional_files.zip',
+                                 'url': 'https://example.org/requirements',
+                                 'size': len(zip_bytes), 'sha256': 'x'},
+                'proteins': {'name': '2022.11.1_combined_set_protein_targets.tsv.xz',
+                             'url': 'https://example.org/proteins',
+                             'size': 20, 'sha256': 'x'},
+                'proteins_prodec': {'name': '2022.11.1_combined_protdescs_ProDEC.tsv.xz',
+                                     'url': 'https://example.org/prodec',
+                                     'size': 21, 'sha256': self._prodec_sha256},
+            },
+        }
+
+        def fake_get(url, **kwargs):
+            return _FakeResponse(content_by_url[url])
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        self.tqdm_mocks: list[MagicMock] = []
+
+        def fake_tqdm(*args, **kwargs):
+            m = MagicMock()
+            m._kwargs = kwargs
+            self.tqdm_mocks.append(m)
+            return m
+
+        patches = {
+            'get_papyrus_links': patch(
+                'src.papyrus_scripts.download.get_papyrus_links', return_value=files,
+            ),
+            'new_session': patch(
+                'src.papyrus_scripts.download.new_session', return_value=fake_session,
+            ),
+            'assert_sha256sum': patch(
+                'src.papyrus_scripts.download.assert_sha256sum', return_value=True,
+            ),
+            'mp_queue': patch(
+                'src.papyrus_scripts.download.mp.Queue', side_effect=lambda *a, **k: _FakeQueue(),
+            ),
+            'mp_process': patch(
+                'src.papyrus_scripts.download.mp.Process', side_effect=_FakeProcess,
+            ),
+            'tqdm': patch('src.papyrus_scripts.download.tqdm', side_effect=fake_tqdm),
+        }
+        self.mocks = {name: p.start() for name, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def _restore_pystow_home(self):
+        if self._old_pystow_home is None:
+            os.environ.pop('PYSTOW_HOME', None)
+        else:
+            os.environ['PYSTOW_HOME'] = self._old_pystow_home
+
+    def test_aggregate_total_falls_back_to_sha256_override(self):
+        download.download_papyrus(outdir=self._tmpdir.name, version='2022.11.1', progress=True)
+
+        converting_bar = next(m for m in self.tqdm_mocks if m._kwargs.get('desc') == 'Converting files')
+        converting_bar.reset.assert_called_once_with(total=7 + self._prodec_rows)
+
+
 class _SlowConsumerProcess:
     """Stand-in for multiprocessing.Process: consumes task_queue on a
     background thread with an artificial per-task delay, so a real
