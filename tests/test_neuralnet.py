@@ -7,6 +7,7 @@ skorch wiring - not to check model quality. Skipped when the optional
 torch/skorch dependencies are not installed.
 """
 
+import functools
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,7 +49,11 @@ def setUpModule():
     # is unaffected by this module-wide override.
     global _mps_patcher
     if TORCH_AVAILABLE:
-        _mps_patcher = patch.object(nn_mod.torch.backends.mps, 'is_available', return_value=False)
+        # lru_cache-wrapped: dynamo reads __wrapped__, real is_available has it too.
+        _mps_patcher = patch.object(
+            nn_mod.torch.backends.mps, 'is_available',
+            new=functools.lru_cache(maxsize=None)(lambda: False),
+        )
         _mps_patcher.start()
 
 

@@ -38,7 +38,6 @@ try:
     # first import is unreachable otherwise (the first import raises first).
     from FPSim2.base import BaseEngine  # pragma: no cover
     from FPSim2.FPSim2 import FPSim2Engine
-    from FPSim2.FPSim2Cuda import FPSim2CudaEngine  # pragma: no cover
     from FPSim2.io.backends.base import BaseStorageBackend  # pragma: no cover
     from FPSim2.io.backends.pytables import (  # pragma: no cover
         BATCH_WRITE_SIZE,
@@ -60,10 +59,16 @@ except ImportError:
 
     class FPSim2Engine:  # type: ignore[no-redef]
         """Stub for FPSim2.FPSim2.FPSim2Engine when FPSim2 is absent."""
-
-    class FPSim2CudaEngine:  # type: ignore[no-redef]
-        """Stub for FPSim2.FPSim2Cuda.FPSim2CudaEngine when FPSim2 is absent."""
     BATCH_WRITE_SIZE = 32_000  # FPSim2's own default; only used for queue sizing here
+
+try:
+    # FPSim2.FPSim2Cuda unconditionally imports cupy, so this is kept
+    # separate from HAS_FPSIM2 above: a missing GPU stack must not disable
+    # CPU-only search.
+    from FPSim2.FPSim2Cuda import FPSim2CudaEngine  # pragma: no cover
+except ImportError:
+    class FPSim2CudaEngine:  # type: ignore[no-redef]
+        """Stub for FPSim2.FPSim2Cuda.FPSim2CudaEngine when cupy is absent."""
 
 from .fingerprint import Fingerprint, MorganFingerprint, get_fp_from_name
 from .utils.IO import PapyrusVersion, _prefer_parquet, _set_root_folder, get_num_rows_in_file, locate_file
