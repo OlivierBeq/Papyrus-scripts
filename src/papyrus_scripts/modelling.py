@@ -377,7 +377,9 @@ def _fit_and_evaluate(data: pd.DataFrame,
         crossvalidate_model's per-fold-plus-"Full model" dict
     """
     if split_by.lower() == 'year':
-        test_set = data[data['Year'] >= split_year]
+        # 'Year' may come in as string/object dtype
+        years = pd.to_numeric(data['Year'], errors='coerce')
+        test_set = data[years >= split_year]
         if test_set.empty:
             raise _InsufficientDataError(f'No test data for temporal split at {split_year}')
         training_set = data[~data.index.isin(test_set.index)]
