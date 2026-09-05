@@ -452,6 +452,10 @@ def _fit_and_evaluate(data: pd.DataFrame,
                                random_state=random_state).to_pandas()
         test_set.index = test_index
     # Make sure enough data
+    # (applies to every split_by mode, not just 'year')
+    if training_set.shape[0] < folds:
+        raise _InsufficientDataError(
+            f'Not enough training data ({training_set.shape[0]} rows) for {folds} folds')
     if model_type == 'classifier':
         train_data_classes = Counter(training_set[endpoint])
         if not np.all(np.array(list(train_data_classes.values())) > folds):
