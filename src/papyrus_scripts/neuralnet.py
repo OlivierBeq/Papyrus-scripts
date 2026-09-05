@@ -305,6 +305,7 @@ class SingleTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else 
 
     def __init__(self, *args, **kwargs) -> None:
         """Neural Network regressor to predict a unique endpoint."""
+        _require_torch()
         super().__init__(*args, criterion=nn.MSELoss, **kwargs)
 
     def set_architecture(self, n_dim: int) -> None:
@@ -320,6 +321,7 @@ class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else
 
     def __init__(self, *args, **kwargs) -> None:
         """Neural Network classifier to predict multiple endpoints."""
+        _require_torch()
         # Raw logits + BCEWithLogitsLoss (see SingleTaskNNClassifier for why);
         # probabilities are produced post-hoc via predict_nonlinearity.
         super().__init__(*args, criterion=nn.BCEWithLogitsLoss, **kwargs)
@@ -355,6 +357,7 @@ class MultiTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else o
 
     def __init__(self, *args, **kwargs) -> None:
         """Neural Network regressor to predict multiple endpoints."""
+        _require_torch()
         super().__init__(*args, criterion=nn.MSELoss, **kwargs)
 
     def set_architecture(self, n_dim: int, n_task: int) -> None:
