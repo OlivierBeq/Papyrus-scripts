@@ -25,6 +25,7 @@ try:
     from skorch.callbacks import Checkpoint, EarlyStopping, LRScheduler
     from skorch.dataset import Dataset as SkorchDataset
     from skorch.helper import predefined_split
+    from skorch.utils import to_tensor
     from torch import nn
     HAS_TORCH = True
 except ImportError:  # pragma: no cover - exercised only when torch/skorch aren't installed
@@ -316,15 +317,28 @@ class SingleTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else 
         self._dims = [n_dim, *self.hidden_layers, 1]
 
 
-class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else object):  # type: ignore[misc]
-    """Neural Network classifier to predict multiple (independent, binary) endpoints."""
+class _MaskedMultiTaskLoss:
+    """Mixin: excludes ``NaN`` targets from the loss, so sparse multi-task rows need no imputation."""
+
+    def get_loss(self, y_pred, y_true, X=None, training=False):
+        """Mean loss over non-``NaN`` targets; requires criterion(reduction='none')."""
+        y_true = to_tensor(y_true, device=self.device)
+        mask = ~torch.isnan(y_true)
+        if isinstance(self.criterion_, torch.nn.Module):
+            self.criterion_.train(training)
+        elementwise = self.criterion_(y_pred, torch.where(mask, y_true, torch.zeros_like(y_true)))
+        return (elementwise * mask).sum() / mask.sum().clamp(min=1)
+
+
+class MultiTaskNNClassifier(_MaskedMultiTaskLoss, BaseNN,
+                             skorch.NeuralNetClassifier if HAS_TORCH else object):  # type: ignore[misc]
+    """Neural Network classifier to predict multiple (independent, binary) endpoints; supports ``NaN`` labels."""
 
     def __init__(self, *args, **kwargs) -> None:
         """Neural Network classifier to predict multiple endpoints."""
         _require_torch()
-        # Raw logits + BCEWithLogitsLoss (see SingleTaskNNClassifier for why);
-        # probabilities are produced post-hoc via predict_nonlinearity.
-        super().__init__(*args, criterion=nn.BCEWithLogitsLoss, **kwargs)
+        # Raw logits + BCEWithLogitsLoss (see SingleTaskNNClassifier); reduction='none' for masking.
+        super().__init__(*args, criterion=nn.BCEWithLogitsLoss, criterion__reduction='none', **kwargs)
         self.predict_nonlinearity = torch.sigmoid
 
     def set_architecture(self, n_dim: int, n_task: int) -> None:
@@ -352,13 +366,14 @@ class MultiTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH else
         return np.round(self.predict_proba(X))
 
 
-class MultiTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else object):  # type: ignore[misc]
-    """Neural Network regressor to predict multiple endpoints."""
+class MultiTaskNNRegressor(_MaskedMultiTaskLoss, BaseNN,
+                            skorch.NeuralNetRegressor if HAS_TORCH else object):  # type: ignore[misc]
+    """Neural Network regressor to predict multiple endpoints; supports ``NaN`` targets."""
 
     def __init__(self, *args, **kwargs) -> None:
         """Neural Network regressor to predict multiple endpoints."""
         _require_torch()
-        super().__init__(*args, criterion=nn.MSELoss, **kwargs)
+        super().__init__(*args, criterion=nn.MSELoss, criterion__reduction='none', **kwargs)  # 'none' for masking
 
     def set_architecture(self, n_dim: int, n_task: int) -> None:
         """Set dimension of input and number of tasks to be predicted.

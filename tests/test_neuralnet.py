@@ -474,5 +474,73 @@ class TestMultiTaskNN(unittest.TestCase):
                 reg.set_architecture(4, 1)
 
 
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestMultiTaskMaskedLoss(unittest.TestCase):
+    """Multi-task data is rarely dense - NaN targets must be excluded from the loss, not crash it."""
+
+    def test_criterion_reduction_is_none(self):
+        # _MaskedMultiTaskLoss.get_loss needs an unreduced, per-element loss to mask.
+        with tempfile.TemporaryDirectory() as d:
+            reg = MultiTaskNNRegressor(d, epochs=2)
+            clf = MultiTaskNNClassifier(d, epochs=2)
+        self.assertEqual(reg.criterion__reduction, 'none')
+        self.assertEqual(clf.criterion__reduction, 'none')
+
+    def test_regressor_loss_ignores_nan_targets(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg = MultiTaskNNRegressor(d, epochs=1)
+            reg.set_architecture(4, 3)
+            reg.initialize()
+            y_pred = nn_mod.torch.tensor([[1.0, 2.0, 3.0]])
+            y_true = nn_mod.torch.tensor([[1.0, float('nan'), 5.0]])
+            loss = reg.get_loss(y_pred, y_true.numpy())
+        # column 1 (NaN) excluded: mean((1-1)**2, (3-5)**2) = 2.0
+        self.assertAlmostEqual(loss.item(), 2.0, places=5)
+
+    def test_all_nan_batch_does_not_raise_or_produce_nan_loss(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg = MultiTaskNNRegressor(d, epochs=1)
+            reg.set_architecture(4, 3)
+            reg.initialize()
+            y_pred = nn_mod.torch.zeros((2, 3))
+            y_true = nn_mod.torch.full((2, 3), float('nan'))
+            loss = reg.get_loss(y_pred, y_true.numpy())
+        self.assertEqual(loss.item(), 0.0)
+
+    def test_regressor_fits_with_sparse_targets(self):
+        rng = _rng()
+        X = pd.DataFrame(rng.random((40, 4)))
+        y = pd.DataFrame(rng.random((40, 3)))
+        y.iloc[::2, 1] = np.nan  # half of task 1's labels missing
+        X_valid = pd.DataFrame(rng.random((10, 4)))
+        y_valid = pd.DataFrame(rng.random((10, 3)))
+        y_valid.iloc[::3, 0] = np.nan
+        with tempfile.TemporaryDirectory() as d:
+            reg = MultiTaskNNRegressor(d, epochs=2, early_stop=2, lr=0.01, hidden_layers=[8, 4])
+            reg.set_architecture(4, 3)
+            reg.set_validation(X_valid, y_valid)
+            reg.fit(X, y)
+            preds = reg.predict(X)
+        self.assertEqual(preds.shape, (40, 3))
+        self.assertFalse(np.isnan(preds).any())
+
+    def test_classifier_fits_with_sparse_targets(self):
+        rng = _rng()
+        X = pd.DataFrame(rng.random((40, 4)))
+        y = pd.DataFrame(rng.integers(0, 2, (40, 3)).astype(float))
+        y.iloc[::2, 1] = np.nan
+        X_valid = pd.DataFrame(rng.random((10, 4)))
+        y_valid = pd.DataFrame(rng.integers(0, 2, (10, 3)).astype(float))
+        y_valid.iloc[::3, 0] = np.nan
+        with tempfile.TemporaryDirectory() as d:
+            clf = MultiTaskNNClassifier(d, epochs=2, early_stop=2, lr=0.01, hidden_layers=[8, 4])
+            clf.set_architecture(4, 3)
+            clf.set_validation(X_valid, y_valid)
+            clf.fit(X, y)
+            preds = clf.predict(X)
+        self.assertEqual(preds.shape, (40, 3))
+        self.assertTrue(set(np.unique(preds)).issubset({0.0, 1.0}))
+
+
 if __name__ == '__main__':
     unittest.main()
