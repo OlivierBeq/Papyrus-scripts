@@ -140,7 +140,8 @@ class TestPapyrusDataset(unittest.TestCase):
             ['Adenosine receptor'],
         )
         self.assertEqual(oop_data_agg['type_IC50'].cast(pl.Int64).unique().to_list(), [1])
-        oop_data_proteins = (PapyrusDataset.from_dataframe(oop_data_agg, self.stereo, self.version, self.plusplus)
+        oop_data_proteins = (PapyrusDataset.from_dataframe(oop_data_agg, self.stereo, self.version, self.plusplus,
+                                                            source_path=SOURCE_PATH)
                              .proteins(progress=True)
                              .to_dataframe(False))
         self.assertEqual(len(oop_data_agg['accession'].unique()), len(oop_data_proteins))
@@ -193,7 +194,8 @@ class TestPapyrusDataset(unittest.TestCase):
         )
         for accession in oop_data_agg['accession'].unique():
             self.assertNotIn(accession, ['P13500', 'P13501'])
-        oop_data_proteins = (PapyrusDataset.from_dataframe(oop_data_agg, self.stereo, self.version, self.plusplus)
+        oop_data_proteins = (PapyrusDataset.from_dataframe(oop_data_agg, self.stereo, self.version, self.plusplus,
+                                                            source_path=SOURCE_PATH)
                              .proteins(progress=True)
                              .to_dataframe(False))
         self.assertEqual(oop_data_proteins['Organism'].unique().to_list(), ['Mus musculus (Mouse)'])
