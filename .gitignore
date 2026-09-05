@@ -136,3 +136,8 @@ dmypy.json
 
 # Downloaded/cached test fixtures (see tests/test_modelling_real_data.py)
 tests/fixtures/*.txt.xz
+
+# Output files produced by running notebook_examples/*.ipynb
+dnn_checkpoints/
+filtered_activities.csv
+filtered_activities.parquet
