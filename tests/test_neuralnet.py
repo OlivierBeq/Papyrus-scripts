@@ -186,6 +186,94 @@ class TestDefaultDevice(unittest.TestCase):
 
 
 @unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestDeviceOverride(unittest.TestCase):
+    """Regression: passing device= used to collide with the hardcoded default."""
+
+    def test_explicit_device_kwarg_is_not_swallowed(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2, device='cpu')
+        self.assertEqual(reg.device, 'cpu')
+
+    def test_omitting_device_still_defaults_via_default_device(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2)
+        self.assertEqual(reg.device, nn_mod._default_device())
+
+    @unittest.skipIf(nn_mod.torch.cuda.is_available(), 'meaningful only when no GPU is present')
+    def test_requesting_cuda_when_unavailable_raises_at_fit(self):
+        # must fail loudly at fit(), not silently fall back to CPU
+        rng = _rng()
+        X, y = pd.DataFrame(rng.random((12, 4))), pd.Series(rng.random(12))
+        X_valid, y_valid = pd.DataFrame(rng.random((4, 4))), pd.Series(rng.random(4))
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2, early_stop=2, hidden_layers=[4],
+                                        device='cuda', verbose=0)
+            reg.set_architecture(4)
+            reg.set_validation(X_valid, y_valid)
+            with self.assertRaises((RuntimeError, AssertionError)):
+                reg.fit(X, y)
+
+    @unittest.skipIf(nn_mod.torch.cuda.is_available(), 'meaningful only when no GPU is present')
+    def test_set_params_cuda_after_construction_raises_at_fit(self):
+        rng = _rng()
+        X, y = pd.DataFrame(rng.random((12, 4))), pd.Series(rng.random(12))
+        X_valid, y_valid = pd.DataFrame(rng.random((4, 4))), pd.Series(rng.random(4))
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2, early_stop=2, hidden_layers=[4], verbose=0)
+            reg.set_params(device='cuda')
+            reg.set_architecture(4)
+            reg.set_validation(X_valid, y_valid)
+            with self.assertRaises((RuntimeError, AssertionError)):
+                reg.fit(X, y)
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestBatchSize(unittest.TestCase):
+
+    def _fit(self, *, batch_size, n_train, tmpdir):
+        rng = _rng()
+        X = pd.DataFrame(rng.random((n_train, 4)))
+        y = pd.Series(rng.random(n_train))
+        X_valid = pd.DataFrame(rng.random((4, 4)))
+        y_valid = pd.Series(rng.random(4))
+        reg = SingleTaskNNRegressor(tmpdir, epochs=2, early_stop=2, hidden_layers=[4],
+                                    batch_size=batch_size, verbose=0)
+        reg.set_architecture(4)
+        reg.set_validation(X_valid, y_valid)
+        reg.fit(X, y)
+        return reg, X
+
+    def test_batch_size_of_one_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg, X = self._fit(batch_size=1, n_train=8, tmpdir=d)
+        self.assertEqual(reg.predict(X).shape, (8, 1))
+
+    def test_batch_size_larger_than_training_set_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg, X = self._fit(batch_size=1024, n_train=8, tmpdir=d)
+        self.assertEqual(reg.predict(X).shape, (8, 1))
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestTinyTrainingSet(unittest.TestCase):
+
+    def test_two_training_and_two_validation_samples_does_not_raise(self):
+        rng = _rng()
+        X = pd.DataFrame(rng.random((2, 4)))
+        y = pd.Series(rng.random(2))
+        X_valid = pd.DataFrame(rng.random((2, 4)))
+        y_valid = pd.Series(rng.random(2))
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2, early_stop=2, batch_size=1,
+                                        hidden_layers=[4], verbose=0)
+            reg.set_architecture(4)
+            reg.set_validation(X_valid, y_valid)
+            reg.fit(X, y)
+            preds = reg.predict(X)
+        self.assertEqual(preds.shape, (2, 1))
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
 class TestSetSeed(unittest.TestCase):
 
     def test_none_seed_is_a_no_op(self):

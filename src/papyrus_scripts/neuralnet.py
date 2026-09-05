@@ -151,6 +151,7 @@ class BaseNN:
         # subclass (see SingleTaskNNClassifier etc.), which supplies the
         # rest of this __init__ signature and the fit/predict_proba/
         # initialize members used below - invisible to mypy from here.
+        kwargs.setdefault('device', _default_device())  # allow overriding via device= kwarg
         super().__init__(  # type: ignore[call-arg]
             module=_MLP,
             optimizer=torch.optim.Adam,
@@ -160,7 +161,6 @@ class BaseNN:
             callbacks=callbacks,
             callbacks__valid_acc=None,  # replaced by our own early-stopping/checkpoint logic
             predict_nonlinearity=None,  # real value set per-subclass, see set_architecture()/__init__
-            device=_default_device(),
             train_split=None,  # require an explicit validation set, see set_validation()
             **kwargs,
         )
