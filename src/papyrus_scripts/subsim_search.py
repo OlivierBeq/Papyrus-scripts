@@ -27,6 +27,8 @@ from rdkit import Chem
 from rdkit.Chem.rdSubstructLibrary import CachedSmilesMolHolder, PatternHolder, SubstructLibrary
 from tqdm.auto import tqdm
 
+from .fingerprint import Fingerprint, MorganFingerprint, _suppress_missing_cuda_path_warning, get_fp_from_name
+
 try:
     import tables as tb
     HAS_TABLES = True  # pragma: no cover - exercised only with pytables installed
@@ -36,15 +38,16 @@ except ImportError:
 try:
     # This whole block only runs with FPSim2 installed; every line below the
     # first import is unreachable otherwise (the first import raises first).
-    from FPSim2.base import BaseEngine  # pragma: no cover
-    from FPSim2.FPSim2 import FPSim2Engine
-    from FPSim2.io.backends.base import BaseStorageBackend  # pragma: no cover
-    from FPSim2.io.backends.pytables import (  # pragma: no cover
-        BATCH_WRITE_SIZE,
-        calc_popcnt_bins_pytables,
-        create_schema,
-    )
-    from FPSim2.io.chem import load_molecule  # pragma: no cover
+    with _suppress_missing_cuda_path_warning():
+        from FPSim2.base import BaseEngine  # pragma: no cover
+        from FPSim2.FPSim2 import FPSim2Engine
+        from FPSim2.io.backends.base import BaseStorageBackend  # pragma: no cover
+        from FPSim2.io.backends.pytables import (  # pragma: no cover
+            BATCH_WRITE_SIZE,
+            calc_popcnt_bins_pytables,
+            create_schema,
+        )
+        from FPSim2.io.chem import load_molecule  # pragma: no cover
     HAS_FPSIM2 = True  # pragma: no cover
 except ImportError:
     HAS_FPSIM2 = False
@@ -65,12 +68,12 @@ try:
     # FPSim2.FPSim2Cuda unconditionally imports cupy, so this is kept
     # separate from HAS_FPSIM2 above: a missing GPU stack must not disable
     # CPU-only search.
-    from FPSim2.FPSim2Cuda import FPSim2CudaEngine  # pragma: no cover
+    with _suppress_missing_cuda_path_warning():
+        from FPSim2.FPSim2Cuda import FPSim2CudaEngine  # pragma: no cover
 except ImportError:
     class FPSim2CudaEngine:  # type: ignore[no-redef]
         """Stub for FPSim2.FPSim2Cuda.FPSim2CudaEngine when cupy is absent."""
 
-from .fingerprint import Fingerprint, MorganFingerprint, get_fp_from_name
 from .utils.IO import PapyrusVersion, _prefer_parquet, _set_root_folder, get_num_rows_in_file, locate_file
 from .utils.mol_reader import MolSupplier
 
