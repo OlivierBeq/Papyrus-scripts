@@ -765,12 +765,12 @@ def keep_protein_class(
             mask = mask | sub_mask
 
     matched = protein_data.filter(mask).select(['target_id', 'Classification'])
-    target_ids = matched['target_id']
     target_df: pl.DataFrame | pl.LazyFrame = matched
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         target_df = target_df.lazy()
-    return _safe_join(data.filter(pl.col('target_id').is_in(target_ids.implode())), target_df, on='target_id')
+    filtered = _safe_join(data, target_df.select('target_id'), on='target_id', how='semi')
+    return _safe_join(filtered, target_df, on='target_id')
 
 
 def keep_organism(
@@ -806,16 +806,12 @@ def keep_organism(
         mask = org_col.is_in([o.lower() for o in organism])
 
     matched = protein_data.filter(mask).select(['target_id', 'Organism'])
-    matched_target_ids = matched['target_id']
     organism_df: pl.DataFrame | pl.LazyFrame = matched
     # A LazyFrame can only be joined against another LazyFrame.
     if isinstance(data, pl.LazyFrame):
         organism_df = organism_df.lazy()
-    return _safe_join(
-        data.filter(pl.col('target_id').is_in(matched_target_ids.implode())),
-        organism_df,
-        on='target_id',
-    )
+    filtered = _safe_join(data, organism_df.select('target_id'), on='target_id', how='semi')
+    return _safe_join(filtered, organism_df, on='target_id')
 
 
 def keep_match(
