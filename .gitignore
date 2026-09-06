@@ -141,3 +141,4 @@ tests/fixtures/*.txt.xz
 dnn_checkpoints/
 filtered_activities.csv
 filtered_activities.parquet
+Papyrus_*_FPSubSim2_*.h5
