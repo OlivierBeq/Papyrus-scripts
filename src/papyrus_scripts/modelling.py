@@ -497,6 +497,28 @@ def _fit_and_evaluate(data: pd.DataFrame,
     return performance, return_val, cv_models
 
 
+def _narrow_and_materialize(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
+                            endpoint: str) -> tuple[pd.DataFrame, str]:
+    """Select the columns ``qsar()``/``pcm()`` need, then materialize to pandas.
+
+    Pruning before collect() lets polars push the projection into the scan.
+
+    :param data: Papyrus activity data
+    :param endpoint: value to be predicted or to derive classes from
+    :return: the pandas DataFrame and the resolved merge-on column name
+    """
+    if isinstance(data, pd.DataFrame):
+        merge_on = 'connectivity' if 'connectivity' in data.columns else 'InChIKey'
+        return data, merge_on
+    columns = data.collect_schema().names() if isinstance(data, pl.LazyFrame) else data.columns
+    merge_on = 'connectivity' if 'connectivity' in columns else 'InChIKey'
+    needed = [c for c in (merge_on, 'target_id', endpoint, 'Year', 'relation', 'Activity_class') if c in columns]
+    data = data.select(needed)
+    if isinstance(data, pl.LazyFrame):
+        data = data.collect()
+    return data.to_pandas(), merge_on
+
+
 def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
          endpoint: str = 'pchembl_value_Mean',
          num_points: int = 30,
@@ -529,8 +551,8 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     data quality, minimum number of datapoints and minimum activity
     amplitude requirements.
 
-    :param data: Papyrus activity data; a ``pl.DataFrame``/``pl.LazyFrame``
-        is materialised into a pandas DataFrame immediately (not lazily)
+    :param data: Papyrus activity data; a ``pl.DataFrame``/``pl.LazyFrame`` is
+        narrowed to the needed columns then materialised into pandas
     :param endpoint: value to be predicted or to derive classes from
     :param num_points: minimum number of points for the activity of a target to be modelled
     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
@@ -578,10 +600,7 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         model = xgboost.XGBRegressor(verbosity=0)
     if scale_method is None:
         scale_method = StandardScaler()
-    if isinstance(data, pl.LazyFrame):
-        data = data.collect()
-    if isinstance(data, pl.DataFrame):
-        data = data.to_pandas()
+    data, merge_on = _narrow_and_materialize(data, endpoint)
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster',"
                          "'custom-cluster', 'custom'}")
@@ -596,7 +615,6 @@ def qsar(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         warnings.filterwarnings("ignore", category=UserWarning)
     model_type = 'regressor' if isinstance(model, RegressorMixin) else 'classifier'
     # Keep only required fields
-    merge_on = 'connectivity' if 'connectivity' in data.columns else 'InChIKey'
     if model_type == 'regressor':
         features_to_ignore = [merge_on, 'target_id', endpoint, 'Year']
         data = data[data['relation'] == '='][features_to_ignore]
@@ -786,8 +804,8 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
     number of datapoints and minimum activity amplitude requirements before
     fitting.
 
-    :param data: Papyrus activity data; a ``pl.DataFrame``/``pl.LazyFrame``
-        is materialised into a pandas DataFrame immediately (not lazily)
+    :param data: Papyrus activity data; a ``pl.DataFrame``/``pl.LazyFrame`` is
+        narrowed to the needed columns then materialised into pandas
     :param endpoint: value to be predicted or to derive classes from
     :param num_points: minimum number of points for the activity of a target to be modelled
     :param delta_activity: minimum difference between most and least active compounds for a target to be modelled
@@ -840,10 +858,7 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         model = xgboost.XGBRegressor(verbosity=0)
     if scale_method is None:
         scale_method = StandardScaler()
-    if isinstance(data, pl.LazyFrame):
-        data = data.collect()
-    if isinstance(data, pl.DataFrame):
-        data = data.to_pandas()
+    data, merge_on = _narrow_and_materialize(data, endpoint)
     if split_by.lower() not in ['year', 'random', 'cluster', 'custom-cluster', 'custom']:
         raise ValueError("split not supported, must be one of {'Year', 'random', 'cluster', "
                          "'custom-cluster', 'custom'}")
@@ -858,7 +873,6 @@ def pcm(data: pd.DataFrame | pl.DataFrame | pl.LazyFrame,
         warnings.filterwarnings("ignore", category=UserWarning)
     model_type = 'regressor' if isinstance(model, RegressorMixin) else 'classifier'
     # Keep only required fields
-    merge_on = 'connectivity' if 'connectivity' in data.columns else 'InChIKey'
     if model_type == 'regressor':
         features_to_ignore = [merge_on, 'target_id', endpoint, 'Year']
         data = data[data['relation'] == '='][features_to_ignore]
