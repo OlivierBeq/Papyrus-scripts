@@ -104,7 +104,8 @@ class BaseNN:
     def __init__(self, out: str | Path, epochs: int = 100, lr: float = 1e-3,
                  early_stop: int = 100, batch_size: int = 1024, dropout: float = 0.25,
                  hidden_layers: list[int] | None = None,
-                 random_seed: int | None = None, scale: bool = True, **kwargs) -> None:
+                 random_seed: int | None = None, scale: bool = True,
+                 *, device: str | None = None, **kwargs) -> None:
         """Configure the estimator.
 
         :param out: output folder for checkpoints (best weights, optimizer
@@ -122,6 +123,7 @@ class BaseNN:
         :param scale: standardize input features; fit on the training set
             only and reused for validation/inference. Defaults to ``True``,
             as unscaled features hurt convergence.
+        :param device: compute device (``'cpu'``, ``'cuda'``, ``'mps'``); auto-detected when omitted
         """
         _require_torch()
         self.out = Path(out)
@@ -152,7 +154,7 @@ class BaseNN:
         # subclass (see SingleTaskNNClassifier etc.), which supplies the
         # rest of this __init__ signature and the fit/predict_proba/
         # initialize members used below - invisible to mypy from here.
-        kwargs.setdefault('device', _default_device())  # allow overriding via device= kwarg
+        kwargs.setdefault('device', device if device is not None else _default_device())
         super().__init__(  # type: ignore[call-arg]
             module=_MLP,
             optimizer=torch.optim.Adam,
@@ -304,10 +306,10 @@ class SingleTaskNNClassifier(BaseNN, skorch.NeuralNetClassifier if HAS_TORCH els
 class SingleTaskNNRegressor(BaseNN, skorch.NeuralNetRegressor if HAS_TORCH else object):  # type: ignore[misc]
     """Neural Network regressor to predict a unique endpoint."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, device: str | None = None, **kwargs) -> None:
         """Neural Network regressor to predict a unique endpoint."""
         _require_torch()
-        super().__init__(*args, criterion=nn.MSELoss, **kwargs)
+        super().__init__(*args, criterion=nn.MSELoss, device=device, **kwargs)
 
     def set_architecture(self, n_dim: int) -> None:
         """Set dimension of input.
@@ -334,11 +336,12 @@ class MultiTaskNNClassifier(_MaskedMultiTaskLoss, BaseNN,
                              skorch.NeuralNetClassifier if HAS_TORCH else object):  # type: ignore[misc]
     """Neural Network classifier to predict multiple (independent, binary) endpoints; supports ``NaN`` labels."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, device: str | None = None, **kwargs) -> None:
         """Neural Network classifier to predict multiple endpoints."""
         _require_torch()
         # Raw logits + BCEWithLogitsLoss (see SingleTaskNNClassifier); reduction='none' for masking.
-        super().__init__(*args, criterion=nn.BCEWithLogitsLoss, criterion__reduction='none', **kwargs)
+        super().__init__(*args, criterion=nn.BCEWithLogitsLoss, criterion__reduction='none',
+                          device=device, **kwargs)
         self.predict_nonlinearity = torch.sigmoid
 
     def set_architecture(self, n_dim: int, n_task: int) -> None:
@@ -370,10 +373,11 @@ class MultiTaskNNRegressor(_MaskedMultiTaskLoss, BaseNN,
                             skorch.NeuralNetRegressor if HAS_TORCH else object):  # type: ignore[misc]
     """Neural Network regressor to predict multiple endpoints; supports ``NaN`` targets."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, device: str | None = None, **kwargs) -> None:
         """Neural Network regressor to predict multiple endpoints."""
         _require_torch()
-        super().__init__(*args, criterion=nn.MSELoss, criterion__reduction='none', **kwargs)  # 'none' for masking
+        super().__init__(*args, criterion=nn.MSELoss, criterion__reduction='none',
+                          device=device, **kwargs)  # 'none' for masking
 
     def set_architecture(self, n_dim: int, n_task: int) -> None:
         """Set dimension of input and number of tasks to be predicted.
