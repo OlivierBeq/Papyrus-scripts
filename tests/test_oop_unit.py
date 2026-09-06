@@ -545,6 +545,76 @@ class TestPapyrusDatasetDiskMargin(unittest.TestCase):
         self.assertEqual(mock_download.call_args.kwargs['disk_margin'], 0.25)
 
 
+class TestFromDataframeMissingProteinData(unittest.TestCase):
+    """from_dataframe must raise on missing protein data unless download_if_missing=True."""
+
+    def _df(self):
+        return pl.DataFrame({'connectivity': []})
+
+    def test_raises_by_default_on_missing_data(self):
+        with patch('src.papyrus_scripts.oop.reader.read_protein_set', side_effect=FileNotFoundError):
+            with self.assertRaises(FileNotFoundError):
+                PapyrusDataset.from_dataframe(df=self._df(), is3d=False, version='2022.04.2')
+
+    def test_does_not_download_by_default(self):
+        with (
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', side_effect=FileNotFoundError),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+        ):
+            with self.assertRaises(FileNotFoundError):
+                PapyrusDataset.from_dataframe(df=self._df(), is3d=False, version='2022.04.2')
+        mock_download.assert_not_called()
+
+    def test_download_if_missing_downloads_and_retries(self):
+        with (
+            patch(
+                'src.papyrus_scripts.oop.reader.read_protein_set',
+                side_effect=[FileNotFoundError, pl.DataFrame()],
+            ),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+        ):
+            dataset = PapyrusDataset.from_dataframe(
+                df=self._df(), is3d=False, version='2022.04.2', download_if_missing=True,
+            )
+        mock_download.assert_called_once()
+        self.assertIsInstance(dataset.papyrus_protein_data, pl.DataFrame)
+
+    def test_download_if_missing_uses_pystow_path_key_and_forwards_params(self):
+        with (
+            patch(
+                'src.papyrus_scripts.oop.reader.read_protein_set',
+                side_effect=[FileNotFoundError, pl.DataFrame()],
+            ),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+        ):
+            PapyrusDataset.from_dataframe(
+                df=self._df(), is3d=True, version='2022.04.2', plusplus=False,
+                source_path='/tmp/somewhere', download_progress=False,  # noqa: S108
+                keep_original_files=True, disk_margin=0.25, download_if_missing=True,
+            )
+        kwargs = mock_download.call_args.kwargs
+        self.assertEqual(kwargs['version'], '2022.04.2')
+        self.assertEqual(kwargs['outdir'], '/tmp/somewhere')  # noqa: S108
+        self.assertTrue(kwargs['stereo'])
+        self.assertFalse(kwargs['nostereo'])
+        self.assertFalse(kwargs['only_pp'])
+        self.assertFalse(kwargs['structures'])
+        self.assertIsNone(kwargs['descriptors'])
+        self.assertFalse(kwargs['progress'])
+        self.assertTrue(kwargs['keep_xz'])
+        self.assertEqual(kwargs['disk_margin'], 0.25)
+
+    def test_does_not_download_when_data_is_present(self):
+        with (
+            patch('src.papyrus_scripts.oop.reader.read_protein_set', return_value=pl.DataFrame()),
+            patch('src.papyrus_scripts.oop.download.download_papyrus') as mock_download,
+        ):
+            PapyrusDataset.from_dataframe(
+                df=self._df(), is3d=False, version='2022.04.2', download_if_missing=True,
+            )
+        mock_download.assert_not_called()
+
+
 class TestProteinDescriptorsCustomPath(unittest.TestCase):
     """protein_descriptors('custom', ...) must accept a custom_descriptor_path
     and forward it as source_path, without attempting the Papyrus

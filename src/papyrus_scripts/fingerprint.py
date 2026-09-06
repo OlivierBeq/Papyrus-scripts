@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
@@ -20,8 +22,27 @@ try:
     HAS_PYBEL = True
 except ImportError:  # pragma: no cover - only taken when openbabel isn't installed
     HAS_PYBEL = False
+
+
+@contextlib.contextmanager
+def _suppress_missing_cuda_path_warning():
+    """Silence cupy's harmless "CUDA path could not be detected" warning, nothing else."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message=r'^CUDA path could not be detected\.',
+            category=UserWarning,
+            module=r'^cupy(\..*)?$',
+        )
+        yield
+
+
 try:
-    from FPSim2.FPSim2lib.utils import BitStrToIntList, PyPopcount
+    # Importing any FPSim2 submodule runs FPSim2/__init__.py, which
+    # unconditionally imports cupy - this is the first FPSim2 import in the
+    # package's import chain, so the warning suppression belongs here.
+    with _suppress_missing_cuda_path_warning():
+        from FPSim2.FPSim2lib.utils import BitStrToIntList, PyPopcount
     HAS_FPSIM2 = True  # pragma: no cover - only taken when FPSim2 is installed
 except ImportError:
     HAS_FPSIM2 = False

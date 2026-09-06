@@ -271,6 +271,20 @@ class TestFitAndEvaluateSplitModes(unittest.TestCase):
         ))
         self.assertIn('Test set', performance.index)
 
+    def test_cluster_split_tolerates_already_dropped_features_to_ignore_columns(self):
+        # Regression: features_to_ignore may list columns already dropped from data
+        from sklearn.cluster import KMeans
+        n = 12
+        data = pd.DataFrame({
+            'y': range(1, n + 1), 'Year': [2010] * n,
+            'f1': [0.0] * 6 + [10.0] * 6, 'f2': [0.0] * 6 + [10.0] * 6,
+        })
+        performance, _, _ = _fit_and_evaluate(**self._kwargs(
+            data, split_by='cluster', cluster_method=KMeans(n_clusters=2, random_state=0, n_init=1),
+            features_to_ignore=['id', 'target_id', 'y', 'Year'],
+        ))
+        self.assertIn('Test set', performance.index)
+
     def test_custom_split(self):
         n = 10
         data = pd.DataFrame({'y': range(1, n + 1), 'Year': [2010] * n, 'f1': range(n), 'f2': range(n)})
@@ -297,6 +311,61 @@ class TestFitAndEvaluateSplitModes(unittest.TestCase):
         })
         performance, _, _ = _fit_and_evaluate(**self._kwargs(data, yscramble=True))
         self.assertIn('Test set', performance.index)
+
+    def test_random_split_without_scrambling_fits_a_model(self):
+        n = 20
+        data = pd.DataFrame({
+            'y': list(range(1, n + 1)), 'Year': [2010] * n,
+            'f1': range(n), 'f2': range(n),
+        })
+        performance, _, cv_models = _fit_and_evaluate(**self._kwargs(data, split_by='random'))
+        self.assertIn('Test set', performance.index)
+        self.assertIn('Full model', cv_models)
+
+    def test_yscramble_permutes_training_labels_relative_to_features(self):
+        # must actually permute y, not leave it untouched
+        n = 20
+        data = pd.DataFrame({
+            'y': list(range(1, n + 1)), 'Year': [2010] * n,
+            'f1': range(n), 'f2': range(n),
+        })
+        from src.papyrus_scripts import modelling as modelling_mod
+        original_cvm = modelling_mod.crossvalidate_model
+        captured: dict[str, pd.Series] = {}
+
+        def _recording_cvm(data_arg, *args, **kwargs):
+            captured['y'] = data_arg.iloc[:, 0].copy()
+            return original_cvm(data_arg, *args, **kwargs)
+
+        with patch('src.papyrus_scripts.modelling.crossvalidate_model', side_effect=_recording_cvm):
+            _fit_and_evaluate(**self._kwargs(data, yscramble=False))
+            unscrambled_y = captured['y']
+            _fit_and_evaluate(**self._kwargs(data, yscramble=True))
+            scrambled_y = captured['y']
+        self.assertEqual(sorted(unscrambled_y.tolist()), sorted(scrambled_y.tolist()))
+        self.assertFalse((unscrambled_y.values == scrambled_y.values).all())
+
+    def test_random_split_insufficient_training_data_for_folds_raises(self):
+        # regression: this check used to only apply to split_by='year'
+        n = 5
+        data = pd.DataFrame({
+            'y': range(n), 'Year': [2010] * n, 'f1': range(n), 'f2': range(n),
+        })
+        with self.assertRaises(_InsufficientDataError):
+            _fit_and_evaluate(**self._kwargs(data, split_by='random', test_set_size=0.3, folds=5))
+
+    def test_cluster_split_insufficient_training_data_for_folds_raises(self):
+        from sklearn.cluster import KMeans
+        n = 5
+        data = pd.DataFrame({
+            'y': range(n), 'Year': [2010] * n,
+            'f1': [0.0, 0.0, 10.0, 10.0, 10.0], 'f2': [0.0, 0.0, 10.0, 10.0, 10.0],
+        })
+        with self.assertRaises(_InsufficientDataError):
+            _fit_and_evaluate(**self._kwargs(
+                data, split_by='cluster', folds=5,
+                cluster_method=KMeans(n_clusters=2, random_state=0, n_init=1),
+            ))
 
     def test_stratified_classifier_scale_return_val(self):
         n = 20
@@ -433,6 +502,98 @@ class TestQsarPcmValidation(unittest.TestCase):
             # re-raises as ValueError.
             with self.assertRaises(ValueError):
                 pcm(data, num_points=3, split_year=2030)
+
+    def test_pcm_single_protein_across_multiple_compounds(self):
+        # _make_bioactivity_data() has a single target (T1) for all rows
+        with (
+            patch(
+                'src.papyrus_scripts.modelling.read_molecular_descriptors',
+                return_value=pl.LazyFrame(_make_descriptors()),
+            ),
+            patch(
+                'src.papyrus_scripts.modelling.read_protein_descriptors',
+                return_value=pd.DataFrame({'target_id': ['T1'], 'Prot_1': [0.0]}),
+            ) as mock_prot,
+        ):
+            performance, return_val = pcm(
+                pd.DataFrame(_make_bioactivity_data()), num_points=3, folds=2, split_year=2016,
+            )
+        mock_prot.assert_called_once()
+        self.assertIn('Test set', performance.index)
+        self.assertIn('Full model', return_val)
+
+    def test_qsar_random_split_completes(self):
+        with patch(
+            'src.papyrus_scripts.modelling.read_molecular_descriptors',
+            return_value=pl.LazyFrame(_make_descriptors()),
+        ):
+            results, _ = qsar(pd.DataFrame(_make_bioactivity_data()), model=DecisionTreeRegressor(random_state=0),
+                              num_points=3, folds=2, split_by='random', verbose=False)
+        self.assertIn('Test set', results.loc['T1'].index)
+
+    def test_pcm_random_split_completes(self):
+        with (
+            patch(
+                'src.papyrus_scripts.modelling.read_molecular_descriptors',
+                return_value=pl.LazyFrame(_make_descriptors()),
+            ),
+            patch(
+                'src.papyrus_scripts.modelling.read_protein_descriptors',
+                return_value=pd.DataFrame({'target_id': ['T1'], 'Prot_1': [0.0]}),
+            ),
+        ):
+            performance, _ = pcm(pd.DataFrame(_make_bioactivity_data()), model=DecisionTreeRegressor(random_state=0),
+                                 num_points=3, folds=2, split_by='random', verbose=False)
+        self.assertIn('Test set', performance.index)
+
+    def test_pcm_random_split_insufficient_data_raises_valueerror_not_raw_sklearn_error(self):
+        # regression: same fix as test_random_split_insufficient_training_data_for_folds_raises
+        n = 5
+        data = pd.DataFrame({
+            'connectivity': [f'C{i}' for i in range(n)],
+            'target_id': ['T1'] * n,
+            'Activity_class': [None] * n,
+            'pchembl_value_Mean': [5.0, 5.2, 5.4, 7.0, 7.6],
+            'relation': ['='] * n,
+            'Year': [2010] * n,
+        })
+        with (
+            patch(
+                'src.papyrus_scripts.modelling.read_molecular_descriptors',
+                return_value=pl.LazyFrame({'connectivity': [f'C{i}' for i in range(n)],
+                                           'Desc_1': [i / n for i in range(n)]}),
+            ),
+            patch(
+                'src.papyrus_scripts.modelling.read_protein_descriptors',
+                return_value=pd.DataFrame({'target_id': ['T1'], 'Prot_1': [0.0]}),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, 'Not enough training data'):
+                pcm(data, num_points=3, folds=5, split_by='random', verbose=False)
+
+    def test_qsar_random_split_insufficient_data_for_one_target_skips_it_not_the_whole_run(self):
+        # regression: used to abort the whole run instead of skipping T2
+        t1 = _make_bioactivity_data()
+        n2 = 5
+        t2 = {
+            'connectivity': [f'D{i}' for i in range(n2)],
+            'target_id': ['T2'] * n2,
+            'Activity_class': [None] * n2,
+            'pchembl_value_Mean': [5.0, 5.2, 5.4, 7.0, 7.6],
+            'relation': ['='] * n2,
+            'Year': [2010] * n2,
+        }
+        data = pd.DataFrame({key: list(t1[key]) + t2[key] for key in t1})
+        descs = pl.LazyFrame({
+            'connectivity': _make_descriptors()['connectivity'] + t2['connectivity'],
+            'Desc_1': [i / (16 + n2) for i in range(16 + n2)],
+        })
+        with patch('src.papyrus_scripts.modelling.read_molecular_descriptors', return_value=descs):
+            results, models = qsar(data, model=DecisionTreeRegressor(random_state=0),
+                                   num_points=3, folds=5, split_by='random', verbose=False)
+        self.assertIn('Test set', results.loc['T1'].index)
+        self.assertIsNone(models['T2'])
+        self.assertIn('Not enough training data', results.loc['T2', 'error'].iloc[0])
 
 
 class TestModelMetricsMCC(unittest.TestCase):

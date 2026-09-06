@@ -427,6 +427,7 @@ class PapyrusDataset:
             chunksize: int | None = None,
             keep_original_files: bool = False,
             disk_margin: float = 0.10,
+            download_if_missing: bool = False,
     ) -> PapyrusDataset:
         """Create a :class:`PapyrusDataset` from an existing DataFrame.
 
@@ -443,6 +444,11 @@ class PapyrusDataset:
             lazily through this dataset (default: False)
         :param disk_margin: safety margin for any download later triggered
             through this dataset (default: 0.10)
+        :param download_if_missing: download the protein-target file if not
+            found locally, instead of raising (default: False)
+        :raises FileNotFoundError | NotADirectoryError | OSError | ValueError:
+            if the protein-target file isn't found and *download_if_missing*
+            is False
         :returns: a :class:`PapyrusDataset` wrapping *df*
         """
         pv = _ensure_papyrus_version(version)
@@ -450,9 +456,24 @@ class PapyrusDataset:
             df = pl.from_pandas(df)
         dataset = PapyrusDataset.__new__(PapyrusDataset)
         dataset.papyrus_bioactivity_data = df
-        dataset.papyrus_protein_data = reader.read_protein_set(
-            source_path=source_path, version=pv,
-        )
+        try:
+            dataset.papyrus_protein_data = reader.read_protein_set(
+                source_path=source_path, version=pv,
+            )
+        except _NOT_AVAILABLE_LOCALLY:
+            if not download_if_missing:
+                raise
+            download.download_papyrus(
+                outdir=source_path,
+                version=pv.pystow_path_key,  # not .version: must match the folder key reads use
+                nostereo=not is3d, stereo=is3d, only_pp=plusplus,
+                structures=False, descriptors=None,
+                progress=download_progress, disk_margin=disk_margin,
+                keep_xz=keep_original_files,
+            )
+            dataset.papyrus_protein_data = reader.read_protein_set(
+                source_path=source_path, version=pv,
+            )
         dataset.papyrus_params = dict(
             is3d=is3d, version=pv, plusplus=plusplus,
             chunksize=chunksize, source_path=source_path,

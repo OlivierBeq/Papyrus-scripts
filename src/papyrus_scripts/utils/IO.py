@@ -294,6 +294,11 @@ def to_polars_schema(dtypes: dict) -> dict:
     return {col: to_polars_dtype(t) for col, t in dtypes.items()}
 
 
+#: 'Year' is absent from shipped data_types.json (unlike 'all_years', a
+#: semicolon-joined list, it's always a clean single integer or null).
+_EXTRA_PAPYRUS_SCHEMA_OVERRIDES: dict = {'Year': pl.Int32}
+
+
 def load_data_type_schemas(source_module: pystow.Module) -> dict:
     """Read a version folder's ``data_types.json`` and return ``{section: {col: polars_dtype}}``.
 
@@ -302,10 +307,14 @@ def load_data_type_schemas(source_module: pystow.Module) -> dict:
     dtype_file = source_module.join(name='data_types.json')
     with open(dtype_file) as fh:
         raw = json.load(fh, cls=TypeDecoder)
-    return {
+    schemas = {
         key: to_polars_schema(val) if isinstance(val, dict) else val
         for key, val in raw.items()
     }
+    if 'papyrus' in schemas:
+        for col, dtype in _EXTRA_PAPYRUS_SCHEMA_OVERRIDES.items():
+            schemas['papyrus'].setdefault(col, dtype)
+    return schemas
 
 
 # ---------------------------------------------------------------------------
@@ -1097,7 +1106,8 @@ def _downcast_integer_overrides(
         ``None`` if every eligible column downcast cleanly.
     """
     for col, target in overrides.items():
-        if target not in _NULLABLE_INT_DTYPES or col in forced_float_cols:
+        # A shared schema may name a column one file variant lacks.
+        if col not in chunk.columns or target not in _NULLABLE_INT_DTYPES or col in forced_float_cols:
             continue
         non_null = chunk[col].dropna()
         if len(non_null) == 0 or (non_null % 1 == 0).all():

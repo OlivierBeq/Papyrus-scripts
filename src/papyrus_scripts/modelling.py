@@ -377,7 +377,9 @@ def _fit_and_evaluate(data: pd.DataFrame,
         crossvalidate_model's per-fold-plus-"Full model" dict
     """
     if split_by.lower() == 'year':
-        test_set = data[data['Year'] >= split_year]
+        # 'Year' may come in as string/object dtype
+        years = pd.to_numeric(data['Year'], errors='coerce')
+        test_set = data[years >= split_year]
         if test_set.empty:
             raise _InsufficientDataError(f'No test data for temporal split at {split_year}')
         training_set = data[~data.index.isin(test_set.index)]
@@ -400,7 +402,8 @@ def _fit_and_evaluate(data: pd.DataFrame,
     elif split_by.lower() == 'cluster':
         if cluster_method is None:
             raise RuntimeError('cluster_method missing despite qsar()/pcm() validating it upfront')
-        groups = cluster_method.fit_predict(data.drop(columns=features_to_ignore))
+        # errors='ignore': merge_on/target_id are already dropped from data by this point
+        groups = cluster_method.fit_predict(data.drop(columns=features_to_ignore, errors='ignore'))
         training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
                                                                                          test_set_size,
                                                                                          verbose=verbose)
@@ -450,6 +453,10 @@ def _fit_and_evaluate(data: pd.DataFrame,
                                random_state=random_state).to_pandas()
         test_set.index = test_index
     # Make sure enough data
+    # (applies to every split_by mode, not just 'year')
+    if training_set.shape[0] < folds:
+        raise _InsufficientDataError(
+            f'Not enough training data ({training_set.shape[0]} rows) for {folds} folds')
     if model_type == 'classifier':
         train_data_classes = Counter(training_set[endpoint])
         if not np.all(np.array(list(train_data_classes.values())) > folds):

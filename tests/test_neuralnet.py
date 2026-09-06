@@ -186,6 +186,94 @@ class TestDefaultDevice(unittest.TestCase):
 
 
 @unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestDeviceOverride(unittest.TestCase):
+    """Regression: passing device= used to collide with the hardcoded default."""
+
+    def test_explicit_device_kwarg_is_not_swallowed(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2, device='cpu')
+        self.assertEqual(reg.device, 'cpu')
+
+    def test_omitting_device_still_defaults_via_default_device(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2)
+        self.assertEqual(reg.device, nn_mod._default_device())
+
+    @unittest.skipIf(nn_mod.torch.cuda.is_available(), 'meaningful only when no GPU is present')
+    def test_requesting_cuda_when_unavailable_raises_at_fit(self):
+        # must fail loudly at fit(), not silently fall back to CPU
+        rng = _rng()
+        X, y = pd.DataFrame(rng.random((12, 4))), pd.Series(rng.random(12))
+        X_valid, y_valid = pd.DataFrame(rng.random((4, 4))), pd.Series(rng.random(4))
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2, early_stop=2, hidden_layers=[4],
+                                        device='cuda', verbose=0)
+            reg.set_architecture(4)
+            reg.set_validation(X_valid, y_valid)
+            with self.assertRaises((RuntimeError, AssertionError)):
+                reg.fit(X, y)
+
+    @unittest.skipIf(nn_mod.torch.cuda.is_available(), 'meaningful only when no GPU is present')
+    def test_set_params_cuda_after_construction_raises_at_fit(self):
+        rng = _rng()
+        X, y = pd.DataFrame(rng.random((12, 4))), pd.Series(rng.random(12))
+        X_valid, y_valid = pd.DataFrame(rng.random((4, 4))), pd.Series(rng.random(4))
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2, early_stop=2, hidden_layers=[4], verbose=0)
+            reg.set_params(device='cuda')
+            reg.set_architecture(4)
+            reg.set_validation(X_valid, y_valid)
+            with self.assertRaises((RuntimeError, AssertionError)):
+                reg.fit(X, y)
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestBatchSize(unittest.TestCase):
+
+    def _fit(self, *, batch_size, n_train, tmpdir):
+        rng = _rng()
+        X = pd.DataFrame(rng.random((n_train, 4)))
+        y = pd.Series(rng.random(n_train))
+        X_valid = pd.DataFrame(rng.random((4, 4)))
+        y_valid = pd.Series(rng.random(4))
+        reg = SingleTaskNNRegressor(tmpdir, epochs=2, early_stop=2, hidden_layers=[4],
+                                    batch_size=batch_size, verbose=0)
+        reg.set_architecture(4)
+        reg.set_validation(X_valid, y_valid)
+        reg.fit(X, y)
+        return reg, X
+
+    def test_batch_size_of_one_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg, X = self._fit(batch_size=1, n_train=8, tmpdir=d)
+        self.assertEqual(reg.predict(X).shape, (8, 1))
+
+    def test_batch_size_larger_than_training_set_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg, X = self._fit(batch_size=1024, n_train=8, tmpdir=d)
+        self.assertEqual(reg.predict(X).shape, (8, 1))
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestTinyTrainingSet(unittest.TestCase):
+
+    def test_two_training_and_two_validation_samples_does_not_raise(self):
+        rng = _rng()
+        X = pd.DataFrame(rng.random((2, 4)))
+        y = pd.Series(rng.random(2))
+        X_valid = pd.DataFrame(rng.random((2, 4)))
+        y_valid = pd.Series(rng.random(2))
+        with tempfile.TemporaryDirectory() as d:
+            reg = SingleTaskNNRegressor(d, epochs=2, early_stop=2, batch_size=1,
+                                        hidden_layers=[4], verbose=0)
+            reg.set_architecture(4)
+            reg.set_validation(X_valid, y_valid)
+            reg.fit(X, y)
+            preds = reg.predict(X)
+        self.assertEqual(preds.shape, (2, 1))
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
 class TestSetSeed(unittest.TestCase):
 
     def test_none_seed_is_a_no_op(self):
@@ -384,6 +472,74 @@ class TestMultiTaskNN(unittest.TestCase):
             reg = MultiTaskNNRegressor(d, epochs=2)
             with self.assertRaises(ValueError):
                 reg.set_architecture(4, 1)
+
+
+@unittest.skipUnless(TORCH_AVAILABLE, 'requires torch and skorch')
+class TestMultiTaskMaskedLoss(unittest.TestCase):
+    """Multi-task data is rarely dense - NaN targets must be excluded from the loss, not crash it."""
+
+    def test_criterion_reduction_is_none(self):
+        # _MaskedMultiTaskLoss.get_loss needs an unreduced, per-element loss to mask.
+        with tempfile.TemporaryDirectory() as d:
+            reg = MultiTaskNNRegressor(d, epochs=2)
+            clf = MultiTaskNNClassifier(d, epochs=2)
+        self.assertEqual(reg.criterion__reduction, 'none')
+        self.assertEqual(clf.criterion__reduction, 'none')
+
+    def test_regressor_loss_ignores_nan_targets(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg = MultiTaskNNRegressor(d, epochs=1)
+            reg.set_architecture(4, 3)
+            reg.initialize()
+            y_pred = nn_mod.torch.tensor([[1.0, 2.0, 3.0]])
+            y_true = nn_mod.torch.tensor([[1.0, float('nan'), 5.0]])
+            loss = reg.get_loss(y_pred, y_true.numpy())
+        # column 1 (NaN) excluded: mean((1-1)**2, (3-5)**2) = 2.0
+        self.assertAlmostEqual(loss.item(), 2.0, places=5)
+
+    def test_all_nan_batch_does_not_raise_or_produce_nan_loss(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg = MultiTaskNNRegressor(d, epochs=1)
+            reg.set_architecture(4, 3)
+            reg.initialize()
+            y_pred = nn_mod.torch.zeros((2, 3))
+            y_true = nn_mod.torch.full((2, 3), float('nan'))
+            loss = reg.get_loss(y_pred, y_true.numpy())
+        self.assertEqual(loss.item(), 0.0)
+
+    def test_regressor_fits_with_sparse_targets(self):
+        rng = _rng()
+        X = pd.DataFrame(rng.random((40, 4)))
+        y = pd.DataFrame(rng.random((40, 3)))
+        y.iloc[::2, 1] = np.nan  # half of task 1's labels missing
+        X_valid = pd.DataFrame(rng.random((10, 4)))
+        y_valid = pd.DataFrame(rng.random((10, 3)))
+        y_valid.iloc[::3, 0] = np.nan
+        with tempfile.TemporaryDirectory() as d:
+            reg = MultiTaskNNRegressor(d, epochs=2, early_stop=2, lr=0.01, hidden_layers=[8, 4])
+            reg.set_architecture(4, 3)
+            reg.set_validation(X_valid, y_valid)
+            reg.fit(X, y)
+            preds = reg.predict(X)
+        self.assertEqual(preds.shape, (40, 3))
+        self.assertFalse(np.isnan(preds).any())
+
+    def test_classifier_fits_with_sparse_targets(self):
+        rng = _rng()
+        X = pd.DataFrame(rng.random((40, 4)))
+        y = pd.DataFrame(rng.integers(0, 2, (40, 3)).astype(float))
+        y.iloc[::2, 1] = np.nan
+        X_valid = pd.DataFrame(rng.random((10, 4)))
+        y_valid = pd.DataFrame(rng.integers(0, 2, (10, 3)).astype(float))
+        y_valid.iloc[::3, 0] = np.nan
+        with tempfile.TemporaryDirectory() as d:
+            clf = MultiTaskNNClassifier(d, epochs=2, early_stop=2, lr=0.01, hidden_layers=[8, 4])
+            clf.set_architecture(4, 3)
+            clf.set_validation(X_valid, y_valid)
+            clf.fit(X, y)
+            preds = clf.predict(X)
+        self.assertEqual(preds.shape, (40, 3))
+        self.assertTrue(set(np.unique(preds)).issubset({0.0, 1.0}))
 
 
 if __name__ == '__main__':

@@ -52,6 +52,12 @@ Optional extras enable additional functionality:
 > **Note:** `openbabel` (needed only for FP2/FP3/FP4 fingerprints) must be installed via conda-forge, not pip, when used alongside RDKit/FPSim2/cupy in the same environment: `conda install -c conda-forge openbabel`.
 >
 > **Note:** the `gpu` extra pins `cupy-cuda12x[ctk]`, whose `ctk` extra pulls in the CUDA 12.x toolkit as a pip package — no separate toolkit install needed, only an NVIDIA driver compatible with CUDA 12.x.
+>
+> **Note:** on Windows, plain `pip install papyrus-scripts[dnn]` installs a CPU-only PyTorch build — CUDA-enabled Windows wheels aren't published on PyPI, only on PyTorch's own index. Get GPU support with:
+> ```
+> pip install papyrus-scripts[dnn] --extra-index-url https://download.pytorch.org/whl/cu130
+> ```
+> (swap `cu130` for the CUDA tag matching your driver; see the [PyTorch install matrix](https://pytorch.org/get-started/locally/)). On Linux, the plain PyPI wheel already bundles CUDA, so no extra index is needed there.
 
 ## 🛠️ Requirements
 
