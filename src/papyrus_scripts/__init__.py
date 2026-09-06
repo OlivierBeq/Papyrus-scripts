@@ -35,4 +35,4 @@ from .utils import IO, UniprotMatch
 from .utils.IO import PapyrusVersion
 from .utils.mol_reader import MolSupplier
 
-__version__ = '3.0.1'
+__version__ = '3.0.2'
