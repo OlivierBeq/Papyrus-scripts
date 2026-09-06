@@ -402,7 +402,8 @@ def _fit_and_evaluate(data: pd.DataFrame,
     elif split_by.lower() == 'cluster':
         if cluster_method is None:
             raise RuntimeError('cluster_method missing despite qsar()/pcm() validating it upfront')
-        groups = cluster_method.fit_predict(data.drop(columns=features_to_ignore))
+        # errors='ignore': merge_on/target_id are already dropped from data by this point
+        groups = cluster_method.fit_predict(data.drop(columns=features_to_ignore, errors='ignore'))
         training_set, test_set, training_groups, _ = train_test_proportional_group_split(data, groups,
                                                                                          test_set_size,
                                                                                          verbose=verbose)

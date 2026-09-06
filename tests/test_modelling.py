@@ -271,6 +271,20 @@ class TestFitAndEvaluateSplitModes(unittest.TestCase):
         ))
         self.assertIn('Test set', performance.index)
 
+    def test_cluster_split_tolerates_already_dropped_features_to_ignore_columns(self):
+        # Regression: features_to_ignore may list columns already dropped from data
+        from sklearn.cluster import KMeans
+        n = 12
+        data = pd.DataFrame({
+            'y': range(1, n + 1), 'Year': [2010] * n,
+            'f1': [0.0] * 6 + [10.0] * 6, 'f2': [0.0] * 6 + [10.0] * 6,
+        })
+        performance, _, _ = _fit_and_evaluate(**self._kwargs(
+            data, split_by='cluster', cluster_method=KMeans(n_clusters=2, random_state=0, n_init=1),
+            features_to_ignore=['id', 'target_id', 'y', 'Year'],
+        ))
+        self.assertIn('Test set', performance.index)
+
     def test_custom_split(self):
         n = 10
         data = pd.DataFrame({'y': range(1, n + 1), 'Year': [2010] * n, 'f1': range(n), 'f2': range(n)})
