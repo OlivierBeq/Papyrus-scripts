@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Self
 
 import pyarrow.parquet as pq
-from rdkit import Chem, RDLogger
+from rdkit import Chem, rdBase
 from rdkit.Chem import (
     ForwardSDMolSupplier,
     MaeMolSupplier,
@@ -30,11 +30,11 @@ from .IO import notebook_safe_ncols, widen_indeterminate_notebook_bar
 @contextmanager
 def suppress_rdkit_log() -> Generator[None]:
     """Temporarily silence RDKit's logger, always re-enabling it afterwards (even on error)."""
-    RDLogger.DisableLog('rdApp.*')  # type: ignore[attr-defined]
+    blocker = rdBase.BlockLogs()
     try:
         yield
     finally:
-        RDLogger.EnableLog('rdApp.*')  # type: ignore[attr-defined]
+        del blocker
 
 
 # ---------------------------------------------------------------------------
